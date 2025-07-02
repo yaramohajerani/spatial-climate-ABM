@@ -9,6 +9,8 @@ __pycache__/
 # data
 *.hdf5
 *.h5
+*.csv
+*.png
 
 # Distribution / packaging
 .Python
