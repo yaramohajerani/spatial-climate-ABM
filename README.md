@@ -1,17 +1,17 @@
-# Climate Spatial ABM Prototype
+# Spatial economic ABM for climate risk
 
 This repository provides a **spatial agent-based model** (ABM) that couples basic economic behaviour with climate-hazard impacts. It is built with [Mesa](https://mesa.readthedocs.io) and is designed to plug into [CLIMADA](https://github.com/CLIMADA-project/climada_python) as the climate-impact engine.
 
 ## Features included
 
-* 10 × 10 spatial grid (`mesa.space.MultiGrid`).
-* 100 `HouseholdAgent` and 20 `FirmAgent` instances, randomly distributed.
-* Synthetic flood-type climate shock applied in year 5 (step 5).
+* Agents distributed on spatial grid corresponding to the input climate data file (`mesa.space.MultiGrid`).
+* `HouseholdAgent` and `FirmAgent` instances randomly distributed (number provided by user).
+* CLIMADA hazard data used for input climate shocks.
 * Migration by households when local risk exceeds a threshold.
 * Firm production reduced in proportion to local hazard intensity.
 * Collection of yearly GDP and migrant counts.
-* Results automatically saved to `simulation_results.csv` after the 10-year run.
-* **Optional live dashboard** built with Mesa's Solara API – launch with `--viz` to watch the grid and charts update in real time.
+* Results saved to `simulation_results.csv`.
+* **live dashboard** built with Mesa's Solara API – launch with `--viz` to watch the grid and charts update in real time.
 
 ## Quick start
 
@@ -31,16 +31,13 @@ pip install -r requirements.txt
 Head-less run (CSV output only):
 
 ```bash
-python run_simulation.py \
-    --hazard-file demo_hist.hdf5 \
-    --hazard-year 2030          # optional
+python run_simulation.py --hazard-file demo_hist.hdf5
 ```
 
 Interactive dashboard (live grid + plots):
 
 ```bash
-python run_simulation.py --viz \
-    --hazard-file demo_hist.hdf5 --hazard-year 2030
+python run_simulation.py --viz --hazard-file demo_hist.hdf5
 ```
 
 The command opens a local Solara web-app (default `http://localhost:8765`).  Use the sliders to tweak agents, shock year etc. while the simulation is running.
@@ -54,9 +51,8 @@ GDP,Migrants,Average_Risk
 ```
 
 ## Next steps
-* You can now pass `hazard_file="/path/to/your_hazard.hdf5"` and (optionally) `hazard_year=2050` when creating the model. The loader reads the `Hazard` from HDF5, maps it to the 10×10 grid, and normalises intensities automatically.
 * Extend agent behaviour (production, labour, trade, ...).
-* Live visualisation via Mesa 3 Solara dashboard is implemented – start it with the `--viz` flag.
+* Better climate data and addition of vulnerabilities.
 * Export regional metrics (GDP per cell, Gini index, recovery time, etc.).
 
 ## Using real CLIMADA hazards
