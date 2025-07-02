@@ -19,8 +19,8 @@ class EconomyModel(Model):
 
     def __init__(
         self,
-        width: int = 10,
-        height: int = 10,
+        width: int | None = None,
+        height: int | None = None,
         num_households: int = 100,
         num_firms: int = 20,
         shock_step: int = 5,
@@ -33,6 +33,25 @@ class EconomyModel(Model):
         super().__init__(seed=seed)
 
         # --- Spatial environment --- #
+        # If the user has not provided explicit grid dimensions, try to read
+        # them from the hazard file so the ABM aligns perfectly with the
+        # underlying climate raster.
+        if (width is None or height is None) and hazard_file and scenario != "synthetic":
+            try:
+                lon_vals, lat_vals = self._unique_lon_lat_from_hazard(hazard_file, hazard_year)
+                width = len(lon_vals)
+                height = len(lat_vals)
+                print(f"[INFO] Grid size inferred from hazard file: {width}×{height}")
+            except Exception as exc:  # noqa: BLE001 – broad on purpose, we fall back gracefully
+                print(f"[WARN] Could not infer grid from hazard file, defaulting to 10×10 ({exc}).")
+                width = width or 10
+                height = height or 10
+        else:
+            # Fallback when either no hazard file is supplied or the user has
+            # explicitly chosen a custom grid size.
+            width = width or 10
+            height = height or 10
+
         self.grid = MultiGrid(width, height, torus=False)
         # Alias required by Mesa visualisation helpers (they expect .space)
         self.space = self.grid  # type: ignore[assignment]
@@ -197,16 +216,61 @@ class EconomyModel(Model):
         else:
             centroid_intensity = _np.zeros_like(centroid_intensity)
 
-        # Map to grid via nearest neighbour (brute force – grid is tiny 10×10)
+        # Build hazard map so that each Mesa cell matches exactly one raster
+        # centroid from the hazard file.
         lon = haz.centroids.lon
         lat = haz.centroids.lat
-        centroids_xy = _np.column_stack((lon, lat))
 
-        def nearest_intensity(cell: Coords) -> float:
-            dists = _np.sum((centroids_xy - _np.array(cell)) ** 2, axis=1)
-            return float(centroid_intensity[int(_np.argmin(dists))])
+        unique_lon = _np.unique(lon)
+        unique_lat = _np.unique(lat)
+        lon_to_x = {lo: i for i, lo in enumerate(unique_lon)}
+        lat_to_y = {la: j for j, la in enumerate(unique_lat)}
 
-        return {c: nearest_intensity(c) for c in self.valid_coordinates}
+        hazard_map: Dict[Coords, float] = {}
+        for lo, la, inten in zip(lon, lat, centroid_intensity):
+            x = lon_to_x[lo]
+            y = lat_to_y[la]
+            hazard_map[(x, y)] = float(inten)
+
+        return hazard_map
+
+    # ------------------------------------------------------------------ #
+    #                     HELPER: GRID FROM HAZARD FILE                  #
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _unique_lon_lat_from_hazard(hazard_file: str, year: int | None = None):
+        """Return sorted unique longitude and latitude values from a CLIMADA file.
+
+        The function opens the file *once* to determine the spatial grid so that
+        the ABM can adopt the exact same resolution. It purposefully avoids any
+        Mesa-specific state so it can be called early in ``__init__``.
+        """
+        from climada.hazard import Hazard
+        import numpy as _np
+        import gzip, shutil
+
+        path = Path(hazard_file).expanduser()
+
+        # Handle on-the-fly decompression of *.hdf5.gz files so the user can
+        # pass either version.
+        if path.suffix == ".gz":
+            dest = path.with_suffix("")
+            if not dest.exists():
+                with gzip.open(path, "rb") as fin, open(dest, "wb") as fout:
+                    shutil.copyfileobj(fin, fout)
+            path = dest
+
+        haz = Hazard.from_hdf5(str(path))
+
+        if year is not None and hasattr(haz, "event_id"):
+            years = _np.array([int(str(eid)[:4]) for eid in haz.event_id])
+            idx = _np.where(years == year)[0]
+            if idx.size:
+                haz = haz.select(idx)
+
+        lon = haz.centroids.lon
+        lat = haz.centroids.lat
+        return sorted(set(lon)), sorted(set(lat))
 
     # --------------------------------------------------------------------- #
     #                               MESA STEP                               #

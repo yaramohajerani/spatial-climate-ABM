@@ -28,8 +28,7 @@ def main() -> None:  # noqa: D401
         return
 
     model = EconomyModel(
-        width=10,
-        height=10,
+        # Grid dimensions inferred automatically from hazard file
         num_households=100,
         num_firms=20,
         shock_step=5,
