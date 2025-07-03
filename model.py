@@ -13,7 +13,7 @@ from agents import FirmAgent, HouseholdAgent
 from hazard_utils import hazard_from_geotiffs
 
 from climada.entity import Exposures, ImpactFunc, ImpactFuncSet
-from climada.engine import Impact
+from climada.engine import ImpactCalc
 
 Coords = Tuple[int, int]
 
@@ -141,11 +141,17 @@ class EconomyModel(Model):
                 "latitude": lat,
                 "longitude": lon,
                 "value": val,
-                "impf": 1,  # all agents share the same simple impact function
+                "impf_": 1,  # generic impact function id column recognised by CLIMADA
             })
 
         exp = Exposures(pd.DataFrame.from_records(records))
-        exp.set_geom_points()
+        # Geometry is now set during init in CLIMADA ≥5, but for backward
+        # compatibility ensure lat/lon columns are translated into geometry.
+        if not hasattr(exp, "geometry") or exp.geometry.is_empty.any():  # pragma: no cover
+            exp.set_lat_lon()
+
+        # Map exposures to hazard centroids (required before impact calc)
+        exp.assign_centroids(self.hazard)
         return exp
 
     @staticmethod
@@ -154,14 +160,13 @@ class EconomyModel(Model):
         impf = ImpactFunc()
         impf.id = 1
         impf.haz_type = "FL"
+        impf.name = "Linear"
         impf.intensity = np.array([0.0, 1.0])
         impf.mdd = np.array([0.0, 1.0])  # mean damage fraction linear
         impf.paa = np.array([1.0, 1.0])  # fully applicable
-        impf.save_reg_curve()
+        impf.unit = "m"
 
-        impf_set = ImpactFuncSet()
-        impf_set.append(impf)
-        return impf_set
+        return ImpactFuncSet([impf])
 
     # --------------------------------------------------------------------- #
     #                               MESA STEP                               #
@@ -211,18 +216,27 @@ class EconomyModel(Model):
         probs = self.hazard.frequency / self.hazard.frequency.sum()
         event_idx = int(self.random.choices(range(len(probs)), weights=probs)[0])
 
-        # Update per-cell hazard map with the chosen event's intensity
-        event_intensity = self.hazard.intensity[event_idx]
+        # Retrieve event intensity as dense 1-D array regardless of sparse/dense backend
+        row = self.hazard.intensity[event_idx]
+        if hasattr(row, "toarray"):
+            event_intensity = row.toarray().ravel()
+        else:
+            event_intensity = np.asarray(row).ravel()
+
         for idx, coord in enumerate(self.valid_coordinates):
             self.hazard_map[coord] = float(event_intensity[idx])
 
-        # --- Compute impacts using CLIMADA ------------------------------------
-        self._exposures.impact_funcs = self._vuln_funcs  # attach vuln
-        impact = Impact()
-        impact.calc(self._exposures, self.hazard, save_mat=False)
+        # --- Compute impacts using CLIMADA (current API via ImpactCalc) ----------
+        self._exposures.impact_funcs = self._vuln_funcs  # link vulnerability
+        impact = ImpactCalc(self._exposures, self._vuln_funcs, self.hazard).impact(save_mat=True)
 
-        # damages for this event per exposure (same order as self._exposures)
-        damages = impact.at_event[event_idx]
+        # Retrieve per-exposure damages for the selected event (sparse row)
+        if hasattr(impact, "imp_mat"):
+            damages = impact.imp_mat[event_idx].toarray().ravel()
+        elif hasattr(impact, "impt_mat"):
+            damages = impact.impt_mat[event_idx].toarray().ravel()
+        else:
+            raise AttributeError("Impact matrix attribute not found in Impact object (imp_mat/impt_mat)")
 
         # Apply damages to agents
         for ag, dmg in zip(self.agents, damages):

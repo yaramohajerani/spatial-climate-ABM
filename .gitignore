@@ -10,6 +10,7 @@ __pycache__/
 .DS_Store
 
 # data
+data/
 *.hdf5
 *.h5
 *.csv

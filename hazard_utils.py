@@ -21,6 +21,7 @@ import rasterio
 import rasterio.transform
 from climada.hazard import Hazard
 from climada.hazard.centroids import Centroids  # type: ignore
+from scipy.sparse import csr_matrix
 
 Coords = Tuple[int, int]
 
@@ -69,7 +70,8 @@ def hazard_from_geotiffs(rp_files: Dict[int, str], haz_type: str = "FL") -> Tupl
     lat = np.array(ys).flatten()
 
     # Prepare intensity matrix [n_events, n_centroids]
-    intensity = np.vstack([(arr / global_max).flatten() for arr in data_arrays])
+    dense = np.vstack([(arr / global_max).flatten() for arr in data_arrays])
+    intensity = csr_matrix(dense)
 
     # Frequencies = 1 / return period (events per year)
     frequency = 1 / np.array(rps, dtype=float)
@@ -81,10 +83,13 @@ def hazard_from_geotiffs(rp_files: Dict[int, str], haz_type: str = "FL") -> Tupl
     # compatibility with recent releases.
     haz.haz_type = haz_type
     haz.event_id = np.array(rps, dtype=int)
+    haz.event_name = np.array([f"RP{rp}" for rp in rps])
+    haz.date = np.arange(1, len(rps) + 1, dtype=int)  # placeholder ordinal dates
     haz.frequency = frequency
+    haz.frequency_unit = "1/yr"
     haz.units = "m"  # Aqueduct provides inundation depth in metres
 
-    cent = Centroids(pd.DataFrame({"lon": lon, "lat": lat}))
+    cent = Centroids.from_lat_lon(lat, lon)
     haz.centroids = cent
     haz.intensity = intensity  # type: ignore[assignment]
 
