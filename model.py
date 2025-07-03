@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Iterable
 
 import numpy as np
 import pandas as pd
@@ -30,20 +30,20 @@ class EconomyModel(Model):
         num_households: int = 100,
         num_firms: int = 20,
         shock_step: int = 5,
-        # Mapping return period → GeoTIFF file path
-        hazard_rp_files: Dict[int, str] | None = None,
+        # Iterable of (return_period, year, path) tuples
+        hazard_events: Iterable[Tuple[int, int, str]] | None = None,
         hazard_type: str = "FL",  # CLIMADA hazard tag for flood
         seed: int | None = None,
     ) -> None:  # noqa: D401
         super().__init__(seed=seed)
 
         # --- Spatial environment --- #
-        if hazard_rp_files is None or not hazard_rp_files:
-            raise ValueError("hazard_rp_files must be provided and non-empty – no synthetic fallback available.")
+        if hazard_events is None:
+            raise ValueError("hazard_events must be provided.")
 
         # Load the GeoTIFF rasters and build a CLIMADA Hazard
         self.hazard, self.lon_vals, self.lat_vals = hazard_from_geotiffs(
-            hazard_rp_files,
+            hazard_events,
             haz_type=hazard_type,
         )
 

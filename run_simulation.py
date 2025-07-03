@@ -31,20 +31,21 @@ def main() -> None:  # noqa: D401
         return
 
     # Parse RP files into {int: str}
-    rp_map = {}
+    events = []  # list of (rp, year, path)
     for item in args.rp_file:
         try:
-            rp_str, path_str = item.split(":", 1)
-            rp_map[int(rp_str)] = path_str
+            rp_str, year_str, path_str = item.split(":", 2)
+            events.append((int(rp_str), int(year_str), path_str))
         except ValueError as exc:  # noqa: BLE001
-            raise SystemExit(f"Invalid --rp-file format: {item}. Expected <RP>:<path>.") from exc
+            raise SystemExit(
+                f"Invalid --rp-file format: {item}. Expected <RP>:<YEAR>:<path>."
+            ) from exc
 
     model = EconomyModel(
-        # Grid dimensions inferred automatically from the raster set
         num_households=100,
         num_firms=20,
         shock_step=5,
-        hazard_rp_files=rp_map,
+        hazard_events=events,
     )
 
     for _ in range(10):  # simulate 10 years

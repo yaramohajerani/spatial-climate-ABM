@@ -28,27 +28,46 @@ pip install -r requirements.txt
 
 ### 3. Run the model
 
-Head-less run (CSV output only):
+The model now expects external GeoTIFF rasters instead of CLIMADA HDF5 files. Each
+file is mapped to a *hazard event* via an explicit triple:
+
+```
+<RETURN-PERIOD>:<YEAR>:<path/to/geotiff.tif>
+```
+
+You can pass any number of `--rp-file` arguments – one per event – to mix
+different return periods and years, for example:
 
 ```bash
-python run_simulation.py --hazard-file demo_hist.hdf5
+# Two events: 10-year RP in 2030 and 2050, plus a 100-year RP in 2050
+python run_simulation.py \
+    --rp-file 10:2030:data/flood_rp10_2030.tif \
+    --rp-file 10:2050:data/flood_rp10_2050.tif \
+    --rp-file 100:2050:data/flood_rp100_2050.tif
 ```
 
-Interactive dashboard (live grid + plots):
+Add `--viz` to launch the interactive Solara dashboard instead of the headless
+batch run.
+
+### Optional preprocessing
+
+Aqueduct tiles are large (~100 MB). Use the helper under
+`prepare_hazard/preprocess_geotiff.py` to crop or down-sample rasters before
+feeding them into the ABM:
 
 ```bash
-python run_simulation.py --viz --hazard-file demo_hist.hdf5
+# Crop to bounding box and resample to half resolution
+python prepare_hazard/preprocess_geotiff.py \
+    --input raw/*.tif \
+    --crop-bounds -74 40 -73 42 \
+    --scale-factor 0.5 \
+    --output-dir data/processed
 ```
 
-The command opens a local Solara web-app (default `http://localhost:8765`).  Use the sliders to tweak agents, shock year etc. while the simulation is running.
+Point the `--rp-file` paths to the generated `*_processed.tif` files.
 
-```
-$ cat simulation_results.csv
-GDP,Migrants,Average_Risk
-77.2,0,0.0
-77.5,0,0.0
-…
-```
+The Solara dashboard and CSV output (`simulation_results.csv`) remain the same
+as before.
 
 ## Next steps
 * Extend agent behaviour (production, labour, trade, ...).

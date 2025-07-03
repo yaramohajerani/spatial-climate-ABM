@@ -13,7 +13,7 @@ straightforward.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Tuple, List, Sequence
+from typing import Dict, Tuple, List, Sequence, Iterable
 
 import numpy as np
 import pandas as pd
@@ -26,14 +26,17 @@ from scipy.sparse import csr_matrix
 Coords = Tuple[int, int]
 
 
-def hazard_from_geotiffs(rp_files: Dict[int, str], haz_type: str = "FL") -> Tuple[Hazard, Sequence[float], Sequence[float]]:
-    """Build a CLIMADA ``Hazard`` from GeoTIFF rasters keyed by return period.
+def hazard_from_geotiffs(events: Iterable[Tuple[int, int, str]], haz_type: str = "FL") -> Tuple[Hazard, Sequence[float], Sequence[float]]:
+    """Build a CLIMADA ``Hazard`` from GeoTIFF rasters.
+
+    Each *event* is a tuple ``(return_period, year, file_path)``. Providing the
+    year explicitly lets the caller mix multiple vintages of the same return
+    period.
 
     Parameters
     ----------
-    rp_files
-        Mapping *return period → path* of GeoTIFF files. All rasters must share
-        the same spatial resolution, extent, and CRS.
+    events
+        Iterable of tuples ``(return_period, year, file_path)``.
     haz_type
         CLIMADA hazard type tag (defaults to flood: ``"FL"``).
 
@@ -45,19 +48,28 @@ def hazard_from_geotiffs(rp_files: Dict[int, str], haz_type: str = "FL") -> Tupl
         Sorted unique longitude and latitude arrays. These are handy for
         translating grid indices <-> geographic coordinates in the ABM.
     """
-    # Sort return periods to have a deterministic order / event_id sequence
-    rps: List[int] = sorted(rp_files)
+    # Sort by year then RP for reproducible ordering
+    sorted_events = sorted(events, key=lambda x: (x[1], x[0]))
 
+    event_ids: List[int] = []  # we keep RP as id for simplicity
+    event_names: List[str] = []
+    event_dates: List[int] = []
     data_arrays: List[np.ndarray] = []
-    for rp in rps:
-        path = Path(rp_files[rp]).expanduser()
+
+    for rp, year, fpath in sorted_events:
+        path = Path(fpath).expanduser()
         with rasterio.open(path) as src:
             data = src.read(1).astype(float)  # depth or intensity values
             transform = src.transform if not data_arrays else transform  # noqa: PLW2901
             data_arrays.append(data)
 
+        event_ids.append(rp)
+        event_names.append(f"RP{rp}_{year}")
+        # Convert 1 Jan of year to ordinal date for Impact API
+        import datetime as _dt
+        event_dates.append(_dt.date(year, 1, 1).toordinal())
+
     # Normalise all rasters to 0–1 so they plug directly into the agent
-    # behaviour where 1.0 means "total loss".
     global_max = max(arr.max() for arr in data_arrays)
     if global_max == 0:
         raise ValueError("All rasters contain only zeros – cannot normalise.")
@@ -74,7 +86,7 @@ def hazard_from_geotiffs(rp_files: Dict[int, str], haz_type: str = "FL") -> Tupl
     intensity = csr_matrix(dense)
 
     # Frequencies = 1 / return period (events per year)
-    frequency = 1 / np.array(rps, dtype=float)
+    frequency = 1 / np.array(event_ids, dtype=float)
 
     # --- Assemble CLIMADA Hazard ------------------------------------------------------------------
     haz = Hazard()
@@ -82,9 +94,9 @@ def hazard_from_geotiffs(rp_files: Dict[int, str], haz_type: str = "FL") -> Tupl
     # expose it via `haz.tag.haz_type`. We set the direct attribute for
     # compatibility with recent releases.
     haz.haz_type = haz_type
-    haz.event_id = np.array(rps, dtype=int)
-    haz.event_name = np.array([f"RP{rp}" for rp in rps])
-    haz.date = np.arange(1, len(rps) + 1, dtype=int)  # placeholder ordinal dates
+    haz.event_id = np.array(event_ids, dtype=int)
+    haz.event_name = np.array(event_names)
+    haz.date = np.array(event_dates, dtype=int)
     haz.frequency = frequency
     haz.frequency_unit = "1/yr"
     haz.units = "m"  # Aqueduct provides inundation depth in metres
