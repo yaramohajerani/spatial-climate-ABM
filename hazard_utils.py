@@ -76,7 +76,10 @@ def hazard_from_geotiffs(rp_files: Dict[int, str], haz_type: str = "FL") -> Tupl
 
     # --- Assemble CLIMADA Hazard ------------------------------------------------------------------
     haz = Hazard()
-    haz.tag.haz_type = haz_type
+    # CLIMADA 4 uses attribute `haz_type` on the Hazard itself; older versions
+    # expose it via `haz.tag.haz_type`. We set the direct attribute for
+    # compatibility with recent releases.
+    haz.haz_type = haz_type
     haz.event_id = np.array(rps, dtype=int)
     haz.frequency = frequency
     haz.units = "m"  # Aqueduct provides inundation depth in metres

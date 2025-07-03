@@ -6,6 +6,9 @@ __pycache__/
 # C extensions
 *.so
 
+# system files
+.DS_Store
+
 # data
 *.hdf5
 *.h5
