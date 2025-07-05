@@ -32,18 +32,17 @@ The model now expects external GeoTIFF rasters instead of CLIMADA HDF5 files. Ea
 file is mapped to a *hazard event* via an explicit triple:
 
 ```
-<RETURN-PERIOD>:<YEAR>:<path/to/geotiff.tif>
+<RETURN-PERIOD>:<HAZARD_TYPE>:<path/to/geotiff.tif>
 ```
 
 You can pass any number of `--rp-file` arguments – one per event – to mix
 different return periods and years, for example:
 
 ```bash
-# Two events: 10-year RP in 2030 and 2050, plus a 100-year RP in 2050
+# Mixed hazards: a 10-year flood and a 50-year wildfire raster
 python run_simulation.py \
-    --rp-file 10:2030:data/flood_rp10_2030.tif \
-    --rp-file 10:2050:data/flood_rp10_2050.tif \
-    --rp-file 100:2050:data/flood_rp100_2050.tif
+    --rp-file 10:FL:data/flood_rp10.tif \
+    --rp-file 50:WF:data/wildfire_rp50.tif
 ```
 
 Add `--viz` to launch the interactive Solara dashboard instead of the headless
@@ -64,82 +63,9 @@ python prepare_hazard/preprocess_geotiff.py \
     --output-dir data/processed
 ```
 
-Point the `--rp-file` paths to the generated `*_processed.tif` files.
-
-The Solara dashboard and CSV output (`simulation_results.csv`) remain the same
-as before.
-
-## Next steps
-* Extend agent behaviour (production, labour, trade, ...).
-* Better climate data and addition of vulnerabilities.
-* Export regional metrics (GDP per cell, Gini index, recovery time, etc.).
-
-## Using real CLIMADA hazards
-
-1. Generate or obtain a `Hazard` object for your desired SSP/RCP scenario and year.  With CLIMADA this is typically done in a Python session:
-
-```python
-##############################################
-# 1) Quick demo hazards shipped with CLIMADA #
-##############################################
-
-# Newer versions (≥5.x) expose the demo HDF5 paths via constants
-from climada.hazard import Hazard
-from climada.util.constants import HAZ_DEMO_H5, HAZ_DEMO_FL
-
-# Load one of the built-in demo hazards and save a local copy you can tweak
-# – HAZ_DEMO_H5 is a generic historical multi-hazard sample (already plain HDF5)
-# – HAZ_DEMO_FL is a **gzipped** flood hazard (…hdf5.gz). The model will
-#   *decompress it on the fly*, but if you prefer to have the plain file you can
-#   gunzip it yourself first:
-#     gunzip "$HAZ_DEMO_FL"   # creates the .hdf5 next to it
-#   or in Python:
-#     import gzip, shutil, pathlib, os
-#     gz = pathlib.Path(HAZ_DEMO_FL)
-#     with gzip.open(gz, 'rb') as f_in, open(gz.with_suffix(''), 'wb') as f_out:
-#         shutil.copyfileobj(f_in, f_out)
-
-hax_source = HAZ_DEMO_FL  # or HAZ_DEMO_H5, HAZ_DEMO_MAT, …
-haz = Hazard.from_hdf5(hax_source if hax_source.endswith('.hdf5') else hax_source.rstrip('.gz'))
-haz.write_hdf5('demo_hist.hdf5')
-
-# Tip: to see all available demo files just list the constants:
-#   >>> import climada.util.constants as c
-#   >>> [k for k in dir(c) if k.startswith('HAZ_DEMO')]
-
-############################################################
-# 2) Download a scenario-specific set from the Data-API     #
-############################################################
-
-from climada.util.api_client import download_hazard  # requires climada>=5.0
-
-haz = download_hazard(
-    hazard_type='TC',      # tropical cyclone wind
-    scenario='ssp245',     # SSP2-RCP4.5
-    year=2050,
-    file_name='tc_ssp245_2050.hdf5'
-)
-```
-
-2. Run the ABM and point it to the file:
-
-```bash
-python run_simulation.py --hazard-file tc_ssp245_2050.hdf5 --hazard-year 2050
-```
-(Or hard-code the arguments in `run_simulation.py`.)
-
-During runtime the console will print a clear `[INFO] Loaded CLIMADA hazard from ...` message.  If anything goes wrong you'll see a `[WARNING] Falling back to synthetic hazard ...` message, so you always know which data source is active. 
-
-If you pass neither a `--hazard-file` argument nor the `hazard_file=` parameter the loader now:
-
-* automatically locates the built-in CLIMADA demo file (`HAZ_DEMO_TC` or `HAZ_DEMO_FL`).
-* if that file is shipped as a **gzipped** HDF5 (`*.hdf5.gz`), the model now *automatically
-  decompresses* it the first time you run the simulation. This fixes the
-  "Unable to synchronously open file (file signature not found)" error you might
-  have seen when CLIMADA >=5 only provided the compressed demo data.
-
-You can still point to any custom hazard with
-
-```bash
-python run_simulation.py --hazard-file "/path/to/my.hdf5" --hazard-year 2050
-``` 
+Point the `--rp-file` paths to the generated `*_processed.tif` files. The model
+will automatically select an appropriate vulnerability curve for each
+`HAZARD_TYPE` (flood = JRC depth-damage, others default to linear until you
+add custom curves). The Solara dashboard and `simulation_results.csv` remain
+unchanged. A second CSV `applied_events.csv` logs which cells flooded each
+year.

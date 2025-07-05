@@ -2,15 +2,15 @@
 
 import argparse
 from model import EconomyModel
-# Runner now expects one or more --rp-file arguments in the form "<RP>:<path>"
+# Runner now expects one or more --rp-file arguments in the form "<RP>:<TYPE>:<path>"
 
 def _parse():
     p = argparse.ArgumentParser()
     p.add_argument(
         "--rp-file",
         action="append",
-        metavar="RP:PATH",
-        help="Add a GeoTIFF file defining flood depth for the given return period. Example: --rp-file 10:rp10.tif",
+        metavar="RP:TYPE:PATH",
+        help="Add a GeoTIFF file. Format: <RP>:<HAZARD_TYPE>:<path>. Example: --rp-file 100:FL:rp100.tif",
         required=True,
     )
     p.add_argument("--viz", action="store_true", help="Launch interactive Solara dashboard instead of headless run")
@@ -31,14 +31,14 @@ def main() -> None:  # noqa: D401
         return
 
     # Parse RP files into {int: str}
-    events = []  # list of (rp, year, path)
+    events = []  # list of (rp, type, path)
     for item in args.rp_file:
         try:
-            rp_str, year_str, path_str = item.split(":", 2)
-            events.append((int(rp_str), int(year_str), path_str))
+            rp_str, type_str, path_str = item.split(":", 2)
+            events.append((int(rp_str), type_str, path_str))
         except ValueError as exc:  # noqa: BLE001
             raise SystemExit(
-                f"Invalid --rp-file format: {item}. Expected <RP>:<YEAR>:<path>."
+                f"Invalid --rp-file format: {item}. Expected <RP>:<TYPE>:<path>."
             ) from exc
 
     model = EconomyModel(

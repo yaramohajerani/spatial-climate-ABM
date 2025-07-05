@@ -12,8 +12,8 @@ from mesa.space import MultiGrid
 from agents import FirmAgent, HouseholdAgent
 from hazard_utils import hazard_from_geotiffs
 
+from climada.hazard import Hazard
 from climada.entity import Exposures, ImpactFunc, ImpactFuncSet
-from climada.engine import ImpactCalc
 
 Coords = Tuple[int, int]
 
@@ -30,8 +30,8 @@ class EconomyModel(Model):
         num_households: int = 100,
         num_firms: int = 20,
         shock_step: int = 5,
-        # Iterable of (return_period, year, path) tuples
-        hazard_events: Iterable[Tuple[int, int, str]] | None = None,
+        # Iterable of (return_period, hazard_type, path) tuples
+        hazard_events: Iterable[Tuple[int, str, str]] | None = None,
         hazard_type: str = "FL",  # CLIMADA hazard tag for flood
         seed: int | None = None,
     ) -> None:  # noqa: D401
@@ -41,11 +41,24 @@ class EconomyModel(Model):
         if hazard_events is None:
             raise ValueError("hazard_events must be provided.")
 
-        # Load the GeoTIFF rasters and build a CLIMADA Hazard
-        self.hazard, self.lon_vals, self.lat_vals = hazard_from_geotiffs(
-            hazard_events,
-            haz_type=hazard_type,
-        )
+        from collections import defaultdict
+        grouped: dict[str, list[Tuple[int, str]]] = defaultdict(list)
+        for rp, htype, path in hazard_events:
+            grouped[htype].append((rp, path))
+
+        self.hazards: dict[str, Tuple[Hazard, ImpactFuncSet]] = {}
+
+        first_lon, first_lat = None, None
+        for htype, grp in grouped.items():
+            haz, lon_vals, lat_vals = hazard_from_geotiffs(grp, haz_type=htype)
+            vul = self._build_vulnerability(htype)
+            self.hazards[htype] = (haz, vul)
+
+            if first_lon is None:
+                first_lon, first_lat = lon_vals, lat_vals
+
+        self.lon_vals = first_lon  # type: ignore[assignment]
+        self.lat_vals = first_lat
 
         # Derive grid dimensions from the raster unless explicitly overridden
         if width is None:
@@ -83,9 +96,10 @@ class EconomyModel(Model):
         # --- Create agents --- #
         self._init_agents(num_households, num_firms)
 
-        # Pre-compute exposures & vulnerability for impact calculation
+        # Build exposures and assign centroids for each hazard
         self._exposures = self._build_exposures()
-        self._vuln_funcs = self._build_linear_vulnerability()
+        for haz, _ in self.hazards.values():
+            self._exposures.assign_centroids(haz)
 
         # --- Step counter --- #
         self.current_step: int = 0
@@ -153,22 +167,31 @@ class EconomyModel(Model):
         if not hasattr(exp, "geometry") or exp.geometry.is_empty.any():  # pragma: no cover
             exp.set_lat_lon()
 
-        # Map exposures to hazard centroids (required before impact calc)
-        exp.assign_centroids(self.hazard)
         return exp
 
     @staticmethod
-    def _build_linear_vulnerability() -> ImpactFuncSet:
-        """Create a very simple linear vulnerability (0→0, 1→100% damage)."""
-        impf = ImpactFunc()
-        impf.id = 1
-        impf.haz_type = "FL"
-        impf.name = "Linear"
-        impf.intensity = np.array([0.0, 1.0])
-        impf.mdd = np.array([0.0, 1.0])  # mean damage fraction linear
-        impf.paa = np.array([1.0, 1.0])  # fully applicable
-        impf.unit = "m"
+    def _build_vulnerability(haz_type: str = "FL") -> ImpactFuncSet:
+        """Return an ImpactFuncSet appropriate for the hazard type.
 
+        Currently supports:
+        • FL (flood): JRC global depth–damage curve via climada_petals.
+        Fallback: linear 0-1 curve.
+        """
+        try:
+            if haz_type == "FL":
+                from climada_petals.entity.impact_funcs.river_flood import ImpfRiverFlood  # type: ignore
+
+                impf = ImpfRiverFlood.from_jrc_region_sector("Global", "residential")
+                impf.id = 1
+                return ImpactFuncSet([impf])
+        except Exception:  # noqa: BLE001
+            pass  # fall back to linear
+
+        impf = ImpactFunc(haz_type=haz_type, id=1, name="Linear")
+        impf.intensity = np.array([0.0, 1.0])
+        impf.mdd = np.array([0.0, 1.0])
+        impf.paa = np.array([1.0, 1.0])
+        impf.unit = "m"
         return ImpactFuncSet([impf])
 
     # --------------------------------------------------------------------- #
@@ -226,48 +249,48 @@ class EconomyModel(Model):
         same cell in the same year we keep the maximum depth.
         """
         n_cells = len(self.valid_coordinates)
-        annual_intensity = np.zeros(n_cells, dtype=float)
+        max_depth = np.zeros(n_cells, dtype=float)
+        combined_loss = np.zeros(n_cells, dtype=float)  # 0=no loss
 
-        # Iterate over each RP raster (event row)
-        for i, rp in enumerate(self.hazard.event_name):
-            p_hit = self.hazard.frequency[i]  # = 1 / RP
-            if p_hit <= 0:
-                continue
+        for htype, (haz, vul_set) in self.hazards.items():
+            # Build per-hazard intensity map this year
+            intens = np.zeros(n_cells, dtype=float)
+            for i in range(haz.intensity.shape[0]):
+                p_hit = haz.frequency[i]
+                if p_hit <= 0:
+                    continue
+                hit_mask = np.random.random(n_cells) < p_hit
+                if not hit_mask.any():
+                    continue
+                row = haz.intensity[i]
+                depths = row.toarray().ravel() if hasattr(row, "toarray") else np.asarray(row).ravel()
+                intens[hit_mask] = np.maximum(intens[hit_mask], depths[hit_mask])
 
-            # Bernoulli draw per cell – using numpy for speed
-            hit_mask = self.random.random(n_cells) < p_hit
-            if not hit_mask.any():
-                continue
+            # Update global max depth for viz
+            max_depth = np.maximum(max_depth, intens)
 
-            row = self.hazard.intensity[i]
-            if hasattr(row, "toarray"):
-                depths = row.toarray().ravel()
-            else:
-                depths = np.asarray(row).ravel()
+            # Compute loss fraction via vulnerability curve
+            impf = vul_set[0]
+            mdr = np.clip(impf.calc_mdr(intens), 0.0, 1.0)
 
-            # Update with maximum depth if multiple triggers
-            annual_intensity[hit_mask] = np.maximum(
-                annual_intensity[hit_mask], depths[hit_mask]
-            )
+            # Combine multiplicatively: 1 - prod(1 - loss)
+            combined_loss = 1 - (1 - combined_loss) * (1 - mdr)
 
-        # Convert intensity→damage fraction via CLIMADA impact function
-        impf = self._vuln_funcs.get_func(1) if hasattr(self._vuln_funcs, "get_func") else self._vuln_funcs[0]
-        mdr = impf.calc_mdr(annual_intensity)  # array same length as n_cells
-
-        # Update hazard_map dictionary (for visualization) and apply damages
+        # Write hazard_map for visualisation (max depth across hazards)
         for idx, coord in enumerate(self.valid_coordinates):
-            self.hazard_map[coord] = float(annual_intensity[idx])
+            self.hazard_map[coord] = float(max_depth[idx])
 
+        # Apply combined loss to agents
         for ag in self.agents:
             x, y = ag.pos
-            idx = y * len(self.lon_vals) + x  # row-major index
-            loss_frac = np.clip(mdr[idx], 0.0, 1.0)
-            if loss_frac == 0.0:
+            idx = y * len(self.lon_vals) + x
+            loss_frac = combined_loss[idx]
+            if loss_frac == 0:
                 continue
             if isinstance(ag, FirmAgent):
                 ag.capital_stock *= 1 - loss_frac
             else:
                 ag.capital *= 1 - loss_frac
 
-        flooded_cells = (annual_intensity > 0).sum()
+        flooded_cells = (max_depth > 0).sum()
         print(f"[INFO] Year {self.current_step}: flooded cells = {flooded_cells}/{n_cells}") 
