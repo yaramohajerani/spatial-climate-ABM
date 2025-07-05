@@ -112,56 +112,12 @@ _BASE_PARAMS: Dict[str, Any] = {
     },
 }
 
-# ---------------------- Agent map component ----------------------------- #
+# ----------------- Combined hazard + agents map component ---------------- #
 
 
 @solara.component
-def AgentsMap(model):  # noqa: ANN001
-    """Scatter plot of agents overlaid on country borders (lon/lat axes)."""
-
-    update_counter.get()
-
-    fig = Figure(figsize=(4, 4))
-    ax = fig.subplots()
-
-    # Country boundaries
-    if _WORLD is not None:
-        _WORLD.boundary.plot(ax=ax, linewidth=0.5, color="black")
-
-    # Gather agent coordinates
-    hhs_lon, hhs_lat = [], []
-    firms_lon, firms_lat = [], []
-    for ag in model.agents:
-        x, y = ag.pos
-        lon = float(model.lon_vals[x])
-        lat = float(model.lat_vals[y])
-        if isinstance(ag, HouseholdAgent):
-            hhs_lon.append(lon)
-            hhs_lat.append(lat)
-        elif isinstance(ag, FirmAgent):
-            firms_lon.append(lon)
-            firms_lat.append(lat)
-
-    # Plot agents
-    if hhs_lon:
-        ax.scatter(hhs_lon, hhs_lat, s=10, c="tab:blue", label="Households", alpha=0.7)
-    if firms_lon:
-        ax.scatter(firms_lon, firms_lat, s=20, c="tab:red", marker="s", label="Firms", alpha=0.8)
-
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
-    ax.set_title("Agent locations")
-    ax.legend(loc="upper right", markerscale=1.2, frameon=False)
-
-    solara.FigureMatplotlib(fig)
-
-
-# ---------------------- Hazard map component ----------------------------- #
-
-
-@solara.component
-def HazardMap(model):  # noqa: ANN001
-    """Matplotlib heat-map of per-cell hazard depth with country borders."""
+def MapView(model):  # noqa: ANN001
+    """Blended view: hazard field (background) + agents (foreground)."""
 
     # Trigger re-render on each model step
     update_counter.get()
@@ -177,49 +133,67 @@ def HazardMap(model):  # noqa: ANN001
     lon_min, lon_max = float(model.lon_vals[0]), float(model.lon_vals[-1])
     lat_min, lat_max = float(model.lat_vals[0]), float(model.lat_vals[-1])
 
-    fig = Figure(figsize=(4, 4))
+    fig = Figure(figsize=(8, 5))
     ax = fig.subplots()
 
-    # Render background intensity (use nearest to avoid blurring tiny cells)
+    # ---------------- Hazard raster (imshow with dilation) ------------------ #
+
+    # Dilate hazard cells to their neighbourhoods for clearer visibility
+    dilated = grid.copy()
+    hazard_idx = np.argwhere(grid > 0)
+    for y_idx, x_idx in hazard_idx:
+        for dy in range(-4, 5):
+            for dx in range(-4, 5):
+                ny, nx = y_idx + dy, x_idx + dx
+                if 0 <= ny < height and 0 <= nx < width:
+                    dilated[ny, nx] = max(dilated[ny, nx], grid[y_idx, x_idx])
+
     im = ax.imshow(
-        grid,
-        origin="lower",  # row 0 now southernmost after flip
+        dilated,
+        origin="lower",
         extent=[lon_min, lon_max, lat_min, lat_max],
         cmap="Blues",
         interpolation="nearest",
         vmin=0,
-        vmax=0.5,  # fixed scale across timesteps (rasters are normalised 0–1)
+        vmax=0.1,
     )
+
     fig.colorbar(im, ax=ax, label="Hazard intensity (normalised)")
 
-    # Overlay flooded cells explicitly for visibility
-    flooded_mask = grid > 0
-    if flooded_mask.any():
-        ys, xs = np.where(flooded_mask)
-        lon_pts = [float(model.lon_vals[x]) for x in xs]
-        lat_pts = [float(model.lat_vals[ys_idx]) for ys_idx in ys]
-        depths = grid[ys, xs]
-        ax.scatter(
-            lon_pts,
-            lat_pts,
-            s=1,
-            c=depths,
-            cmap="Blues",
-            vmin=0,
-            vmax=0.5,
-            marker="s",
-            alpha=0.8,
-        )
+    # ---------------- Overlay agent positions ------------------- #
+
+    hhs_lon, hhs_lat = [], []
+    firms_lon, firms_lat = [], []
+    for ag in model.agents:
+        x, y = ag.pos
+        lon = float(model.lon_vals[x])
+        lat = float(model.lat_vals[y])
+        if isinstance(ag, HouseholdAgent):
+            hhs_lon.append(lon)
+            hhs_lat.append(lat)
+        elif isinstance(ag, FirmAgent):
+            firms_lon.append(lon)
+            firms_lat.append(lat)
+
+    if hhs_lon:
+        ax.scatter(hhs_lon, hhs_lat, s=5, c="tab:green", label="Households", alpha=0.7, zorder=3)
+    if firms_lon:
+        ax.scatter(firms_lon, firms_lat, s=5, c="tab:red", marker="s", label="Firms", alpha=0.7, zorder=3)
 
     # Country boundaries
     if _WORLD is not None:
         _WORLD.boundary.plot(ax=ax, linewidth=0.5, color="black")
 
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
-    ax.set_title("Current hazard map (max depth)")
-    if flooded_mask.any():
-        ax.legend(loc="upper right", frameon=False)
+    ax.set_title("Hazard & agents")
+
+    # Legend outside plot area to avoid overlap, with items in a row
+    ax.legend(
+        loc="lower center",
+        bbox_to_anchor=(0.5, -0.2),
+        borderaxespad=0.0,
+        frameon=False,
+        ncol=2,  # Show legend items in a row
+    )
 
     solara.FigureMatplotlib(fig)
 
@@ -252,9 +226,26 @@ def make_page() -> Any:  # noqa: D401, ANN401
     # ``components`` expects Solara Component objects; we silence type checker here
     return SolaraViz(
         model,
-        components=[AgentsMap, HazardMap, PLOT_GDP, PLOT_MIG],
+        components=[DashboardRow],
         model_params=model_params,
     )  # type: ignore
+
+
+# -------------------------- Combined dashboard --------------------------- #
+
+
+@solara.component
+def DashboardRow(model):  # noqa: ANN001
+    """Top-row MapView (flex 2) alongside GDP & Migrants charts (flex 1)."""
+
+    update_counter.get()
+
+    with solara.Row():
+        with solara.Column(style={"flex": "2", "minWidth": "800px"}):
+            MapView(model)
+        with solara.Column(style={"flex": "1", "minWidth": "300px"}):
+            PLOT_GDP(model)
+            PLOT_MIG(model)
 
 
 # The Solara entry point. The variable name must be `page`.
