@@ -5,6 +5,9 @@ from typing import Dict, List, Tuple, Iterable
 
 import numpy as np
 import pandas as pd
+import geopandas as gpd
+from shapely.geometry import Point
+
 from mesa import Model
 from mesa.datacollection import DataCollector
 from mesa.space import MultiGrid
@@ -98,6 +101,13 @@ class EconomyModel(Model):
             }
         )
 
+        # ---------------- Land mask to avoid placing agents in the ocean ---------------- #
+        self.land_coordinates: List[Coords] = self._compute_land_coordinates()
+        if not self.land_coordinates:
+            raise ValueError(
+                "No land cells found within the hazard raster extent – cannot initialise agents."
+            )
+
         # --- Create agents --- #
         self._init_agents(num_households, num_firms)
 
@@ -115,25 +125,56 @@ class EconomyModel(Model):
     # --------------------------------------------------------------------- #
     #                             INITIALISERS                               #
     # --------------------------------------------------------------------- #
+    def _compute_land_coordinates(self) -> List[Coords]:
+        """Return list of grid coordinates whose lon/lat fall within any country polygon.
+
+        We use Natural Earth low-resolution country boundaries available via
+        ``geopandas``. The geometry union is evaluated once at model
+        initialisation; the resulting list is reused whenever we need to
+        randomly sample land cells (e.g. for placing agents).
+        """
+
+        try:
+            world = gpd.read_file(gpd.datasets.get_path("naturalearth_lowres"))
+            # Exclude Antarctica so agents are not spawned on that continent
+            if "name" in world.columns:
+                world = world[world["name"] != "Antarctica"]
+            elif "continent" in world.columns:
+                world = world[world["continent"] != "Antarctica"]
+        except Exception:  # pragma: no cover – dataset missing / offline env
+            # If the Natural Earth dataset is unavailable fall back to using all
+            # cells to avoid crashing, but log a warning so the user is aware.
+            import warnings
+
+            warnings.warn(
+                "Natural Earth dataset could not be loaded – agents may be placed over water.",
+                RuntimeWarning,
+            )
+            return self.valid_coordinates.copy()
+
+        land_geom = world.geometry.unary_union  # shapely (multi-)polygon
+
+        land_coords: List[Coords] = []
+        for x, y in self.valid_coordinates:
+            lon = float(self.lon_vals[x])
+            lat = float(self.lat_vals[y])
+            if land_geom.contains(Point(lon, lat)):
+                land_coords.append((x, y))
+
+        return land_coords
+
     def _init_agents(self, num_households: int, num_firms: int) -> None:
         """Place households and firms randomly on grid."""
-        # Place households
+        # Place households only on land cells
         for _ in range(num_households):
-            pos = self.random.choice(self.valid_coordinates)
-            agent = HouseholdAgent(
-                model=self,
-                pos=pos,
-            )
+            pos = self.random.choice(self.land_coordinates)
+            agent = HouseholdAgent(model=self, pos=pos)
             self.grid.place_agent(agent, pos)
 
-        # Place firms
+        # Place firms only on land cells (could use different logic if needed)
         for _ in range(num_firms):
-            pos = self.random.choice(self.valid_coordinates)
-            agent = FirmAgent(
-                model=self,
-                pos=pos,
-                sector="manufacturing",
-            )
+            pos = self.random.choice(self.land_coordinates)
+            agent = FirmAgent(model=self, pos=pos, sector="manufacturing")
             self.grid.place_agent(agent, pos)
 
     # --------------------------------------------------------------------- #
