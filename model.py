@@ -85,18 +85,27 @@ class EconomyModel(Model):
         self.shock_step = shock_step  # timestep to introduce hazard
         self.hazard_type = hazard_type
 
-        # Migration threshold represents maximum risk tolerated by households
-        self.migration_threshold = 0.5
+        # Base wage used by firms when hiring labour
         self.base_wage = 1.0
 
-        # Statistics containers
-        self.total_gdp_this_step: float = 0.0
+        # Compatibility stub – we no longer model migration but keep the attribute
         self.migrants_this_step: int = 0
 
+        # DataCollector – track aggregate production each step for inspection
         self.datacollector = DataCollector(
             model_reporters={
-                "GDP": lambda m: m.total_gdp_this_step,
-                "Migrants": lambda m: m.migrants_this_step,
+                "Total_Production": lambda m: sum(
+                    ag.production for ag in m.agents if isinstance(ag, FirmAgent)
+                ),  # Deprecated alias, remove if not needed
+                "Firm_Production": lambda m: sum(
+                    ag.production for ag in m.agents if isinstance(ag, FirmAgent)
+                ),
+                "Firm_Consumption": lambda m: sum(
+                    ag.consumption for ag in m.agents if isinstance(ag, FirmAgent)
+                ),
+                "Firm_Wealth": lambda m: sum(
+                    ag.money for ag in m.agents if isinstance(ag, FirmAgent)
+                ),
                 "Average_Risk": lambda m: np.mean(list(m.hazard_map.values())),
             }
         )
@@ -108,8 +117,9 @@ class EconomyModel(Model):
                 "No land cells found within the hazard raster extent – cannot initialise agents."
             )
 
-        # --- Create agents --- #
+        # --- Create agents & build trade network --- #
         self._init_agents(num_households, num_firms)
+        self._build_trade_network()
 
         # Build exposures and assign centroids for each hazard
         self._exposures = self._build_exposures()
@@ -255,8 +265,7 @@ class EconomyModel(Model):
         # Each year: sample hazard independently for every cell based on RP
         self._sample_pixelwise_hazard()
 
-        # Reset per-timestep aggregates
-        self.total_gdp_this_step = 0.0
+        # Reset placeholder counters
         self.migrants_this_step = 0
 
         # Agent actions – shuffle agents and call their step method
@@ -343,4 +352,44 @@ class EconomyModel(Model):
                 ag.capital *= 1 - loss_frac
 
         flooded_cells = (max_depth > 0).sum()
-        print(f"[INFO] Year {self.current_step}: flooded cells = {flooded_cells}/{n_cells}") 
+        print(f"[INFO] Year {self.current_step}: flooded cells = {flooded_cells}/{n_cells}")
+
+    # ------------------------------------------------------------------ #
+    #                        TRADE NETWORK BUILDER                       #
+    # ------------------------------------------------------------------ #
+    def _build_trade_network(self) -> None:
+        """Randomly connect firms <-> firms and households <-> firms based on distance."""
+
+        # Separate lists for convenience
+        firm_agents = [ag for ag in self.agents if isinstance(ag, FirmAgent)]
+        household_agents = [ag for ag in self.agents if isinstance(ag, HouseholdAgent)]
+
+        # 1. Firm – firm trade network (directed edges)
+        dist_scale = 5.0  # characteristic decay distance
+        for f1 in firm_agents:
+            for f2 in firm_agents:
+                if f1 is f2:
+                    continue
+                dx = f1.pos[0] - f2.pos[0]
+                dy = f1.pos[1] - f2.pos[1]
+                dist = (dx * dx + dy * dy) ** 0.5
+                prob = np.exp(-dist / dist_scale)
+                if self.random.random() < prob:
+                    f1.connected_firms.append(f2)
+
+        # 2. Household – firm employment/consumption links (within radius)
+        work_radius = 3
+        for hh in household_agents:
+            for firm in firm_agents:
+                dx = abs(hh.pos[0] - firm.pos[0])
+                dy = abs(hh.pos[1] - firm.pos[1])
+                if dx + dy <= work_radius:
+                    hh.nearby_firms.append(firm)
+
+            # Guarantee at least one connection (pick nearest firm) ---------
+            if not hh.nearby_firms:
+                nearest = min(
+                    firm_agents,
+                    key=lambda f: (f.pos[0] - hh.pos[0]) ** 2 + (f.pos[1] - hh.pos[1]) ** 2,
+                )
+                hh.nearby_firms.append(nearest) 

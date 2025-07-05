@@ -4,8 +4,9 @@ Run the dashboard with:
 
     solara run visualization.py
 
-This launches a local Solara web-app where you can watch the grid, GDP and
-migrant count evolve step-by-step, and tweak model parameters live.
+This launches a local Solara web-app where you can watch the hazard map,
+agent distribution, and key economic indicators – firm wealth, production
+and consumption – evolve step-by-step. Parameters can be tweaked live.
 """
 from __future__ import annotations
 
@@ -17,14 +18,14 @@ import solara
 from matplotlib.figure import Figure
 from mesa.visualization.utils import update_counter
 
-from mesa.visualization import SolaraViz, make_space_component, make_plot_component
+from mesa.visualization import SolaraViz, make_plot_component
 
 from agents import FirmAgent, HouseholdAgent
 from model import EconomyModel
 
 
 # ------------------------------------------------------------------ #
-# Helper to parse the hazard event list passed via environment        #
+# Helper to parse the hazard event list passed via environment       #
 # ------------------------------------------------------------------ #
 
 
@@ -64,8 +65,9 @@ except Exception:  # pragma: no cover – dataset missing / offline env
 # Mesa 3.x Solara visualization API
 # ------------------------ Solara components ----------------------------- #
 
-PLOT_GDP = make_plot_component("GDP")
-PLOT_MIG = make_plot_component("Migrants")
+PLOT_WEALTH = make_plot_component("Firm_Wealth")
+PLOT_PROD = make_plot_component("Firm_Production")
+PLOT_CONS = make_plot_component("Firm_Consumption")
 
 # ----------------------------- Parameters ------------------------------- #
 
@@ -222,7 +224,7 @@ def make_page() -> Any:  # noqa: D401, ANN401
 
 @solara.component
 def DashboardRow(model):  # noqa: ANN001
-    """Top-row MapView (flex 2) alongside GDP & Migrants charts (flex 1)."""
+    """Top-row MapView (flex 2) alongside firm metrics charts (flex 1)."""
 
     update_counter.get()
 
@@ -230,8 +232,9 @@ def DashboardRow(model):  # noqa: ANN001
         with solara.Column(style={"flex": "2", "minWidth": "800px"}):
             MapView(model)
         with solara.Column(style={"flex": "1", "minWidth": "300px"}):
-            PLOT_GDP(model)
-            PLOT_MIG(model)
+            PLOT_WEALTH(model)
+            PLOT_PROD(model)
+            PLOT_CONS(model)
 
 
 # The Solara entry point. The variable name must be `page`.
