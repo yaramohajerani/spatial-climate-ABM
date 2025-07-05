@@ -51,7 +51,7 @@ def hazard_from_geotiffs(events: Iterable[Tuple[int, int, str]], haz_type: str =
     # Sort by year then RP for reproducible ordering
     sorted_events = sorted(events, key=lambda x: (x[1], x[0]))
 
-    event_ids: List[int] = []  # we keep RP as id for simplicity
+    event_ids: List[int] = []  # unique incremental ids
     event_names: List[str] = []
     event_dates: List[int] = []
     data_arrays: List[np.ndarray] = []
@@ -63,7 +63,7 @@ def hazard_from_geotiffs(events: Iterable[Tuple[int, int, str]], haz_type: str =
             transform = src.transform if not data_arrays else transform  # noqa: PLW2901
             data_arrays.append(data)
 
-        event_ids.append(rp)
+        event_ids.append(len(event_ids) + 1)  # unique id independent of RP
         event_names.append(f"RP{rp}_{year}")
         # Convert 1 Jan of year to ordinal date for Impact API
         import datetime as _dt
@@ -86,7 +86,7 @@ def hazard_from_geotiffs(events: Iterable[Tuple[int, int, str]], haz_type: str =
     intensity = csr_matrix(dense)
 
     # Frequencies = 1 / return period (events per year)
-    frequency = 1 / np.array(event_ids, dtype=float)
+    frequency = 1 / np.array([ev[0] for ev in sorted_events], dtype=float)
 
     # --- Assemble CLIMADA Hazard ------------------------------------------------------------------
     haz = Hazard()

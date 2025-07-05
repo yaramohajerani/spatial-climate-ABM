@@ -90,6 +90,9 @@ class EconomyModel(Model):
         # --- Step counter --- #
         self.current_step: int = 0
 
+        # Log of applied events (step, event_name, event_id)
+        self.applied_events: List[Tuple[int, str, int]] = []
+
     # --------------------------------------------------------------------- #
     #                             INITIALISERS                               #
     # --------------------------------------------------------------------- #
@@ -175,12 +178,8 @@ class EconomyModel(Model):
         """Advance model by one timestep (representing one year)."""
         self.current_step += 1
 
-        # Trigger hazard once at the specified step; afterwards cells reset to 0 risk
-        if self.current_step == self.shock_step:
-            self._apply_hazard_event()
-        else:
-            # Pre- or post-shock: zero risk
-            self.hazard_map = {c: 0.0 for c in self.valid_coordinates}
+        # Each year: sample hazard independently for every cell based on RP
+        self._sample_pixelwise_hazard()
 
         # Reset per-timestep aggregates
         self.total_gdp_this_step = 0.0
@@ -206,45 +205,69 @@ class EconomyModel(Model):
         df = self.results_to_dataframe()
         Path(out_path).with_suffix(".csv").write_text(df.to_csv(index=False))
 
+        # also save event log
+        if self.applied_events:
+            import csv
+            ev_path = Path(out_path).with_name("applied_events.csv")
+            with ev_path.open("w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Step", "Event_Name", "Event_ID"])
+                writer.writerows(self.applied_events)
+
     # ------------------------------------------------------------------ #
     #                       EVENT APPLICATION LOGIC                      #
     # ------------------------------------------------------------------ #
 
-    def _apply_hazard_event(self) -> None:
-        """Randomly sample an event from the hazard set and apply its damages."""
-        # Choose event index proportional to frequency (higher probability for low RP)
-        probs = self.hazard.frequency / self.hazard.frequency.sum()
-        event_idx = int(self.random.choices(range(len(probs)), weights=probs)[0])
+    def _sample_pixelwise_hazard(self) -> None:
+        """For each cell, draw independent floods for each return-period raster.
 
-        # Retrieve event intensity as dense 1-D array regardless of sparse/dense backend
-        row = self.hazard.intensity[event_idx]
-        if hasattr(row, "toarray"):
-            event_intensity = row.toarray().ravel()
-        else:
-            event_intensity = np.asarray(row).ravel()
+        Probability cell flooded with intensity from raster *i* is 1/RP_i each
+        year, independent across cells and RPs. If multiple RPs trigger on the
+        same cell in the same year we keep the maximum depth.
+        """
+        n_cells = len(self.valid_coordinates)
+        annual_intensity = np.zeros(n_cells, dtype=float)
 
-        for idx, coord in enumerate(self.valid_coordinates):
-            self.hazard_map[coord] = float(event_intensity[idx])
+        # Iterate over each RP raster (event row)
+        for i, rp in enumerate(self.hazard.event_name):
+            p_hit = self.hazard.frequency[i]  # = 1 / RP
+            if p_hit <= 0:
+                continue
 
-        # --- Compute impacts using CLIMADA (current API via ImpactCalc) ----------
-        self._exposures.impact_funcs = self._vuln_funcs  # link vulnerability
-        impact = ImpactCalc(self._exposures, self._vuln_funcs, self.hazard).impact(save_mat=True)
+            # Bernoulli draw per cell – using numpy for speed
+            hit_mask = self.random.random(n_cells) < p_hit
+            if not hit_mask.any():
+                continue
 
-        # Retrieve per-exposure damages for the selected event (sparse row)
-        if hasattr(impact, "imp_mat"):
-            damages = impact.imp_mat[event_idx].toarray().ravel()
-        elif hasattr(impact, "impt_mat"):
-            damages = impact.impt_mat[event_idx].toarray().ravel()
-        else:
-            raise AttributeError("Impact matrix attribute not found in Impact object (imp_mat/impt_mat)")
-
-        # Apply damages to agents
-        for ag, dmg in zip(self.agents, damages):
-            loss_frac = dmg / max(ag.capital_stock if isinstance(ag, FirmAgent) else ag.capital, 1e-9)
-            loss_frac = max(0.0, min(1.0, loss_frac))
-            if isinstance(ag, FirmAgent):
-                ag.capital_stock *= (1 - loss_frac)
+            row = self.hazard.intensity[i]
+            if hasattr(row, "toarray"):
+                depths = row.toarray().ravel()
             else:
-                ag.capital *= (1 - loss_frac)
+                depths = np.asarray(row).ravel()
 
-        print(f"[INFO] Applied hazard event {self.hazard.event_id[event_idx]} (frequency={self.hazard.frequency[event_idx]:.3f}/yr)") 
+            # Update with maximum depth if multiple triggers
+            annual_intensity[hit_mask] = np.maximum(
+                annual_intensity[hit_mask], depths[hit_mask]
+            )
+
+        # Convert intensity→damage fraction via CLIMADA impact function
+        impf = self._vuln_funcs.get_func(1) if hasattr(self._vuln_funcs, "get_func") else self._vuln_funcs[0]
+        mdr = impf.calc_mdr(annual_intensity)  # array same length as n_cells
+
+        # Update hazard_map dictionary (for visualization) and apply damages
+        for idx, coord in enumerate(self.valid_coordinates):
+            self.hazard_map[coord] = float(annual_intensity[idx])
+
+        for ag in self.agents:
+            x, y = ag.pos
+            idx = y * len(self.lon_vals) + x  # row-major index
+            loss_frac = np.clip(mdr[idx], 0.0, 1.0)
+            if loss_frac == 0.0:
+                continue
+            if isinstance(ag, FirmAgent):
+                ag.capital_stock *= 1 - loss_frac
+            else:
+                ag.capital *= 1 - loss_frac
+
+        flooded_cells = (annual_intensity > 0).sum()
+        print(f"[INFO] Year {self.current_step}: flooded cells = {flooded_cells}/{n_cells}") 
