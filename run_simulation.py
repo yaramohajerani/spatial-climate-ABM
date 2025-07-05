@@ -19,28 +19,32 @@ def _parse():
 def main() -> None:  # noqa: D401
     args = _parse()
 
+    # First, parse the RP files into a list irrespective of --viz so we can
+    # pass them on to a potential Solara dashboard.
+    events: list[tuple[int, str, str]] = []
+    if args.rp_file:
+        for item in args.rp_file:
+            try:
+                rp_str, type_str, path_str = item.split(":", 2)
+                events.append((int(rp_str), type_str, path_str))
+            except ValueError as exc:  # noqa: BLE001
+                raise SystemExit(
+                    f"Invalid --rp-file format: {item}. Expected <RP>:<TYPE>:<path>."
+                ) from exc
+
     # If visualization requested, delegate to Solara which hosts the dashboard
     if args.viz:
         import subprocess, sys, os
 
         env = os.environ.copy()
-        # No need to set hazard-related environment variables as they are handled by the model
+        # Pass hazard events to the dashboard so it can build the same model
+        env["ABM_HAZARD_EVENTS"] = ";".join(f"{rp}:{t}:{p}" for rp, t, p in events)
 
         cmd = [sys.executable, "-m", "solara", "run", "visualization.py"]
         subprocess.run(cmd, env=env, check=False)
         return
 
-    # Parse RP files into {int: str}
-    events = []  # list of (rp, type, path)
-    for item in args.rp_file:
-        try:
-            rp_str, type_str, path_str = item.split(":", 2)
-            events.append((int(rp_str), type_str, path_str))
-        except ValueError as exc:  # noqa: BLE001
-            raise SystemExit(
-                f"Invalid --rp-file format: {item}. Expected <RP>:<TYPE>:<path>."
-            ) from exc
-
+    # Headless mode: run the simulation directly
     model = EconomyModel(
         num_households=100,
         num_firms=20,
