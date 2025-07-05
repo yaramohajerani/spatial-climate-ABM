@@ -138,7 +138,10 @@ def _process_one(path: Path, out_dir: Path, crop_bounds: BBox | None, scale_fact
         })
 
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"{path.stem}_processed.tif"
+        if crop_bounds is not None:
+            out_path = out_dir / f"{path.stem}_scaled-{scale_factor}_cropped-{crop_bounds}.tif"
+        else:
+            out_path = out_dir / f"{path.stem}_scaled-{scale_factor}.tif"
         with rasterio.open(out_path, "w", **profile) as dst:
             dst.write(data, 1)
         print(f"[OK] Wrote {out_path}")
