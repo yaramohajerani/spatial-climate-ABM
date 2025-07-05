@@ -51,19 +51,6 @@ def _parse_hazard_events() -> List[Tuple[int, str, str]]:
             continue
     return events
 
-
-def agent_portrayal(agent: Any) -> Dict[str, Any]:  # noqa: ANN401
-    """Return a simple dict understood by ``make_space_component``.
-
-    Valid keys: ``color``, ``size``, ``marker`` (matplotlib style).
-    """
-    if isinstance(agent, HouseholdAgent):
-        return {"color": "tab:blue", "size": 25}
-    if isinstance(agent, FirmAgent):
-        return {"color": "tab:red", "size": 35, "marker": "s"}
-    return {"color": "grey", "size": 20}
-
-
 # ------------------------------------------------------------------ #
 # Load country boundaries once to avoid repeated I/O & warnings        #
 # ------------------------------------------------------------------ #
@@ -77,7 +64,6 @@ except Exception:  # pragma: no cover – dataset missing / offline env
 # Mesa 3.x Solara visualization API
 # ------------------------ Solara components ----------------------------- #
 
-SPACE = make_space_component(agent_portrayal)
 PLOT_GDP = make_plot_component("GDP")
 PLOT_MIG = make_plot_component("Migrants")
 
