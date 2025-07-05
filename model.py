@@ -46,7 +46,7 @@ class EconomyModel(Model):
         for rp, htype, path in hazard_events:
             grouped[htype].append((rp, path))
 
-        self.hazards: dict[str, Tuple[Hazard, ImpactFuncSet]] = {}
+        self.hazards: dict[str, Tuple[Hazard, ImpactFunc]] = {}
 
         first_lon, first_lat = None, None
         for htype, grp in grouped.items():
@@ -72,6 +72,11 @@ class EconomyModel(Model):
         self.valid_coordinates: List[Coords] = [
             (x, y) for y in range(height) for x in range(width)
         ]
+
+        # Initialize per-cell hazard depth map with zero intensity values
+        self.hazard_map: Dict[Coords, float] = {
+            coord: 0.0 for coord in self.valid_coordinates
+        }
 
         # --- Hazard configuration --- #
         self.shock_step = shock_step  # timestep to introduce hazard
@@ -170,12 +175,17 @@ class EconomyModel(Model):
         return exp
 
     @staticmethod
-    def _build_vulnerability(haz_type: str = "FL") -> ImpactFuncSet:
-        """Return an ImpactFuncSet appropriate for the hazard type.
+    def _build_vulnerability(haz_type: str = "FL") -> ImpactFunc:
+        """Return a single ImpactFunc appropriate for the hazard type.
 
-        Currently supports:
-        • FL (flood): JRC global depth–damage curve via climada_petals.
-        Fallback: linear 0-1 curve.
+        The caller can still wrap the result in an ``ImpactFuncSet`` if they
+        need CLIMADA's higher-level interfaces, but for the pixel-wise damage
+        calculation performed inside this model we only ever use one curve.
+
+        Supported hazard types:
+        • ``FL`` (flood): JRC global depth–damage curve via ``climada_petals``.
+          If the Petals dependency is unavailable we fall back to a simple
+          linear 0-1 relationship between intensity and mean damage ratio.
         """
         try:
             if haz_type == "FL":
@@ -183,7 +193,7 @@ class EconomyModel(Model):
 
                 impf = ImpfRiverFlood.from_jrc_region_sector("Global", "residential")
                 impf.id = 1
-                return ImpactFuncSet([impf])
+                return impf
         except Exception:  # noqa: BLE001
             pass  # fall back to linear
 
@@ -192,7 +202,7 @@ class EconomyModel(Model):
         impf.mdd = np.array([0.0, 1.0])
         impf.paa = np.array([1.0, 1.0])
         impf.unit = "m"
-        return ImpactFuncSet([impf])
+        return impf
 
     # --------------------------------------------------------------------- #
     #                               MESA STEP                               #
@@ -252,7 +262,7 @@ class EconomyModel(Model):
         max_depth = np.zeros(n_cells, dtype=float)
         combined_loss = np.zeros(n_cells, dtype=float)  # 0=no loss
 
-        for htype, (haz, vul_set) in self.hazards.items():
+        for htype, (haz, impf) in self.hazards.items():
             # Build per-hazard intensity map this year
             intens = np.zeros(n_cells, dtype=float)
             for i in range(haz.intensity.shape[0]):
@@ -270,7 +280,6 @@ class EconomyModel(Model):
             max_depth = np.maximum(max_depth, intens)
 
             # Compute loss fraction via vulnerability curve
-            impf = vul_set[0]
             mdr = np.clip(impf.calc_mdr(intens), 0.0, 1.0)
 
             # Combine multiplicatively: 1 - prod(1 - loss)
