@@ -4,6 +4,7 @@ from typing import Tuple, List, TYPE_CHECKING
 
 import numpy as np
 from mesa import Agent
+from collections import defaultdict
 
 Coords = Tuple[int, int]
 
@@ -46,6 +47,7 @@ class HouseholdAgent(Agent):
         # Reset per-step statistics
         self.production = 0.0
         self.labor_sold = 0.0
+        self.consumption = 0.0
 
         if not self.nearby_firms:
             return  # isolated household – nothing to do
@@ -88,7 +90,10 @@ class FirmAgent(Agent):
 
         # ---------------- Economic state ------------------------------- #
         self.money: float = 100.0
-        self.inventory_input: int = 0  # units of intermediate goods
+        from collections import defaultdict
+
+        # Input inventory keyed by supplier AgentID (or None for generic labour)
+        self.inventory_inputs: dict[int, int] = defaultdict(int)  # per-supplier stock
         self.inventory_output: int = 0  # finished goods
 
         # Links to other agents (filled by model)
@@ -151,7 +156,8 @@ class FirmAgent(Agent):
         buyer.money -= cost
         self.money += cost
         self.inventory_output -= qty
-        buyer.inventory_input += qty
+        # Register under this supplier's id inside buyer
+        buyer.inventory_inputs[self.unique_id] += qty
         return qty
 
     # ---------------- Mesa API (production) --------------------------- #
@@ -165,40 +171,39 @@ class FirmAgent(Agent):
         labour_units = self._labor_available()
 
         # ----------------------------------------------------------------
-        # 1. Ensure sufficient intermediate inputs based on hired labour
-        #    Desired input quantity so that input/labour ratio meets coefficients.
+        # 1. Ensure each required input type has enough stock to match labour
+        #    Each unit of output needs 1 unit from every supplier in connected_firms.
         # ----------------------------------------------------------------
-        target_input_needed = int(np.ceil(labour_units * self.INPUT_COEFF / self.LABOR_COEFF))
-        required_inputs = max(0, target_input_needed - self.inventory_input)
 
-        if required_inputs > 0 and self.connected_firms:
-            firms_shuffled = self.random.sample(self.connected_firms, len(self.connected_firms))
-            for supplier in firms_shuffled:
-                if required_inputs == 0:
-                    break
-                purch_qty = min(required_inputs, supplier.inventory_output)
-                if purch_qty > 0:
-                    bought = supplier.sell_goods_to_firm(self, purch_qty)
-                    required_inputs -= bought
+        for supplier in self.connected_firms:
+            current_stock = self.inventory_inputs.get(supplier.unique_id, 0)
+            required_qty = max(0, labour_units - current_stock)
+            if required_qty == 0:
+                continue
 
-        # Update labour_units after potential change? Labour unchanged.
+            purch_qty_needed = required_qty
+            # Attempt purchase from the designated supplier only
+            bought = supplier.sell_goods_to_firm(self, purch_qty_needed)
+            # If supplier cannot fulfil entire order, we leave shortage (production will be limited)
+
         # ----------------------------------------------------------------
-        # 2. Produce output according to Leontief production function
-        #    q = min(labour / a_L, input / a_I)
+        # 2. Compute possible output per Leontief: min(labour, each input)
         # ----------------------------------------------------------------
-        max_output_from_labor = labour_units / self.LABOR_COEFF if self.LABOR_COEFF else 0
-        max_output_from_input = self.inventory_input / self.INPUT_COEFF if self.INPUT_COEFF else 0
 
-        possible_output = int(min(max_output_from_labor, max_output_from_input))
+        if self.connected_firms:
+            min_input_units = min(self.inventory_inputs.get(s.unique_id, 0) for s in self.connected_firms)
+        else:
+            min_input_units = float("inf")  # no material input constraint
+
+        possible_output = int(min(labour_units / self.LABOR_COEFF, min_input_units))
 
         self.production = possible_output
         if possible_output > 0:
-            # Consume inputs and register consumption stat
-            input_used = int(possible_output * self.INPUT_COEFF)
-            self.inventory_input -= input_used
-            self.consumption = input_used
+            # Consume inputs from each supplier
+            for supplier in self.connected_firms:
+                self.inventory_inputs[supplier.unique_id] -= possible_output
 
-            # Generate output inventory
+            self.consumption = possible_output * len(self.connected_firms)
             self.inventory_output += possible_output
 
         # ----------------------------------------------------------------

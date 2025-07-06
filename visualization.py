@@ -17,6 +17,7 @@ import geopandas as gpd
 import solara
 from matplotlib.figure import Figure
 from mesa.visualization.utils import update_counter
+import networkx as nx
 
 from mesa.visualization import SolaraViz, make_plot_component
 
@@ -149,7 +150,16 @@ def MapView(model):  # noqa: ANN001
         vmax=0.1,
     )
 
-    fig.colorbar(im, ax=ax, label="Hazard intensity (normalised)")
+    # Make the colorbar shorter so it doesn't exceed the figure height
+    fig.colorbar(
+        im,
+        ax=ax,
+        label="Hazard intensity (normalised)",
+        shrink=0.7,
+        pad=0.01,    # Reduce space between colorbar and plot
+        aspect=20,   # Make colorbar thinner
+        fraction=0.1,  # Reduce fraction of original axes for colorbar
+    )
 
     # ---------------- Overlay agent positions ------------------- #
 
@@ -176,6 +186,97 @@ def MapView(model):  # noqa: ANN001
         _WORLD.boundary.plot(ax=ax, linewidth=0.5, color="black")
 
     ax.set_title("Hazard & agents")
+
+    # Remove axis ticks/labels to maximise map canvas
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.97, bottom=0.03)
+
+    # Legend outside plot area to avoid overlap, with items in a row
+    ax.legend(
+        loc="lower center",
+        bbox_to_anchor=(0.5, -0.2),
+        borderaxespad=0.0,
+        frameon=False,
+        ncol=2,  # Show legend items in a row
+    )
+
+    solara.FigureMatplotlib(fig)
+
+
+# ------------------------------------------------------------------ #
+# Network topology view                                              #
+# ------------------------------------------------------------------ #
+
+
+@solara.component
+def NetworkView(model):  # noqa: ANN001
+    """Visualise static supplier & labour network on a world map."""
+
+    # Trigger on every step to update colours/sizes if desired
+    update_counter.get()
+
+    fig = Figure(figsize=(8, 5))
+    ax = fig.subplots()
+
+    # Plot country boundaries first
+    if _WORLD is not None:
+        _WORLD.boundary.plot(ax=ax, linewidth=0.5, color="black")
+
+    # Build graph ----------------------------------------------------- #
+    G = nx.DiGraph()
+
+    positions = {}
+    node_colors = []
+
+    for ag in model.agents:
+        x, y = ag.pos
+        lon = float(model.lon_vals[x])
+        lat = float(model.lat_vals[y])
+        positions[ag.unique_id] = (lon, lat)
+
+        if isinstance(ag, HouseholdAgent):
+            node_colors.append("tab:green")
+        else:
+            node_colors.append("tab:red")
+
+        G.add_node(ag.unique_id, agent=ag)
+
+    # Edges: firm→firm, household→firm (labour)
+    for ag in model.agents:
+        if isinstance(ag, FirmAgent):
+            for supplier in ag.connected_firms:
+                G.add_edge(supplier.unique_id, ag.unique_id)
+        elif isinstance(ag, HouseholdAgent):
+            for firm in ag.nearby_firms:
+                G.add_edge(ag.unique_id, firm.unique_id)
+
+    # Draw nodes and edges ------------------------------------------- #
+    nx.draw_networkx_edges(
+        G,
+        pos=positions,
+        ax=ax,
+        arrows=True,
+        arrowstyle="-|>",  # proper arrowheads
+        edge_color="gray",
+        width=0.8,
+        arrowsize=8,
+        connectionstyle="arc3,rad=0.05",  # slight curvature for visual separation
+        node_size=[8 for _ in G.nodes()],  # ensure shrink matches tiny markers
+    )
+
+    # Scatter nodes manually to get legend control
+    lons, lats, c = zip(*[(pos[0], pos[1], "green" if isinstance(G.nodes[n]["agent"], HouseholdAgent) else "red") for n, pos in positions.items()])
+    ax.scatter(lons, lats, s=5, c=c, alpha=0.8, zorder=4)
+
+    ax.set_title("Agent supply & labour network")
+
+    # Remove axis ticks to declutter
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.97, bottom=0.03)
 
     # Legend outside plot area to avoid overlap, with items in a row
     ax.legend(
@@ -224,11 +325,13 @@ def DashboardRow(model):  # noqa: ANN001
     with solara.Row():
         with solara.Column(style={"flex": "2", "minWidth": "800px"}):
             MapView(model)
-        with solara.Column(style={"flex": "1", "minWidth": "350px", "overflowY": "auto"}):
+            NetworkView(model)
+        with solara.Column(style={"flex": "1", "minWidth": "300px", "overflowY": "auto"}):
             solara.Markdown("## Firm metrics")
             PLOT_WEALTH(model)
             PLOT_PROD(model)
             PLOT_CONS(model)
+        with solara.Column(style={"flex": "1", "minWidth": "300px", "overflowY": "auto"}):
             solara.Markdown("## Household metrics")
             PLOT_HH_WEALTH(model)
             PLOT_HH_LABOR(model)
