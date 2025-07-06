@@ -12,3 +12,6 @@
 - [ ] Use output of damage functions to proportionally affect productivity and overhead of firms 
 - [ ] Add bankrupcy when firms can't pay their fixed costs. Update network topology when new firms pop up.
 - [ ] Add damage threshold for households, above which they migrate
+- [ ] Add support for netCDF input files
+- [ ] Add support for more hazards including wildfires, tropical cyclons, drought
+- [ ] Add support for chronic risks
