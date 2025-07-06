@@ -68,6 +68,9 @@ except Exception:  # pragma: no cover – dataset missing / offline env
 PLOT_WEALTH = make_plot_component("Firm_Wealth")
 PLOT_PROD = make_plot_component("Firm_Production")
 PLOT_CONS = make_plot_component("Firm_Consumption")
+PLOT_HH_WEALTH = make_plot_component("Household_Wealth")
+PLOT_HH_LABOR = make_plot_component("Household_LaborSold")
+PLOT_HH_CONS = make_plot_component("Household_Consumption")
 
 # ----------------------------- Parameters ------------------------------- #
 
@@ -191,7 +194,7 @@ def MapView(model):  # noqa: ANN001
 # --------------------------------------------------------------------- #
 
 
-def make_page() -> Any:  # noqa: D401, ANN401
+def make_page_with_custom_components() -> Any:  # noqa: D401, ANN401
     hazard_events = _parse_hazard_events()
     if not hazard_events:
         raise RuntimeError(
@@ -199,24 +202,14 @@ def make_page() -> Any:  # noqa: D401, ANN401
             "using run_simulation.py with --viz and at least one --rp-file argument."
         )
 
-    # Inject the fixed hazard list so every model created from the UI uses it.
-    model_params = {
-        **_BASE_PARAMS,
-        "hazard_events": hazard_events,
-    }
+    model_params = {**_BASE_PARAMS, "hazard_events": hazard_events}
 
-    # Start with default parameter values to create the first model instance
     init_kwargs = {k: v["value"] if isinstance(v, dict) else v for k, v in _BASE_PARAMS.items()}
     init_kwargs["hazard_events"] = hazard_events
 
     model = EconomyModel(**init_kwargs)
 
-    # ``components`` expects Solara Component objects; we silence type checker here
-    return SolaraViz(
-        model,
-        components=[DashboardRow],
-        model_params=model_params,
-    )  # type: ignore
+    return SolaraViz(model, components=[Dashboard], model_params=model_params)  # type: ignore
 
 
 # -------------------------- Combined dashboard --------------------------- #
@@ -224,18 +217,48 @@ def make_page() -> Any:  # noqa: D401, ANN401
 
 @solara.component
 def DashboardRow(model):  # noqa: ANN001
-    """Top-row MapView (flex 2) alongside firm metrics charts (flex 1)."""
+    """Map view plus stacked firm and household metric charts."""
 
     update_counter.get()
 
     with solara.Row():
         with solara.Column(style={"flex": "2", "minWidth": "800px"}):
             MapView(model)
-        with solara.Column(style={"flex": "1", "minWidth": "300px"}):
+        with solara.Column(style={"flex": "1", "minWidth": "350px", "overflowY": "auto"}):
+            solara.Markdown("## Firm metrics")
             PLOT_WEALTH(model)
             PLOT_PROD(model)
             PLOT_CONS(model)
+            solara.Markdown("## Household metrics")
+            PLOT_HH_WEALTH(model)
+            PLOT_HH_LABOR(model)
+            PLOT_HH_CONS(model)
+
+
+# ---------------- Save & Exit button ------------------------------------ #
+
+
+@solara.component
+def SaveExitButton(model):  # noqa: ANN001
+    """Button that saves CSVs and terminates the dashboard process."""
+
+    def _on_click():  # noqa: ANN202 – inner callback
+        model.save_results("dashboard_results")
+        import os
+
+        # Hard exit to ensure control returns to parent script
+        os._exit(0)
+
+    solara.Button(label="Save & Exit", color="danger", on_click=_on_click)
+
+
+@solara.component
+def Dashboard(model):  # noqa: ANN001
+    """Combined view with save button and dashboard row."""
+
+    SaveExitButton(model)
+    DashboardRow(model)
 
 
 # The Solara entry point. The variable name must be `page`.
-page = make_page() 
+page = make_page_with_custom_components() 

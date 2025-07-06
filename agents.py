@@ -33,6 +33,8 @@ class HouseholdAgent(Agent):
 
         # Aggregate statistics tracked per agent
         self.consumption: float = 0.0  # goods consumed (units)
+        self.production: float = 0.0  # households don't produce goods but keep attr for consistency
+        self.labor_sold: float = 0.0  # labour units sold this step
 
         # Filled by the model after all agents are created
         self.nearby_firms: List["FirmAgent"] = []
@@ -40,6 +42,10 @@ class HouseholdAgent(Agent):
     # ---------------- Mesa API ---------------- #
     def step(self) -> None:  # noqa: D401, N802
         """Provide labour and consume goods each tick."""
+
+        # Reset per-step statistics
+        self.production = 0.0
+        self.labor_sold = 0.0
 
         if not self.nearby_firms:
             return  # isolated household – nothing to do
@@ -49,7 +55,7 @@ class HouseholdAgent(Agent):
         wage = self.model.base_wage
         if firm.hire_labor(self, wage):
             # Wage transferred inside `hire_labor`
-            pass
+            self.labor_sold += 1
 
         # 2. Buy one unit of goods if affordable -------------------------- #
         # Households consume a single generic good for simplicity.

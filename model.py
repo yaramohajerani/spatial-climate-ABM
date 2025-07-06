@@ -106,8 +106,24 @@ class EconomyModel(Model):
                 "Firm_Wealth": lambda m: sum(
                     ag.money for ag in m.agents if isinstance(ag, FirmAgent)
                 ),
+                "Household_Wealth": lambda m: sum(
+                    ag.money for ag in m.agents if isinstance(ag, HouseholdAgent)
+                ),
+                "Household_LaborSold": lambda m: sum(
+                    ag.labor_sold for ag in m.agents if isinstance(ag, HouseholdAgent)
+                ),
+                "Household_Consumption": lambda m: sum(
+                    ag.consumption for ag in m.agents if isinstance(ag, HouseholdAgent)
+                ),
                 "Average_Risk": lambda m: np.mean(list(m.hazard_map.values())),
-            }
+            },
+            agent_reporters={
+                "money": lambda a: getattr(a, "money", np.nan),
+                "production": lambda a: getattr(a, "production", 0.0),
+                "consumption": lambda a: getattr(a, "consumption", 0.0),
+                "labor_sold": lambda a: getattr(a, "labor_sold", 0.0),
+                "type": lambda a: type(a).__name__,
+            },
         )
 
         # ---------------- Land mask to avoid placing agents in the ocean ---------------- #
@@ -287,6 +303,14 @@ class EconomyModel(Model):
         """Save collected data to CSV."""
         df = self.results_to_dataframe()
         Path(out_path).with_suffix(".csv").write_text(df.to_csv(index=False))
+
+        # Save per-agent time series -------------------------------------- #
+        agents_df = self.datacollector.get_agent_vars_dataframe().reset_index()
+        # Rename columns for clarity; DataCollector returns 'AgentID' index.
+        agents_df.rename(columns={"level_0": "Step", "level_1": "AgentID"}, inplace=True, errors="ignore")
+
+        agents_path = Path(out_path).with_name("simulation_agents.csv")
+        agents_path.write_text(agents_df.to_csv(index=False))
 
         # also save event log
         if self.applied_events:
