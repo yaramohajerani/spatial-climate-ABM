@@ -116,6 +116,8 @@ class EconomyModel(Model):
                     ag.consumption for ag in m.agents if isinstance(ag, HouseholdAgent)
                 ),
                 "Average_Risk": lambda m: np.mean(list(m.hazard_map.values())),
+                "Base_Wage": lambda m: m.base_wage,
+                "Mean_Firm_Price": lambda m: np.mean([ag.price for ag in m.agents if isinstance(ag, FirmAgent)]),
             },
             agent_reporters={
                 "money": lambda a: getattr(a, "money", np.nan),
@@ -289,7 +291,21 @@ class EconomyModel(Model):
         # analogue of RandomActivation.
         self.agents.shuffle_do("step")
 
-        # Collect outputs
+        # ---------------- Dynamic wage adjustment --------------------- #
+        households = [ag for ag in self.agents if isinstance(ag, HouseholdAgent)]
+        total_supply = len(households) * 1.0  # each supplies one unit
+        total_demand = sum(hh.labor_sold for hh in households)
+
+        if total_supply > 0:
+            ratio = total_demand / total_supply
+            if ratio > 0.9:
+                self.base_wage *= 1.05  # tight labour market
+            elif ratio < 0.5:
+                self.base_wage *= 0.95  # slack labour market
+
+            self.base_wage = float(min(10.0, max(0.1, self.base_wage)))
+
+        # Collect outputs after wage update so next step sees new wage
         self.datacollector.collect(self)
 
     # --------------------------------------------------------------------- #

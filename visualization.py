@@ -69,6 +69,8 @@ except Exception:  # pragma: no cover – dataset missing / offline env
 PLOT_WEALTH = make_plot_component("Firm_Wealth")
 PLOT_PROD = make_plot_component("Firm_Production")
 PLOT_CONS = make_plot_component("Firm_Consumption")
+PLOT_PRICE = make_plot_component("Mean_Firm_Price")
+PLOT_WAGE = make_plot_component("Base_Wage")
 PLOT_HH_WEALTH = make_plot_component("Household_Wealth")
 PLOT_HH_LABOR = make_plot_component("Household_LaborSold")
 PLOT_HH_CONS = make_plot_component("Household_Consumption")
@@ -323,7 +325,7 @@ def DashboardRow(model):  # noqa: ANN001
     update_counter.get()
 
     with solara.Row():
-        with solara.Column(style={"flex": "2", "minWidth": "800px"}):
+        with solara.Column(style={"flex": "2", "minWidth": "900px"}):
             MapView(model)
             NetworkView(model)
         with solara.Column(style={"flex": "1", "minWidth": "300px", "overflowY": "auto"}):
@@ -331,12 +333,13 @@ def DashboardRow(model):  # noqa: ANN001
             PLOT_WEALTH(model)
             PLOT_PROD(model)
             PLOT_CONS(model)
+            PLOT_PRICE(model)
         with solara.Column(style={"flex": "1", "minWidth": "300px", "overflowY": "auto"}):
             solara.Markdown("## Household metrics")
             PLOT_HH_WEALTH(model)
             PLOT_HH_LABOR(model)
             PLOT_HH_CONS(model)
-
+            PLOT_WAGE(model)
 
 # ---------------- Save & Exit button ------------------------------------ #
 

@@ -5,7 +5,7 @@
 
 ## immediate 
 - [ ] Update network topology so firms can also buy form other firms. 
-- [ ] Figure out why firms aren't getting money from selling to households (household wealth keeps going up and firm wealth keeps going down due to labor transaction, but no effect from sales of goods.)
+- [x] Figure out why firms aren't getting money from selling to households (household wealth keeps going up and firm wealth keeps going down due to labor transaction, but no effect from sales of goods.)
 
 ## longer-term / tentative
 - [ ] Create fixed-cost "overheads" that firms have to pay to other firms and households (umbrella term for insurance, maintenance, leases, financing, etc. that don't scale up and down with production volume)

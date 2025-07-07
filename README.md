@@ -12,6 +12,26 @@ This repository provides a **spatial agent-based model** (ABM) that couples basi
 * Collection of yearly GDP and migrant counts.
 * Results saved to `simulation_results.csv`.
 * **live dashboard** built with Mesa's Solara API – launch with `--viz` to watch the grid and charts update in real time.
+* Spatial grid derived from GeoTIFF hazard rasters (`mesa.space.MultiGrid`).
+* Two agent types – `HouseholdAgent` & `FirmAgent` – placed on land cells; distance-weighted random network defines labour & input supply links.
+* Leontief production with tunable coefficients (`LABOR_COEFF`, `INPUT_COEFF` both 0.5 by default) so one unit of labour/input yields two units of output.
+* Dynamic markets:
+  * **Goods price** adjusts each step (+5 % when stock‐outs, −5 % when inventory > 5).
+  * **Wage** adjusts with labour-market tightness (+5 % when demand > 90 % of supply, −5 % when < 50 %).
+* Hazard shocks from CLIMADA: per-cell flood (or any hazard) damages capital each year.
+* Household migration when local risk exceeds threshold.
+* Rich data collection every step:
+  * Firm & household wealth, production, consumption, labour sold
+  * Mean firm price & economy-wide base wage
+  * Average grid-level risk
+* CSV outputs
+  * `simulation_results.csv` – model-level time-series (now includes prices & wages)
+  * `simulation_agents.csv` – agent-level panel (money, production, consumption, etc.)
+* **Interactive Solara dashboard** (`--viz`):
+  * Map of hazards & agents
+  * Network graph showing supply & labour arrows
+  * Time-series plots for firm metrics, household metrics, prices and wages
+  * *Save & Exit* button writes both CSVs before closing the app.
 
 ## Quick start
 

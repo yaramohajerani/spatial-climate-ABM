@@ -72,9 +72,9 @@ class HouseholdAgent(Agent):
 class FirmAgent(Agent):
     """A firm with a simple Leontief production function and local trade."""
 
-    # Leontief technical coefficients: input requirement per unit output
-    LABOR_COEFF: float = 1.0  # labour units required per output unit
-    INPUT_COEFF: float = 1.0  # intermediate good units required per output unit
+    # Leontief technical coefficients (units required per unit output)
+    LABOR_COEFF: float = 0.5  # less than 1 → higher productivity
+    INPUT_COEFF: float = 0.5
 
     def __init__(
         self,
@@ -104,7 +104,7 @@ class FirmAgent(Agent):
         self.production: float = 0.0  # units produced this step
         self.consumption: float = 0.0  # units of inputs consumed this step
 
-        # Pricing (fixed for now)
+        # Pricing  – initial value
         self.price: float = 1.0
 
     # ---------------- Interaction helpers ----------------------------- #
@@ -164,6 +164,17 @@ class FirmAgent(Agent):
     def step(self) -> None:  # noqa: D401, N802
         """Purchase inputs, transform them with labour into output, then sell surplus."""
 
+        # ---------------- Dynamic pricing ----------------------------- #
+        # Simple rule-of-thumb: if we had no stock leftover raise price, if large
+        # stock (>5) lower price. Bound between 0.1 and 10.
+
+        if self.inventory_output == 0:
+            self.price *= 1.05
+        elif self.inventory_output > 5:
+            self.price *= 0.95
+
+        self.price = float(min(10.0, max(0.1, self.price)))
+
         # Reset per-step statistics
         self.production = 0.0
         self.consumption = 0.0
@@ -177,7 +188,9 @@ class FirmAgent(Agent):
 
         for supplier in self.connected_firms:
             current_stock = self.inventory_inputs.get(supplier.unique_id, 0)
-            required_qty = max(0, labour_units - current_stock)
+            target_output_from_labour = labour_units / self.LABOR_COEFF
+            target_input_needed = int(np.ceil(target_output_from_labour * self.INPUT_COEFF))
+            required_qty = max(0, target_input_needed - current_stock)
             if required_qty == 0:
                 continue
 
@@ -192,18 +205,20 @@ class FirmAgent(Agent):
 
         if self.connected_firms:
             min_input_units = min(self.inventory_inputs.get(s.unique_id, 0) for s in self.connected_firms)
+            max_output_from_inputs = min_input_units / self.INPUT_COEFF
         else:
-            min_input_units = float("inf")  # no material input constraint
+            max_output_from_inputs = float("inf")  # no material input constraint
 
-        possible_output = int(min(labour_units / self.LABOR_COEFF, min_input_units))
+        possible_output = int(min(labour_units / self.LABOR_COEFF, max_output_from_inputs))
 
         self.production = possible_output
         if possible_output > 0:
             # Consume inputs from each supplier
             for supplier in self.connected_firms:
-                self.inventory_inputs[supplier.unique_id] -= possible_output
+                use_qty = int(possible_output * self.INPUT_COEFF)
+                self.inventory_inputs[supplier.unique_id] -= use_qty
 
-            self.consumption = possible_output * len(self.connected_firms)
+            self.consumption = possible_output * len(self.connected_firms) * self.INPUT_COEFF
             self.inventory_output += possible_output
 
         # ----------------------------------------------------------------
