@@ -18,6 +18,7 @@ import solara
 from matplotlib.figure import Figure
 from mesa.visualization.utils import update_counter
 import networkx as nx
+import json, pathlib, datetime
 
 from mesa.visualization import SolaraViz, make_plot_component
 
@@ -246,26 +247,47 @@ def NetworkView(model):  # noqa: ANN001
         G.add_node(ag.unique_id, agent=ag)
 
     # Edges: firm→firm, household→firm (labour)
+    labour_edges   = []
+    supplier_edges = []
     for ag in model.agents:
         if isinstance(ag, FirmAgent):
             for supplier in ag.connected_firms:
-                G.add_edge(supplier.unique_id, ag.unique_id)
+                G.add_edge(supplier.unique_id, ag.unique_id, relation="supplier")
+                supplier_edges.append((supplier.unique_id, ag.unique_id))
         elif isinstance(ag, HouseholdAgent):
             for firm in ag.nearby_firms:
-                G.add_edge(ag.unique_id, firm.unique_id)
+                G.add_edge(ag.unique_id, firm.unique_id, relation="labour")
+                labour_edges.append((ag.unique_id, firm.unique_id))
 
     # Draw nodes and edges ------------------------------------------- #
+    # Labour edges (green)
     nx.draw_networkx_edges(
         G,
         pos=positions,
+        edgelist=labour_edges,
         ax=ax,
         arrows=True,
-        arrowstyle="-|>",  # proper arrowheads
-        edge_color="gray",
+        arrowstyle="-|>",
+        edge_color="green",
+        width=0.6,
+        arrowsize=8,
+        connectionstyle="arc3,rad=0.15",
+        node_size=8,
+    )
+
+    # Supplier edges (red)
+    nx.draw_networkx_edges(
+        G,
+        pos=positions,
+        edgelist=supplier_edges,
+        ax=ax,
+        arrows=True,
+        arrowstyle="-|>",
+        edge_color="red",
         width=0.8,
         arrowsize=8,
-        connectionstyle="arc3,rad=0.05",  # slight curvature for visual separation
-        node_size=[8 for _ in G.nodes()],  # ensure shrink matches tiny markers
+        connectionstyle="arc3,rad=-0.15",
+        node_size=8,
     )
 
     # Scatter nodes manually to get legend control
@@ -280,14 +302,37 @@ def NetworkView(model):  # noqa: ANN001
 
     fig.subplots_adjust(left=0.01, right=0.99, top=0.97, bottom=0.03)
 
-    # Legend outside plot area to avoid overlap, with items in a row
-    ax.legend(
-        loc="lower center",
-        bbox_to_anchor=(0.5, -0.2),
-        borderaxespad=0.0,
-        frameon=False,
-        ncol=2,  # Show legend items in a row
-    )
+    # Custom legend: labels for nodes & edge types
+    from matplotlib.lines import Line2D
+    legend_elems = [
+        Line2D([0], [0], marker='o', color='w', label='Household', markerfacecolor='green', markersize=6),
+        Line2D([0], [0], marker='s', color='w', label='Firm', markerfacecolor='red', markersize=6),
+        Line2D([0], [0], color='green', lw=1, label='Labour flow'),
+        Line2D([0], [0], color='red', lw=1, label='Goods flow'),
+    ]
+    ax.legend(handles=legend_elems, loc="lower center", bbox_to_anchor=(0.5, -0.1), frameon=False, ncol=2)
+
+    # ----- write out once per session -----
+    if not hasattr(model, "_topology_dumped"):
+        topology = {
+            "nodes": [
+                {"id": n, "kind": G.nodes[n]["agent"].__class__.__name__}
+                for n in G.nodes()
+            ],
+            # edge = (source, target)
+            "edges": [
+                {"src": u, "dst": v, "relation": d.get("relation", "")}
+                for u, v, d in G.edges(data=True)
+            ],
+            # adjacency for quick lookup
+            "adjacency": {n: list(G.adj[n]) for n in G.nodes()},
+        }
+
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = pathlib.Path(f"network_topology_{ts}.json")
+        out_path.write_text(json.dumps(topology, indent=2))
+        print(f"[NetworkView] topology written to {out_path.absolute()}")
+        model._topology_dumped = True
 
     solara.FigureMatplotlib(fig)
 

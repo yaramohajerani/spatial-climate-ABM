@@ -4,7 +4,7 @@
 - [x] fix production function such that input requirements are informed by network topology 
 
 ## immediate 
-- [ ] Update network topology so firms can also buy form other firms. 
+- [x] Update network topology so firms can also buy form other firms. 
 - [x] Figure out why firms aren't getting money from selling to households (household wealth keeps going up and firm wealth keeps going down due to labor transaction, but no effect from sales of goods.)
 
 ## longer-term / tentative

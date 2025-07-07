@@ -417,6 +417,46 @@ class EconomyModel(Model):
                 if self.random.random() < prob:
                     f1.connected_firms.append(f2)
 
+        # Ensure **at least one** root firm with no upstream suppliers so the
+        # production chain can bootstrap from labour alone. Keep roughly 20 % of
+        # firms as roots; all other firms must have ≥1 supplier (choose nearest
+        # if none were assigned by the distance‐probability rule).
+
+        if len(firm_agents) > 0:
+            # Determine current roots
+            roots = [f for f in firm_agents if not f.connected_firms]
+
+            target_root_count = max(1, int(0.2 * len(firm_agents)))
+
+            # If no roots, pick one at random
+            if not roots:
+                root = self.random.choice(firm_agents)
+                root.connected_firms.clear()
+                roots.append(root)
+
+            # If too many roots, pick extras to connect to nearest supplier
+            if len(roots) > target_root_count:
+                surplus = roots[target_root_count:]
+                for f in surplus:
+                    # Connect to nearest other firm (excluding itself)
+                    nearest = min(
+                        (g for g in firm_agents if g is not f),
+                        key=lambda g: (g.pos[0] - f.pos[0]) ** 2 + (g.pos[1] - f.pos[1]) ** 2,
+                    )
+                    f.connected_firms.append(nearest)
+
+            # Now ensure every non-root firm has at least one supplier
+            for f in firm_agents:
+                if f.connected_firms:
+                    continue
+                if f in roots:
+                    continue  # keep as root
+                nearest = min(
+                    (g for g in firm_agents if g is not f),
+                    key=lambda g: (g.pos[0] - f.pos[0]) ** 2 + (g.pos[1] - f.pos[1]) ** 2,
+                )
+                f.connected_firms.append(nearest)
+
         # 2. Household – firm employment/consumption links (within radius)
         work_radius = 3
         for hh in household_agents:
