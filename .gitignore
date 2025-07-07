@@ -15,6 +15,7 @@ data/
 *.h5
 *.csv
 *.png
+network_topology_*.json
 
 # Distribution / packaging
 .Python

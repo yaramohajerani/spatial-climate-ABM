@@ -388,6 +388,12 @@ class EconomyModel(Model):
                 continue
             if isinstance(ag, FirmAgent):
                 ag.capital_stock *= 1 - loss_frac
+                # Reduce productive capacity this year
+                ag.damage_factor *= 1 - loss_frac
+                # Damage inventories
+                ag.inventory_output = int(ag.inventory_output * (1 - loss_frac))
+                for k in list(ag.inventory_inputs.keys()):
+                    ag.inventory_inputs[k] = int(ag.inventory_inputs[k] * (1 - loss_frac))
             else:
                 ag.capital *= 1 - loss_frac
 

@@ -107,6 +107,9 @@ class FirmAgent(Agent):
         # Pricing  – initial value
         self.price: float = 1.0
 
+        # Cumulative damage to productive capacity (1 = undamaged)
+        self.damage_factor: float = 1.0
+
     # ---------------- Interaction helpers ----------------------------- #
     def hire_labor(self, household: HouseholdAgent, wage: float) -> bool:
         """Attempt to hire one unit of labour from *household*.
@@ -164,6 +167,11 @@ class FirmAgent(Agent):
     def step(self) -> None:  # noqa: D401, N802
         """Purchase inputs, transform them with labour into output, then sell surplus."""
 
+        # ---------------- Damage recovery ----------------------------- #
+        # Recover 50% of remaining damage each step
+        self.damage_factor += (1.0 - self.damage_factor) * 0.5
+        self.damage_factor = min(1.0, max(0.0, self.damage_factor))
+
         # ---------------- Dynamic pricing ----------------------------- #
         # Simple rule-of-thumb: if we had no stock leftover raise price, if large
         # stock (>5) lower price. Bound between 0.1 and 10.
@@ -209,7 +217,8 @@ class FirmAgent(Agent):
         else:
             max_output_from_inputs = float("inf")  # no material input constraint
 
-        possible_output = int(min(labour_units / self.LABOR_COEFF, max_output_from_inputs))
+        max_possible = min(labour_units / self.LABOR_COEFF, max_output_from_inputs)
+        possible_output = int(max_possible * self.damage_factor)
 
         self.production = possible_output
         if possible_output > 0:
