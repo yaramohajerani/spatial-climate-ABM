@@ -73,7 +73,9 @@ PLOT_PROD = make_plot_component("Firm_Production")
 PLOT_CONS = make_plot_component("Firm_Consumption")
 PLOT_PRICE = make_plot_component("Mean_Firm_Price")
 PLOT_WAGE = make_plot_component("Base_Wage")
+PLOT_FIRM_CAP = make_plot_component("Firm_Capital")
 PLOT_HH_WEALTH = make_plot_component("Household_Wealth")
+PLOT_HH_CAP = make_plot_component("Household_Capital")
 PLOT_HH_LABOR = make_plot_component("Household_LaborSold")
 PLOT_HH_CONS = make_plot_component("Household_Consumption")
 
@@ -377,12 +379,14 @@ def DashboardRow(model):  # noqa: ANN001
         with solara.Column(style={"flex": "1", "minWidth": "300px", "overflowY": "auto"}):
             solara.Markdown("## Firm metrics")
             PLOT_WEALTH(model)
+            PLOT_FIRM_CAP(model)
             PLOT_PROD(model)
             PLOT_CONS(model)
             PLOT_PRICE(model)
         with solara.Column(style={"flex": "1", "minWidth": "300px", "overflowY": "auto"}):
             solara.Markdown("## Household metrics")
             PLOT_HH_WEALTH(model)
+            PLOT_HH_CAP(model)
             PLOT_HH_LABOR(model)
             PLOT_HH_CONS(model)
             PLOT_WAGE(model)
@@ -403,16 +407,19 @@ def SaveExitButton(model):  # noqa: ANN001
 
         variables = [
             ("Firm_Wealth", "Firm wealth"),
+            ("Firm_Capital", "Firm capital"),
             ("Firm_Production", "Firm production"),
             ("Firm_Consumption", "Firm consumption"),
             ("Mean_Firm_Price", "Mean firm price"),
             ("Household_Wealth", "Household wealth"),
+            ("Household_Capital", "Household capital"),
             ("Household_LaborSold", "Household labour sold"),
             ("Household_Consumption", "Household consumption"),
             ("Base_Wage", "Base wage"),
         ]
 
-        fig, axes = plt.subplots(4, 2, figsize=(12, 10), sharex=True)
+        rows = int(np.ceil(len(variables) / 2))
+        fig, axes = plt.subplots(rows, 2, figsize=(12, 2.5 * rows), sharex=True)
         axes = axes.flatten()
 
         for ax, (col, title) in zip(axes, variables):

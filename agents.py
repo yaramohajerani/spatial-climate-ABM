@@ -30,7 +30,7 @@ class HouseholdAgent(Agent):
 
         self.money: float = money
         self.labor_supply: float = labor_supply
-        self.capital: float = 1.0  # kept for compatibility with impact module
+        self.capital: float = 1.0
 
         # Aggregate statistics tracked per agent
         self.consumption: float = 0.0  # goods consumed (units)
@@ -75,13 +75,14 @@ class FirmAgent(Agent):
     # Leontief technical coefficients (units required per unit output)
     LABOR_COEFF: float = 0.5  # less than 1 → higher productivity
     INPUT_COEFF: float = 0.5
+    CAPITAL_COEFF: float = 0.5  # capital units per output unit
 
     def __init__(
         self,
         model: "EconomyModel",
         pos: Coords,
         sector: str = "manufacturing",
-        capital_stock: float = 1.0,
+        capital_stock: float = 100.0,
     ) -> None:
         super().__init__(model)
 
@@ -217,8 +218,12 @@ class FirmAgent(Agent):
         else:
             max_output_from_inputs = float("inf")  # no material input constraint
 
-        max_possible = min(labour_units / self.LABOR_COEFF, max_output_from_inputs)
+        max_output_from_capital = self.capital_stock / self.CAPITAL_COEFF if self.CAPITAL_COEFF else float("inf")
+
+        max_possible = min(labour_units / self.LABOR_COEFF, max_output_from_inputs, max_output_from_capital)
         possible_output = int(max_possible * self.damage_factor)
+
+        capital_limited = possible_output < max_possible and (max_output_from_capital <= labour_units / self.LABOR_COEFF)
 
         self.production = possible_output
         if possible_output > 0:
@@ -227,13 +232,41 @@ class FirmAgent(Agent):
                 use_qty = int(possible_output * self.INPUT_COEFF)
                 self.inventory_inputs[supplier.unique_id] -= use_qty
 
-            self.consumption = possible_output * len(self.connected_firms) * self.INPUT_COEFF
+            # Add production to inventory
             self.inventory_output += possible_output
+
+            self.consumption = possible_output * len(self.connected_firms) * self.INPUT_COEFF
 
         # ----------------------------------------------------------------
         # 3. Clear employee list for next step
         # ----------------------------------------------------------------
         self.employees.clear()
+
+        # ---------------- Capital depreciation ------------------------ #
+        DEPR = 0.02  # 2% per step
+        self.capital_stock *= (1 - DEPR)
+
+        # ---------------- Capital purchase stage ----------------------- #
+        if capital_limited and self.money > self.price and self.connected_firms:
+            needed_capital_units = int(max_possible - possible_output)
+            budget_units = int(self.money / self.price)
+            to_buy = min(needed_capital_units, budget_units)
+
+            if to_buy > 0:
+                # Try suppliers in random order
+                for supplier in self.random.sample(self.connected_firms, len(self.connected_firms)):
+                    if to_buy == 0:
+                        break
+                    avail = supplier.inventory_output
+                    qty = min(avail, to_buy)
+                    if qty <= 0:
+                        continue
+                    bought = supplier.sell_goods_to_firm(self, qty)
+                    if bought:
+                        # Redirect from inputs to capital_stock
+                        self.inventory_inputs[supplier.unique_id] -= bought
+                        self.capital_stock += bought
+                        to_buy -= bought
 
     # ---------------- Internal helpers -------------------------------- #
     def _labor_available(self) -> int:

@@ -106,8 +106,14 @@ class EconomyModel(Model):
                 "Firm_Wealth": lambda m: sum(
                     ag.money for ag in m.agents if isinstance(ag, FirmAgent)
                 ),
+                "Firm_Capital": lambda m: sum(
+                    ag.capital_stock for ag in m.agents if isinstance(ag, FirmAgent)
+                ),
                 "Household_Wealth": lambda m: sum(
                     ag.money for ag in m.agents if isinstance(ag, HouseholdAgent)
+                ),
+                "Household_Capital": lambda m: sum(
+                    ag.capital for ag in m.agents if isinstance(ag, HouseholdAgent)
                 ),
                 "Household_LaborSold": lambda m: sum(
                     ag.labor_sold for ag in m.agents if isinstance(ag, HouseholdAgent)
@@ -124,6 +130,7 @@ class EconomyModel(Model):
                 "production": lambda a: getattr(a, "production", 0.0),
                 "consumption": lambda a: getattr(a, "consumption", 0.0),
                 "labor_sold": lambda a: getattr(a, "labor_sold", 0.0),
+                "capital": lambda a: getattr(a, "capital_stock", getattr(a, "capital", 0.0)),
                 "type": lambda a: type(a).__name__,
             },
         )
