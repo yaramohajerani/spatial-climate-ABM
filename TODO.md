@@ -6,6 +6,8 @@
 ## immediate 
 - [x] Update network topology so firms can also buy form other firms. 
 - [x] Figure out why firms aren't getting money from selling to households (household wealth keeps going up and firm wealth keeps going down due to labor transaction, but no effect from sales of goods.)
+- [ ] Make sure randomized runs can be duplicated exactly with and without climate for comparison
+- [ ] Create a dictionary of firm input/outputs and locations. Flooding is very spatially heterogenous, so randomized placing is very unlikely to get significant flood risk. 
 
 ## longer-term / tentative
 - [x] Add capital requirement for production
