@@ -357,6 +357,9 @@ def make_page_with_custom_components() -> Any:  # noqa: D401, ANN401
 
     init_kwargs = {k: v["value"] if isinstance(v, dict) else v for k, v in _BASE_PARAMS.items()}
     init_kwargs["hazard_events"] = hazard_events
+    seed_env = os.getenv("ABM_SEED")
+    if seed_env is not None:
+        init_kwargs["seed"] = int(seed_env)
 
     model = EconomyModel(**init_kwargs)
 
@@ -373,7 +376,7 @@ def DashboardRow(model):  # noqa: ANN001
     update_counter.get()
 
     with solara.Row():
-        with solara.Column(style={"flex": "2", "minWidth": "900px"}):
+        with solara.Column(style={"flex": "2", "minWidth": "900px", "minHeight": "900px", "height": "100%"}):
             MapView(model)
             NetworkView(model)
         with solara.Column(style={"flex": "1", "minWidth": "300px", "overflowY": "auto"}):

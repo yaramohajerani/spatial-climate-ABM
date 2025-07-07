@@ -14,6 +14,7 @@ def _parse():
         required=True,
     )
     p.add_argument("--viz", action="store_true", help="Launch interactive Solara dashboard instead of headless run")
+    p.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     return p.parse_args()
 
 def main() -> None:  # noqa: D401
@@ -39,6 +40,7 @@ def main() -> None:  # noqa: D401
         env = os.environ.copy()
         # Pass hazard events to the dashboard so it can build the same model
         env["ABM_HAZARD_EVENTS"] = ";".join(f"{rp}:{t}:{p}" for rp, t, p in events)
+        env["ABM_SEED"] = str(args.seed)
 
         cmd = [sys.executable, "-m", "solara", "run", "visualization.py"]
         subprocess.run(cmd, env=env, check=False)
@@ -50,6 +52,7 @@ def main() -> None:  # noqa: D401
         num_firms=20,
         shock_step=5,
         hazard_events=events,
+        seed=args.seed,
     )
 
     for _ in range(10):  # simulate 10 years

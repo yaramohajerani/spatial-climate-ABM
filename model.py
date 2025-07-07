@@ -37,10 +37,23 @@ class EconomyModel(Model):
         hazard_events: Iterable[Tuple[int, str, str]] | None = None,
         hazard_type: str = "FL",  # CLIMADA hazard tag for flood
         seed: int | None = None,
+        firm_topology_path: str | None = None,
     ) -> None:  # noqa: D401
         super().__init__(seed=seed)
 
-        # --- Spatial environment --- #
+        # Ensure NumPy uses the same seed so hazard sampling is reproducible
+        if seed is not None:
+            np.random.seed(seed)
+
+        # --- Spatial environment & custom topology --- #
+        self._firm_topology: dict | None = None
+        if firm_topology_path is not None:
+            import json, pathlib
+            topo_path = Path(firm_topology_path)
+            if not topo_path.exists():
+                raise FileNotFoundError(f"Firm topology JSON not found: {topo_path}")
+            self._firm_topology = json.loads(topo_path.read_text())
+
         if hazard_events is None:
             raise ValueError("hazard_events must be provided.")
 
@@ -144,7 +157,9 @@ class EconomyModel(Model):
 
         # --- Create agents & build trade network --- #
         self._init_agents(num_households, num_firms)
-        self._build_trade_network()
+        # If topology provided, connections are encoded there; otherwise random
+        if self._firm_topology is None:
+            self._build_trade_network()
 
         # Build exposures and assign centroids for each hazard
         self._exposures = self._build_exposures()
@@ -200,17 +215,54 @@ class EconomyModel(Model):
 
     def _init_agents(self, num_households: int, num_firms: int) -> None:
         """Place households and firms randomly on grid."""
-        # Place households only on land cells
+        # ---------------- Households ---------------- #
         for _ in range(num_households):
             pos = self.random.choice(self.land_coordinates)
-            agent = HouseholdAgent(model=self, pos=pos)
-            self.grid.place_agent(agent, pos)
+            hh = HouseholdAgent(model=self, pos=pos)
+            self.grid.place_agent(hh, pos)
 
-        # Place firms only on land cells (could use different logic if needed)
-        for _ in range(num_firms):
-            pos = self.random.choice(self.land_coordinates)
-            agent = FirmAgent(model=self, pos=pos, sector="manufacturing")
-            self.grid.place_agent(agent, pos)
+        # ---------------- Firms --------------------- #
+        if self._firm_topology is not None:
+            id_to_agent: dict[int, FirmAgent] = {}
+            for firm in self._firm_topology.get("firms", []):
+                # Determine position: either explicit grid x,y or lon/lat
+                if "x" in firm and "y" in firm:
+                    x, y = int(firm["x"]), int(firm["y"])
+                elif "lon" in firm and "lat" in firm:
+                    # Find nearest grid cell
+                    lon, lat = float(firm["lon"]), float(firm["lat"])
+                    x = int(np.argmin(np.abs(self.lon_vals - lon)))  # type: ignore[arg-type]
+                    y = int(np.argmin(np.abs(self.lat_vals - lat)))  # type: ignore[arg-type]
+                else:
+                    raise ValueError("Firm entry must contain either (x,y) or (lon,lat)")
+
+                if (x, y) not in self.valid_coordinates:
+                    raise ValueError(f"Firm {firm['id']} location out of grid bounds: {(x, y)}")
+
+                ag = FirmAgent(
+                    model=self,
+                    pos=(x, y),
+                    sector=firm.get("sector", "manufacturing"),
+                )
+                ag.capital_stock = float(firm.get("capital", 1.0))
+                self.grid.place_agent(ag, (x, y))
+                id_to_agent[firm["id"]] = ag
+
+            # Build directed edges (supplier -> buyer)
+            for edge in self._firm_topology.get("edges", []):
+                src_id, dst_id = edge["src"], edge["dst"]
+                try:
+                    supplier = id_to_agent[src_id]
+                    buyer = id_to_agent[dst_id]
+                except KeyError as exc:
+                    raise ValueError(f"Edge references unknown firm id: {exc}") from exc
+                buyer.connected_firms.append(supplier)
+
+        else:
+            for _ in range(num_firms):
+                pos = self.random.choice(self.land_coordinates)
+                agent = FirmAgent(model=self, pos=pos, sector="manufacturing")
+                self.grid.place_agent(agent, pos)
 
     # --------------------------------------------------------------------- #
     #                              UTILITIES                                #
