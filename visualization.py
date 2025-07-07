@@ -19,6 +19,7 @@ from matplotlib.figure import Figure
 from mesa.visualization.utils import update_counter
 import networkx as nx
 import json, pathlib, datetime
+import matplotlib.pyplot as plt
 
 from mesa.visualization import SolaraViz, make_plot_component
 
@@ -310,7 +311,7 @@ def NetworkView(model):  # noqa: ANN001
         Line2D([0], [0], color='green', lw=1, label='Labour flow'),
         Line2D([0], [0], color='red', lw=1, label='Goods flow'),
     ]
-    ax.legend(handles=legend_elems, loc="lower center", bbox_to_anchor=(0.5, -0.1), frameon=False, ncol=2)
+    ax.legend(handles=legend_elems, loc="lower center", bbox_to_anchor=(0.5, -0.17), frameon=False, ncol=2)
 
     # ----- write out once per session -----
     if not hasattr(model, "_topology_dumped"):
@@ -394,10 +395,41 @@ def SaveExitButton(model):  # noqa: ANN001
     """Button that saves CSVs and terminates the dashboard process."""
 
     def _on_click():  # noqa: ANN202 – inner callback
+        # 1. Persist CSVs
         model.save_results("dashboard_results")
-        import os
 
-        # Hard exit to ensure control returns to parent script
+        # 2. Build composite time-series figure --------------------------------
+        df = model.results_to_dataframe()
+
+        variables = [
+            ("Firm_Wealth", "Firm wealth"),
+            ("Firm_Production", "Firm production"),
+            ("Firm_Consumption", "Firm consumption"),
+            ("Mean_Firm_Price", "Mean firm price"),
+            ("Household_Wealth", "Household wealth"),
+            ("Household_LaborSold", "Household labour sold"),
+            ("Household_Consumption", "Household consumption"),
+            ("Base_Wage", "Base wage"),
+        ]
+
+        fig, axes = plt.subplots(4, 2, figsize=(12, 10), sharex=True)
+        axes = axes.flatten()
+
+        for ax, (col, title) in zip(axes, variables):
+            if col in df.columns:
+                ax.plot(df.index, df[col])
+            ax.set_title(title, fontsize=9)
+            ax.tick_params(labelsize=8)
+
+        fig.tight_layout()
+        img_path = pathlib.Path("dashboard_timeseries.png")
+        fig.savefig(img_path, dpi=150)
+        plt.close(fig)
+
+        print(f"[SaveExitButton] time-series figure saved to {img_path.absolute()}")
+
+        # 3. Terminate app
+        import os
         os._exit(0)
 
     solara.Button(label="Save & Exit", color="danger", on_click=_on_click)
