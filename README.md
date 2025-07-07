@@ -3,35 +3,26 @@
 This repository provides a **spatial agent-based model** (ABM) that couples basic economic behaviour with climate-hazard impacts. It is built with [Mesa](https://mesa.readthedocs.io) and is designed to plug into [CLIMADA](https://github.com/CLIMADA-project/climada_python) as the climate-impact engine.
 
 ## Features included
-
-* Agents distributed on spatial grid corresponding to the input climate data file (`mesa.space.MultiGrid`).
-* `HouseholdAgent` and `FirmAgent` instances randomly distributed (number provided by user).
-* CLIMADA hazard data used for input climate shocks.
-* Migration by households when local risk exceeds a threshold.
-* Firm production reduced in proportion to local hazard intensity.
-* Collection of yearly GDP and migrant counts.
-* Results saved to `simulation_results.csv`.
-* **live dashboard** built with Mesa's Solara API – launch with `--viz` to watch the grid and charts update in real time.
-* Spatial grid derived from GeoTIFF hazard rasters (`mesa.space.MultiGrid`).
-* Two agent types – `HouseholdAgent` & `FirmAgent` – placed on land cells; distance-weighted random network defines labour & input supply links.
-* Leontief production with tunable coefficients (`LABOR_COEFF`, `INPUT_COEFF` both 0.5 by default) so one unit of labour/input yields two units of output.
-* Dynamic markets:
-  * **Goods price** adjusts each step (+5 % when stock‐outs, −5 % when inventory > 5).
-  * **Wage** adjusts with labour-market tightness (+5 % when demand > 90 % of supply, −5 % when < 50 %).
-* Hazard shocks from CLIMADA: per-cell flood (or any hazard) damages capital each year.
-* Household migration when local risk exceeds threshold.
-* Rich data collection every step:
-  * Firm & household wealth, production, consumption, labour sold
-  * Mean firm price & economy-wide base wage
-  * Average grid-level risk
-* CSV outputs
-  * `simulation_results.csv` – model-level time-series (now includes prices & wages)
-  * `simulation_agents.csv` – agent-level panel (money, production, consumption, etc.)
-* **Interactive Solara dashboard** (`--viz`):
-  * Map of hazards & agents
-  * Network graph showing supply & labour arrows
-  * Time-series plots for firm metrics, household metrics, prices and wages
-  * *Save & Exit* button writes both CSVs before closing the app.
+* Spatial grid derived from user-supplied GeoTIFF hazard rasters (`mesa.space.MultiGrid`).
+* Two agent classes:
+  * `HouseholdAgent` (supplies labour, earns wages, consumes goods).
+  * `FirmAgent` (multi-input Leontief production; supports agriculture, manufacturing, services … sectors).
+* Supply-chain topology
+  * Random, distance-weighted network **or** deterministic JSON file (`--topology`) with `lon/lat` coordinates & directed edges.
+* Endogenous markets
+  * Dynamic goods price (±5 % based on inventory).
+  * Dynamic base wage (±5 % based on labour-market tightness).
+  * Capital stock used in production, depreciates 2 % each step; firms reinvest when capital-constrained.
+* Climate shocks via CLIMADA
+  * Per-cell loss fraction applied to capital, inventories and productive capacity (`damage_factor` with 50 % annual recovery).
+* Full data capture every step:
+  * Wealth, capital, production, consumption, labour sold, prices, wage, average risk.
+  * Model-level CSV `simulation_results.csv`.
+  * Agent panel CSV `simulation_agents.csv` (money, capital, etc.).
+  * Composite figure `dashboard_timeseries.png` saved from dashboard.
+* Reproducibility – pass `--seed` to freeze random placement, hazard draws and dashboard runs.
+* **Interactive dashboard** (`--viz`)
+  * Hazard map, network map (labour vs goods flows), live plots for all metrics, Save & Exit button.
 
 ## Quick start
 
