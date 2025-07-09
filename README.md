@@ -15,6 +15,9 @@ This repository provides a **spatial agent-based model** (ABM) that couples basi
   * Capital stock used in production, depreciates 2 % each step; firms reinvest when capital-constrained.
 * Climate shocks via CLIMADA
   * Per-cell loss fraction applied to capital, inventories and productive capacity (`damage_factor` with 50 % annual recovery).
+* Heterogenous adaptive risk behaviour
+  * **Households:** each household samples the maximum normalised hazard within a random radius of **1–50 grid cells**. If that value exceeds **0.1** they instantly relocate to a safer land cell (and are counted in the `migrants_this_step` metric).
+  * **Firms:** each firm monitors hazard in its own random radius (also 1–50 cells). When the local maximum hazard surpasses 0.1 the firm increases its **capital requirement** – operationalised as a 20 % rise in the Leontief capital coefficient. In the absence of new events the requirement relaxes back towards its baseline at a *firm-specific* decay rate between 20 % and 50 % per year.
 * Full data capture every step:
   * Wealth, capital, production, consumption, labour sold, prices, wage, average risk.
   * Model-level CSV `simulation_results.csv`.

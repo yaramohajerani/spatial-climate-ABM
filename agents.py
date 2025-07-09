@@ -32,6 +32,12 @@ class HouseholdAgent(Agent):
         self.labor_supply: float = labor_supply
         self.capital: float = 1.0
 
+        # ---------------- Risk behaviour parameters ------------------- #
+        # Randomised radius (in grid cells) within which the household
+        # monitors hazard intensity. If the maximum normalised intensity
+        # exceeds 0.5 anywhere in that radius the household will relocate.
+        self.risk_radius: int = self.random.randint(1, 50)
+
         # Aggregate statistics tracked per agent
         self.consumption: float = 0.0  # goods consumed (units)
         self.production: float = 0.0  # households don't produce goods but keep attr for consistency
@@ -48,6 +54,10 @@ class HouseholdAgent(Agent):
         self.production = 0.0
         self.labor_sold = 0.0
         self.consumption = 0.0
+
+        # ---------------- Heuristic relocation decision --------------- #
+        if self._max_hazard_within_radius(self.risk_radius) > 0.1:
+            self._relocate()
 
         if not self.nearby_firms:
             return  # isolated household – nothing to do
@@ -67,6 +77,27 @@ class HouseholdAgent(Agent):
             qty_bought = seller.sell_goods_to_household(self, quantity=1)
             if qty_bought:
                 self.consumption += qty_bought
+
+    def _max_hazard_within_radius(self, radius: int) -> float:
+        """Return the maximum hazard value within *radius* cells of current position."""
+        x0, y0 = self.pos
+        max_hazard = 0.0
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                coord = (x0 + dx, y0 + dy)
+                if coord in self.model.hazard_map:
+                    max_hazard = max(max_hazard, self.model.hazard_map[coord])
+        return max_hazard
+
+    def _relocate(self) -> None:
+        """Move the household to a random land cell with low current hazard."""
+        safe_cells = [c for c in self.model.land_coordinates if self.model.hazard_map.get(c, 0.0) <= 0.5]
+        if not safe_cells:
+            safe_cells = self.model.land_coordinates  # fall back to any land
+        new_pos = self.random.choice(safe_cells)
+        self.model.grid.move_agent(self, new_pos)
+        # Track migration for statistics
+        self.model.migrants_this_step += 1
 
 
 class FirmAgent(Agent):
@@ -110,6 +141,15 @@ class FirmAgent(Agent):
 
         # Cumulative damage to productive capacity (1 = undamaged)
         self.damage_factor: float = 1.0
+
+        # ---------------- Risk behaviour parameters ------------------- #
+        # Radius monitored for hazard events (random per firm)
+        self.risk_radius: int = self.random.randint(1, 50)
+        # Capital coefficient parameters
+        self.original_capital_coeff: float = self.CAPITAL_COEFF
+        self.capital_coeff: float = self.CAPITAL_COEFF  # dynamic value
+        # Firm-specific relaxation ratio (0.2 → 20 % decay each step, etc.)
+        self.relaxation_ratio: float = self.random.uniform(0.2, 0.5)
 
     # ---------------- Interaction helpers ----------------------------- #
     def hire_labor(self, household: HouseholdAgent, wage: float) -> bool:
@@ -188,6 +228,17 @@ class FirmAgent(Agent):
         self.production = 0.0
         self.consumption = 0.0
 
+        # ---------------- Hazard-driven capital adjustment ------------ #
+        local_hazard = self._max_hazard_within_radius(self.risk_radius)
+        if local_hazard > 0.1:
+            # Increase capital requirement by 20 % whenever a significant event occurs
+            self.capital_coeff *= 1.2
+        else:
+            # Gradually relax back towards original coefficient
+            if self.capital_coeff > self.original_capital_coeff:
+                decay = (self.capital_coeff - self.original_capital_coeff) * self.relaxation_ratio
+                self.capital_coeff = max(self.original_capital_coeff, self.capital_coeff - decay)
+
         labour_units = self._labor_available()
 
         # ----------------------------------------------------------------
@@ -218,7 +269,7 @@ class FirmAgent(Agent):
         else:
             max_output_from_inputs = float("inf")  # no material input constraint
 
-        max_output_from_capital = self.capital_stock / self.CAPITAL_COEFF if self.CAPITAL_COEFF else float("inf")
+        max_output_from_capital = self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf")
 
         max_possible = min(labour_units / self.LABOR_COEFF, max_output_from_inputs, max_output_from_capital)
         possible_output = int(max_possible * self.damage_factor)
@@ -272,3 +323,17 @@ class FirmAgent(Agent):
     def _labor_available(self) -> int:
         """Return integer labour units hired for this tick."""
         return len(self.employees) 
+
+    # ------------------------------------------------------------------ #
+    #                        INTERNAL HELPERS                           #
+    # ------------------------------------------------------------------ #
+    def _max_hazard_within_radius(self, radius: int) -> float:
+        """Return the maximum hazard value within *radius* cells of current position."""
+        x0, y0 = self.pos
+        max_hazard = 0.0
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                coord = (x0 + dx, y0 + dy)
+                if coord in self.model.hazard_map:
+                    max_hazard = max(max_hazard, self.model.hazard_map[coord])
+        return max_hazard 
