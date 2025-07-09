@@ -71,7 +71,7 @@ except Exception:  # pragma: no cover – dataset missing / offline env
 PLOT_WEALTH = make_plot_component("Firm_Wealth")
 PLOT_PROD = make_plot_component("Firm_Production")
 PLOT_CONS = make_plot_component("Firm_Consumption")
-PLOT_PRICE = make_plot_component("Mean_Firm_Price")
+PLOT_PRICE = make_plot_component("Mean_Price")
 PLOT_WAGE = make_plot_component("Base_Wage")
 PLOT_FIRM_CAP = make_plot_component("Firm_Capital")
 PLOT_HH_WEALTH = make_plot_component("Household_Wealth")
@@ -361,6 +361,10 @@ def make_page_with_custom_components() -> Any:  # noqa: D401, ANN401
     if seed_env is not None:
         init_kwargs["seed"] = int(seed_env)
 
+    topo_env = os.getenv("ABM_TOPOLOGY_PATH")
+    if topo_env:
+        init_kwargs["firm_topology_path"] = topo_env
+
     model = EconomyModel(**init_kwargs)
 
     return SolaraViz(model, components=[Dashboard], model_params=model_params)  # type: ignore
@@ -413,7 +417,7 @@ def SaveExitButton(model):  # noqa: ANN001
             ("Firm_Capital", "Firm capital"),
             ("Firm_Production", "Firm production"),
             ("Firm_Consumption", "Firm consumption"),
-            ("Mean_Firm_Price", "Mean firm price"),
+            ("Mean_Price", "Mean price"),
             ("Household_Wealth", "Household wealth"),
             ("Household_Capital", "Household capital"),
             ("Household_LaborSold", "Household labour sold"),

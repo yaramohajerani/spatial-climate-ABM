@@ -60,6 +60,10 @@ class EconomyModel(Model):
                 raise FileNotFoundError(f"Firm topology JSON not found: {topo_path}")
             self._firm_topology = json.loads(topo_path.read_text())
 
+            # Override num_firms to match the topology file so downstream
+            # components (e.g. dashboards, logging) see the correct value.
+            num_firms = len(self._firm_topology.get("firms", []))
+
         if hazard_events is None:
             raise ValueError("hazard_events must be provided.")
 
@@ -160,9 +164,16 @@ class EconomyModel(Model):
 
         # --- Create agents & build trade network --- #
         self._init_agents(num_households, num_firms)
-        # If topology provided, connections are encoded there; otherwise random
+        # Build trade network: if topology was provided it already specified
+        # firm–firm edges, but we still need to connect households to nearby
+        # employers/shops. If no topology → build both firm & household links.
+
         if self._firm_topology is None:
+            # Randomly generate full network (firms + households)
             self._build_trade_network()
+        else:
+            # Only households remain to be wired up.
+            self._connect_households_to_firms()
 
         # Build exposures and assign centroids for each hazard
         self._exposures = self._build_exposures()
@@ -532,15 +543,33 @@ class EconomyModel(Model):
                 f.connected_firms.append(nearest)
 
         # 2. Household – firm employment/consumption links (within radius)
-        work_radius = 3
+        self._connect_households_to_firms()
+
+    # ------------------------------------------------------------------ #
+    #                HOUSEHOLD – FIRM LINK HELPER (reusable)            #
+    # ------------------------------------------------------------------ #
+    def _connect_households_to_firms(self) -> None:
+        """Attach each household to nearby firms within a Manhattan radius of 3."""
+
+        firm_agents = [ag for ag in self.agents if isinstance(ag, FirmAgent)]
+        if not firm_agents:
+            return  # edge-case: no firms
+
+        household_agents = [ag for ag in self.agents if isinstance(ag, HouseholdAgent)]
+
+        work_radius = 10
         for hh in household_agents:
+            # Avoid duplicating if links already present
+            if hh.nearby_firms:
+                continue
+
             for firm in firm_agents:
                 dx = abs(hh.pos[0] - firm.pos[0])
                 dy = abs(hh.pos[1] - firm.pos[1])
                 if dx + dy <= work_radius:
                     hh.nearby_firms.append(firm)
 
-            # Guarantee at least one connection (pick nearest firm) ---------
+            # Guarantee at least one connection (pick nearest firm) ----
             if not hh.nearby_firms:
                 nearest = min(
                     firm_agents,

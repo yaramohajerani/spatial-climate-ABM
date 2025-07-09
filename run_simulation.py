@@ -15,6 +15,7 @@ def _parse():
     )
     p.add_argument("--viz", action="store_true", help="Launch interactive Solara dashboard instead of headless run")
     p.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    p.add_argument("--topology", type=str, help="Optional JSON file describing firm supply-chain topology")
     return p.parse_args()
 
 def main() -> None:  # noqa: D401
@@ -41,6 +42,8 @@ def main() -> None:  # noqa: D401
         # Pass hazard events to the dashboard so it can build the same model
         env["ABM_HAZARD_EVENTS"] = ";".join(f"{rp}:{t}:{p}" for rp, t, p in events)
         env["ABM_SEED"] = str(args.seed)
+        if args.topology:
+            env["ABM_TOPOLOGY_PATH"] = args.topology
 
         cmd = [sys.executable, "-m", "solara", "run", "visualization.py"]
         subprocess.run(cmd, env=env, check=False)
@@ -53,6 +56,7 @@ def main() -> None:  # noqa: D401
         shock_step=5,
         hazard_events=events,
         seed=args.seed,
+        firm_topology_path=args.topology,
     )
 
     for _ in range(10):  # simulate 10 years

@@ -31,7 +31,25 @@
     {"id": 27, "sector": "services",      "lon": 151.2, "lat": -33.8,"capital": 2.0},
     {"id": 28, "sector": "services",      "lon": -74.0, "lat": 40.7, "capital": 2.0},
     {"id": 29, "sector": "services",      "lon": -0.1,  "lat": 51.5, "capital": 2.0},
-    {"id": 30, "sector": "services",      "lon": 2.35,  "lat": 48.9, "capital": 2.0}
+    {"id": 30, "sector": "services",      "lon": 2.35,  "lat": 48.9, "capital": 2.0},
+
+    {"id": 31, "sector": "manufacturing", "lon": -73.57, "lat": 45.50, "capital": 3.0},
+    {"id": 32, "sector": "manufacturing", "lon": -90.20, "lat": 38.63, "capital": 3.0},
+    {"id": 33, "sector": "manufacturing", "lon": -90.05, "lat": 35.15, "capital": 3.0},
+    {"id": 34, "sector": "manufacturing", "lon": -91.14, "lat": 30.45, "capital": 3.0},
+    {"id": 35, "sector": "manufacturing", "lon": -93.26, "lat": 44.98, "capital": 3.0},
+
+    {"id": 36, "sector": "services",      "lon": -73.57, "lat": 45.50, "capital": 2.0},
+    {"id": 37, "sector": "services",      "lon": -90.20, "lat": 38.63, "capital": 2.0},
+    {"id": 38, "sector": "services",      "lon": -90.05, "lat": 35.15, "capital": 2.0},
+    {"id": 39, "sector": "services",      "lon": -91.14, "lat": 30.45, "capital": 2.0},
+    {"id": 40, "sector": "services",      "lon": -93.26, "lat": 44.98, "capital": 2.0},
+
+    {"id": 41, "sector": "wholesale",     "lon": -73.57, "lat": 45.50, "capital": 1.5},
+    {"id": 42, "sector": "wholesale",     "lon": -90.20, "lat": 38.63, "capital": 1.5},
+    {"id": 43, "sector": "wholesale",     "lon": -90.05, "lat": 35.15, "capital": 1.5},
+    {"id": 44, "sector": "wholesale",     "lon": -91.14, "lat": 30.45, "capital": 1.5},
+    {"id": 45, "sector": "wholesale",     "lon": -93.26, "lat": 44.98, "capital": 1.5}
   ],
 
   "edges": [
@@ -51,6 +69,22 @@
     {"src": 13,"dst": 23}, {"src": 14,"dst": 24},
     {"src": 15,"dst": 25}, {"src": 16,"dst": 26},
     {"src": 17,"dst": 27}, {"src": 18,"dst": 28},
-    {"src": 19,"dst": 29}, {"src": 20,"dst": 30}
+    {"src": 19,"dst": 29}, {"src": 20,"dst": 30},
+
+    {"src": 1, "dst": 31}, {"src": 2, "dst": 31},
+    {"src": 3, "dst": 32}, {"src": 4, "dst": 32},
+    {"src": 5, "dst": 33}, {"src": 6, "dst": 33},
+    {"src": 7, "dst": 34}, {"src": 8, "dst": 34},
+    {"src": 9, "dst": 35}, {"src": 10,"dst": 35},
+
+    {"src": 31, "dst": 36}, {"src": 32, "dst": 37},
+    {"src": 33, "dst": 38}, {"src": 34, "dst": 39},
+    {"src": 35, "dst": 40},
+
+    {"src": 36, "dst": 41},
+    {"src": 37, "dst": 42},
+    {"src": 38, "dst": 43},
+    {"src": 39, "dst": 44},
+    {"src": 40, "dst": 45}
   ]
 } 

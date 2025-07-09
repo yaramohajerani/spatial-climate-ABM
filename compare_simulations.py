@@ -22,6 +22,7 @@ def _parse_args():
     p.add_argument("--steps", type=int, default=10, help="Number of timesteps / years to simulate")
     p.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     p.add_argument("--out", type=str, default="comparison_plot.png", help="Output plot file")
+    p.add_argument("--topology", type=str, help="Optional JSON file describing firm supply-chain topology")
     return p.parse_args()
 
 
@@ -53,6 +54,7 @@ def main():
         hazard_events=events,
         seed=args.seed,
         apply_hazard_impacts=True,
+        firm_topology_path=args.topology,
     )
     df_hazard = run_simulation(model_hazard, args.steps)
     df_hazard["Scenario"] = "With Hazard"
@@ -65,6 +67,7 @@ def main():
         hazard_events=events,
         seed=args.seed,
         apply_hazard_impacts=False,
+        firm_topology_path=args.topology,
     )
     df_base = run_simulation(model_baseline, args.steps)
     df_base["Scenario"] = "No Hazard"
