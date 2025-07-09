@@ -73,6 +73,11 @@ def main():
     # Combine results ------------------------------------------------------ #
     df_combined = pd.concat([df_hazard, df_base], ignore_index=True)
 
+    # Persist combined DataFrame so users can inspect numeric differences
+    csv_path = Path(args.out).with_suffix('.csv')
+    df_combined.to_csv(csv_path, index=False)
+    print(f"Combined results saved to {csv_path}")
+
     # Plot each metric ------------------------------------------------------ #
     metrics = [col for col in df_combined.columns if col not in {"Scenario", "Step"}]
     n_metrics = len(metrics)

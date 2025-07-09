@@ -19,6 +19,9 @@ if TYPE_CHECKING:  # pragma: no cover
 class HouseholdAgent(Agent):
     """A household supplies one unit of labour, earns wages and buys goods."""
 
+    # Fraction of wealth & capital lost when migrating to a new location
+    RELOCATION_COST: float = 0.10
+
     def __init__(
         self,
         model: "EconomyModel",
@@ -96,6 +99,11 @@ class HouseholdAgent(Agent):
             safe_cells = self.model.land_coordinates  # fall back to any land
         new_pos = self.random.choice(safe_cells)
         self.model.grid.move_agent(self, new_pos)
+
+        # Apply relocation cost: lose a share of money and physical capital
+        self.money *= (1 - self.RELOCATION_COST)
+        self.capital *= (1 - self.RELOCATION_COST)
+
         # Track migration for statistics
         self.model.migrants_this_step += 1
 
