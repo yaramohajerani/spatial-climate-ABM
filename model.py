@@ -38,12 +38,18 @@ class EconomyModel(Model):
         hazard_type: str = "FL",  # CLIMADA hazard tag for flood
         seed: int | None = None,
         firm_topology_path: str | None = None,
+        apply_hazard_impacts: bool = True,
     ) -> None:  # noqa: D401
         super().__init__(seed=seed)
 
         # Ensure NumPy uses the same seed so hazard sampling is reproducible
         if seed is not None:
             np.random.seed(seed)
+
+        # Flag to toggle whether sampled hazards actually affect agents.
+        # If False, hazards are still sampled to preserve random draws but
+        # impacts (capital loss, damage, relocation triggers) are disabled.
+        self.apply_hazard_impacts: bool = apply_hazard_impacts
 
         # --- Spatial environment & custom topology --- #
         self._firm_topology: dict | None = None
@@ -107,9 +113,6 @@ class EconomyModel(Model):
         # DataCollector – track aggregate production each step for inspection
         self.datacollector = DataCollector(
             model_reporters={
-                "Total_Production": lambda m: sum(
-                    ag.production for ag in m.agents if isinstance(ag, FirmAgent)
-                ),  # Deprecated alias, remove if not needed
                 "Firm_Production": lambda m: sum(
                     ag.production for ag in m.agents if isinstance(ag, FirmAgent)
                 ),
@@ -136,7 +139,7 @@ class EconomyModel(Model):
                 ),
                 "Average_Risk": lambda m: np.mean(list(m.hazard_map.values())),
                 "Base_Wage": lambda m: m.base_wage,
-                "Mean_Firm_Price": lambda m: np.mean([ag.price for ag in m.agents if isinstance(ag, FirmAgent)]),
+                "Mean_Price": lambda m: np.mean([ag.price for ag in m.agents if isinstance(ag, FirmAgent)]),
             },
             agent_reporters={
                 "money": lambda a: getattr(a, "money", np.nan),
@@ -433,6 +436,12 @@ class EconomyModel(Model):
 
             # Combine multiplicatively: 1 - prod(1 - loss)
             combined_loss = 1 - (1 - combined_loss) * (1 - mdr)
+
+        # If impacts disabled, zero‐out losses and intensities so agents see
+        # a risk‐free environment while preserving RNG sequence.
+        if not self.apply_hazard_impacts:
+            combined_loss[:] = 0  # noqa: E203 – NumPy slicing
+            max_depth[:] = 0
 
         # Write hazard_map for visualisation (max depth across hazards)
         for idx, coord in enumerate(self.valid_coordinates):

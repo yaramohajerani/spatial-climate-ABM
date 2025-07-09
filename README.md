@@ -83,3 +83,24 @@ will automatically select an appropriate vulnerability curve for each
 add custom curves). The Solara dashboard and `simulation_results.csv` remain
 unchanged. A second CSV `applied_events.csv` logs which cells flooded each
 year.
+
+### 4. Compare hazard vs baseline runs
+
+To quantify the effect of climate hazards on the economy, run the helper
+`compare_simulations.py`.  It launches two simulations back-to-back – **with**
+and **without** hazard impacts – using the *exact same* random placement of
+agents (controlled via `--seed`).  The script automatically overlays every
+tracked metric in a multi-panel figure.
+
+```bash
+# 30-year run, same hazard raster as above
+python compare_simulations.py \
+    --rp-file 10:FL:data/flood_rp10.tif \
+    --steps 30 \
+    --seed 42 \
+    --out comparison_plot.png
+```
+
+The resulting `comparison_plot.png` lets you visually inspect, for each metric
+(total production, wealth, capital stock, wage, etc.), how trajectories differ
+between the risk-free baseline and the hazard-exposed economy.
