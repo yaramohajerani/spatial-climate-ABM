@@ -35,6 +35,11 @@ class HouseholdAgent(Agent):
         self.labor_supply: float = labor_supply
         self.capital: float = 1.0
 
+        # Trade-off coefficient between wage and distance when choosing employer.
+        # Higher value → distance is more costly, so worker prefers closer firms.
+        # Randomised per household to create heterogeneous behaviour.
+        self.distance_cost: float = self.random.uniform(0.1, 0.5)
+
         # ---------------- Risk behaviour parameters ------------------- #
         # Randomised radius (in grid cells) within which the household
         # monitors hazard intensity. If the maximum normalised intensity
@@ -65,12 +70,25 @@ class HouseholdAgent(Agent):
         if not self.nearby_firms:
             return  # isolated household – nothing to do
 
-        # 1. Offer labour to a random connected firm ----------------------- #
-        firm = self.random.choice(self.nearby_firms)
-        wage = self.model.base_wage
-        if firm.hire_labor(self, wage):
-            # Wage transferred inside `hire_labor`
-            self.labor_sold += 1
+        # 1. Choose employer based on wage–distance utility --------------- #
+        if self.nearby_firms:
+            # Compute utility = offered wage – distance_cost * manhattan_distance
+            scored: list[tuple[float, "FirmAgent"]] = []
+            x0, y0 = self.pos
+            for firm in self.nearby_firms:
+                dx = abs(x0 - firm.pos[0])
+                dy = abs(y0 - firm.pos[1])
+                dist = dx + dy
+                utility = firm.wage_offer - self.distance_cost * dist
+                scored.append((utility, firm))
+
+            # Sort by utility descending so households try best option first
+            scored.sort(key=lambda t: t[0], reverse=True)
+
+            for _, firm in scored:
+                if firm.hire_labor(self, firm.wage_offer):
+                    self.labor_sold += 1
+                    break
 
         # 2. Buy one unit of goods if affordable -------------------------- #
         # Households consume a single generic good for simplicity.
@@ -127,6 +145,10 @@ class FirmAgent(Agent):
 
         self.sector = sector
         self.capital_stock = capital_stock
+
+        # Firm-specific wage offer (labour price) – starts at model base wage
+        self.wage_offer: float = model.base_wage if hasattr(model, "base_wage") else 1.0
+        self.last_hired_labor: int = 0  # employees hired in previous step
 
         # ---------------- Economic state ------------------------------- #
         self.money: float = 100.0
@@ -217,6 +239,14 @@ class FirmAgent(Agent):
         """Purchase inputs, transform them with labour into output, then sell surplus."""
 
         # ---------------- Damage recovery ----------------------------- #
+        # ---------------- Wage adjustment ----------------------------- #
+        if self.last_hired_labor == 0:
+            self.wage_offer *= 1.05  # no workers last year → raise wage
+        elif self.last_hired_labor > 3:
+            self.wage_offer *= 0.95  # ample labour → lower wage
+
+        self.wage_offer = float(min(10.0, max(0.1, self.wage_offer)))
+
         # Recover 50% of remaining damage each step
         self.damage_factor += (1.0 - self.damage_factor) * 0.5
         self.damage_factor = min(1.0, max(0.0, self.damage_factor))
@@ -299,6 +329,8 @@ class FirmAgent(Agent):
         # ----------------------------------------------------------------
         # 3. Clear employee list for next step
         # ----------------------------------------------------------------
+        # Record labour count for next step's wage adjustment
+        self.last_hired_labor = len(self.employees)
         self.employees.clear()
 
         # ---------------- Capital depreciation ------------------------ #

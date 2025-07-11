@@ -86,6 +86,23 @@ class EconomyModel(Model):
         self.lon_vals = first_lon  # type: ignore[assignment]
         self.lat_vals = first_lat
 
+        # ---------------- Derived spatial metrics ------------------- #
+        # Translate a desired 1° geographic radius into grid cells so that
+        # household ↔ firm distance is resolution‐independent.
+        if len(self.lon_vals) > 1:
+            lon_step = float(np.mean(np.diff(self.lon_vals)))
+        else:
+            lon_step = 1.0
+        if len(self.lat_vals) > 1:
+            lat_step = float(np.mean(np.diff(self.lat_vals)))
+        else:
+            lat_step = 1.0
+
+        cell_deg = max(1e-6, min(abs(lon_step), abs(lat_step)))  # prevent div-by-zero
+        self.work_radius: int = int(np.ceil(1.0 / cell_deg))
+        # Avoid pathological radii on very fine grids
+        self.work_radius = max(3, min(self.work_radius, 30))
+
         # Derive grid dimensions from the raster unless explicitly overridden
         if width is None:
             width = len(self.lon_vals)
@@ -230,10 +247,23 @@ class EconomyModel(Model):
     def _init_agents(self, num_households: int, num_firms: int) -> None:
         """Place households and firms randomly on grid."""
         # ---------------- Households ---------------- #
-        for _ in range(num_households):
-            pos = self.random.choice(self.land_coordinates)
-            hh = HouseholdAgent(model=self, pos=pos)
-            self.grid.place_agent(hh, pos)
+        if self._firm_topology is not None and num_firms:
+            # Place households close to existing firms to guarantee labour supply.
+            firm_agents_list: list[FirmAgent] = []  # populated later for firms
+        else:
+            firm_agents_list = []  # placeholder
+
+        # First create a temporary list to hold household positions
+        hh_positions: list[Coords] = []
+
+        if self._firm_topology is not None:
+            # We will place each household within radius 3 of a random firm.
+            # Fetch firm positions once we finish creating firms below.
+            pass  # postpone until firms created
+        else:
+            for _ in range(num_households):
+                pos = self.random.choice(self.land_coordinates)
+                hh_positions.append(pos)
 
         # ---------------- Firms --------------------- #
         if self._firm_topology is not None:
@@ -262,6 +292,9 @@ class EconomyModel(Model):
                 self.grid.place_agent(ag, (x, y))
                 id_to_agent[firm["id"]] = ag
 
+            # Now we have populated firm_agents_list
+            firm_agents_list = list(id_to_agent.values())
+
             # Build directed edges (supplier -> buyer)
             for edge in self._firm_topology.get("edges", []):
                 src_id, dst_id = edge["src"], edge["dst"]
@@ -277,6 +310,31 @@ class EconomyModel(Model):
                 pos = self.random.choice(self.land_coordinates)
                 agent = FirmAgent(model=self, pos=pos, sector="manufacturing")
                 self.grid.place_agent(agent, pos)
+                firm_agents_list.append(agent)
+
+        # ---------------- Place households if not already done --------------- #
+        if not hh_positions:
+            # Need to create household positions now (topology case)
+            for _ in range(num_households):
+                firm = self.random.choice(firm_agents_list)
+                fx, fy = firm.pos
+                # Try positions within radius 3; fallback to firm cell
+                candidates = []
+                for dx in range(-self.work_radius, self.work_radius + 1):
+                    for dy in range(-self.work_radius, self.work_radius + 1):
+                        coord = (fx + dx, fy + dy)
+                        if coord in self.land_coordinates:
+                            candidates.append(coord)
+                if candidates:
+                    pos = self.random.choice(candidates)
+                else:
+                    pos = firm.pos
+                hh_positions.append(pos)
+
+        # Finally create Household agents at the determined positions
+        for pos in hh_positions:
+            hh = HouseholdAgent(model=self, pos=pos)
+            self.grid.place_agent(hh, pos)
 
     # --------------------------------------------------------------------- #
     #                              UTILITIES                                #
@@ -364,19 +422,10 @@ class EconomyModel(Model):
         # analogue of RandomActivation.
         self.agents.shuffle_do("step")
 
-        # ---------------- Dynamic wage adjustment --------------------- #
-        households = [ag for ag in self.agents if isinstance(ag, HouseholdAgent)]
-        total_supply = len(households) * 1.0  # each supplies one unit
-        total_demand = sum(hh.labor_sold for hh in households)
-
-        if total_supply > 0:
-            ratio = total_demand / total_supply
-            if ratio > 0.9:
-                self.base_wage *= 1.05  # tight labour market
-            elif ratio < 0.5:
-                self.base_wage *= 0.95  # slack labour market
-
-            self.base_wage = float(min(10.0, max(0.1, self.base_wage)))
+        # ---------------- Record average wage for data collection ----- #
+        firm_wages = [ag.wage_offer for ag in self.agents if isinstance(ag, FirmAgent)]
+        if firm_wages:
+            self.base_wage = float(np.mean(firm_wages))
 
         # Collect outputs after wage update so next step sees new wage
         self.datacollector.collect(self)
@@ -557,7 +606,6 @@ class EconomyModel(Model):
 
         household_agents = [ag for ag in self.agents if isinstance(ag, HouseholdAgent)]
 
-        work_radius = 10
         for hh in household_agents:
             # Avoid duplicating if links already present
             if hh.nearby_firms:
@@ -566,7 +614,7 @@ class EconomyModel(Model):
             for firm in firm_agents:
                 dx = abs(hh.pos[0] - firm.pos[0])
                 dy = abs(hh.pos[1] - firm.pos[1])
-                if dx + dy <= work_radius:
+                if dx + dy <= self.work_radius:
                     hh.nearby_firms.append(firm)
 
             # Guarantee at least one connection (pick nearest firm) ----
