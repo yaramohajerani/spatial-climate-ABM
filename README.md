@@ -11,8 +11,11 @@ This repository provides a **spatial agent-based model** (ABM) that couples basi
   * Random, distance-weighted network **or** deterministic JSON file (`--topology`) with `lon/lat` coordinates & directed edges.
 * Endogenous markets
   * Dynamic goods price (±5 % based on inventory).
-  * Dynamic base wage (±5 % based on labour-market tightness).
+  * Firm-specific wages that adjust endogenously: firms raise wages when they fail to hire and cut them when labour is abundant. Households choose employers by maximising *wage − distance_cost × distance* where the distance cost is heterogeneous across households.
   * Capital stock used in production, depreciates 2 % each step; firms reinvest when capital-constrained.
+* Labour geography
+  * A **1 ° geographic catchment** is converted to grid-cell units at start-up so the hiring radius is independent of raster resolution.
+  * When a custom topology JSON is supplied, households are spawned near existing firms (within the same 1 ° radius) to guarantee local labour supply.
 * Climate shocks via CLIMADA
   * Per-cell loss fraction applied to capital, inventories and productive capacity (`damage_factor` with 50 % annual recovery).
 * Heterogenous adaptive risk behaviour

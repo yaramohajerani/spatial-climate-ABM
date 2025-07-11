@@ -49,7 +49,23 @@
     {"id": 42, "sector": "wholesale",     "lon": -90.20, "lat": 38.63, "capital": 1.5},
     {"id": 43, "sector": "wholesale",     "lon": -90.05, "lat": 35.15, "capital": 1.5},
     {"id": 44, "sector": "wholesale",     "lon": -91.14, "lat": 30.45, "capital": 1.5},
-    {"id": 45, "sector": "wholesale",     "lon": -93.26, "lat": 44.98, "capital": 1.5}
+    {"id": 45, "sector": "wholesale",     "lon": -93.26, "lat": 44.98, "capital": 1.5},
+
+    {"id": 46, "sector": "agriculture",  "lon": -60.02, "lat": -3.1,  "capital": 5.0},
+    {"id": 47, "sector": "agriculture",  "lon": -52.25, "lat": -1.45, "capital": 5.0},
+    {"id": 48, "sector": "manufacturing", "lon": -59.97, "lat": -3.1,  "capital": 3.0},
+    {"id": 49, "sector": "services",     "lon": -59.97, "lat": -3.1,  "capital": 2.0},
+    {"id": 50, "sector": "wholesale",    "lon": -59.97, "lat": -3.1,  "capital": 1.5},
+
+    {"id": 51, "sector": "agriculture",  "lon": 88.37, "lat": 22.57,  "capital": 5.0},
+    {"id": 52, "sector": "manufacturing", "lon": 88.36, "lat": 22.57,  "capital": 3.0},
+    {"id": 53, "sector": "services",     "lon": 88.36, "lat": 22.57,  "capital": 2.0},
+    {"id": 54, "sector": "wholesale",    "lon": 88.36, "lat": 22.57,  "capital": 1.5},
+
+    {"id": 55, "sector": "agriculture",  "lon": 15.31, "lat": -4.32,  "capital": 5.0},
+    {"id": 56, "sector": "manufacturing", "lon": 15.31, "lat": -4.32,  "capital": 3.0},
+    {"id": 57, "sector": "services",     "lon": 15.31, "lat": -4.32,  "capital": 2.0},
+    {"id": 58, "sector": "wholesale",    "lon": 15.31, "lat": -4.32,  "capital": 1.5}
   ],
 
   "edges": [
@@ -85,6 +101,13 @@
     {"src": 37, "dst": 42},
     {"src": 38, "dst": 43},
     {"src": 39, "dst": 44},
-    {"src": 40, "dst": 45}
+    {"src": 40, "dst": 45},
+
+    {"src": 46, "dst": 48}, {"src": 47, "dst": 48},
+    {"src": 48, "dst": 49}, {"src": 49, "dst": 50},
+
+    {"src": 51, "dst": 52}, {"src": 52, "dst": 53}, {"src": 53, "dst": 54},
+
+    {"src": 55, "dst": 56}, {"src": 56, "dst": 57}, {"src": 57, "dst": 58}
   ]
 } 
