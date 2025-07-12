@@ -188,7 +188,7 @@ def MapView(model):  # noqa: ANN001
         cmap="Blues",
         interpolation="nearest",
         vmin=0,
-        vmax=0.05,
+        vmax=0.2,
     )
 
     # Make the colorbar shorter so it doesn't exceed the figure height
@@ -218,9 +218,9 @@ def MapView(model):  # noqa: ANN001
             firms_lat.append(lat)
 
     if hhs_lon:
-        ax.scatter(hhs_lon, hhs_lat, s=5, c="tab:green", label="Households", alpha=0.7, zorder=3)
+        ax.scatter(hhs_lon, hhs_lat, s=5, c="tab:green", label="Households", alpha=0.5, zorder=3)
     if firms_lon:
-        ax.scatter(firms_lon, firms_lat, s=5, c="tab:red", marker="s", label="Firms", alpha=0.7, zorder=3)
+        ax.scatter(firms_lon, firms_lat, s=5, c="tab:red", marker="s", label="Firms", alpha=0.5, zorder=3)
 
     # Country boundaries
     if _WORLD is not None:
