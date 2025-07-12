@@ -148,6 +148,8 @@ class FirmAgent(Agent):
 
         # Firm-specific wage offer (labour price) – starts at model base wage
         self.wage_offer: float = model.mean_wage if hasattr(model, "mean_wage") else 1.0
+        # Track whether labour was the binding constraint in the *previous* step
+        self.labor_limited_last_step: bool = False
         self.last_hired_labor: int = 0  # employees hired in previous step
 
         # ---------------- Economic state ------------------------------- #
@@ -240,11 +242,17 @@ class FirmAgent(Agent):
 
         # ---------------- Damage recovery ----------------------------- #
         # ---------------- Wage adjustment ----------------------------- #
-        if self.last_hired_labor == 0:
-            self.wage_offer *= 1.05  # no workers last year → raise wage
-        elif self.last_hired_labor > 3:
-            self.wage_offer *= 0.95  # ample labour → lower wage
+        # Continuous wage update inspired by matching/Phillips-curve logic
+        tightness = 1.0 - getattr(self.model, "unemployment_rate_prev", 0.0)
+        signal = 1.0 if self.labor_limited_last_step else -0.5  # asymmetric
+        strength = 0.1  # responsiveness coefficient
 
+        adjustment = 1 + strength * signal * tightness
+        # Friction: wage cuts (adjustment < 1) dampened by 50 %
+        if adjustment < 1:
+            adjustment = 1 - (1 - adjustment) * 0.5
+
+        self.wage_offer *= adjustment
         self.wage_offer = float(min(10.0, max(0.1, self.wage_offer)))
 
         # Recover 50% of remaining damage each step
@@ -340,8 +348,9 @@ class FirmAgent(Agent):
         # ----------------------------------------------------------------
         # 3. Clear employee list for next step
         # ----------------------------------------------------------------
-        # Record labour count for next step's wage adjustment
+        # Record labour count and limiting factor for next step's adjustments
         self.last_hired_labor = len(self.employees)
+        self.labor_limited_last_step = (self.limiting_factor == "labor")
         self.employees.clear()
 
         # ---------------- Capital depreciation ------------------------ #

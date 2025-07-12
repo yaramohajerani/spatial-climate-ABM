@@ -23,6 +23,7 @@ def _parse_args():
     )
     p.add_argument("--steps", type=int, default=10, help="Number of timesteps / years to simulate")
     p.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    p.add_argument("--start-year", type=int, default=0, help="Base calendar year for step 0 (used for x-axis)")
     p.add_argument("--out", type=str, default="comparison_plot.png", help="Output plot file")
     p.add_argument("--topology", type=str, help="Optional JSON file describing firm supply-chain topology")
     p.add_argument(
@@ -88,6 +89,10 @@ def _merge_param_file(args):  # noqa: ANN001
     # seed ------------------------------------------------------------
     if args.seed == 42 and "seed" in data:
         args.seed = int(data["seed"])
+
+    # start_year ------------------------------------------------------
+    if args.start_year == 0 and data.get("start_year"):
+        args.start_year = int(data["start_year"])
 
     # topology --------------------------------------------------------
     if not args.topology and data.get("topology"):
@@ -204,14 +209,19 @@ def main():
         axes_matrix = axes_matrix.reshape(1, 2)
 
     # Helper to plot one metric
+    x_col = "Year" if args.start_year else "Step"
+
+    if args.start_year:
+        df_combined["Year"] = args.start_year + df_combined["Step"].astype(int)
+
     def _plot_metric(metric_name: str, ax):
         for scenario, grp in df_combined.groupby("Scenario"):
-            ax.plot(grp["Step"], grp[metric_name], label=scenario)
+            ax.plot(grp[x_col], grp[metric_name], label=scenario)
         ax.set_title(metric_name.replace("_", " "), fontsize=10)
         ylabel = units.get(metric_name, "")
         if ylabel:
             ax.set_ylabel(ylabel)
-        ax.set_xlabel("Step")
+        ax.set_xlabel(x_col)
         ax.legend()
 
     # Fill grid ----------------------------------------------------------- #
@@ -254,7 +264,7 @@ def main():
     ]
     for metric_name, color in bottlenecks:
         for scenario, grp in df_combined.groupby("Scenario"):
-            ax_bott.plot(grp["Step"], grp[metric_name], label=f"{metric_name} – {scenario}", color=color, alpha=0.7 if scenario=="With Hazard" else 0.4, linestyle="-" if scenario=="With Hazard" else "--")
+            ax_bott.plot(grp[x_col], grp[metric_name], label=f"{metric_name} – {scenario}", color=color, alpha=0.7 if scenario=="With Hazard" else 0.4, linestyle="-" if scenario=="With Hazard" else "--")
     ax_bott.set_title("Production Bottlenecks", fontsize=10)
     ax_bott.set_ylabel("count")
     ax_bott.set_xlabel("Step")

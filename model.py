@@ -220,6 +220,9 @@ class EconomyModel(Model):
         # Log of applied events (step, event_name, event_id)
         self.applied_events: List[Tuple[int, str, int]] = []
 
+        # Labour market tracker: unemployment rate from previous step (0-1)
+        self.unemployment_rate_prev: float = 0.0
+
     # --------------------------------------------------------------------- #
     #                             INITIALISERS                               #
     # --------------------------------------------------------------------- #
@@ -446,6 +449,14 @@ class EconomyModel(Model):
         # In Mesa ≥3.0, self.agents provides an AgentSet; shuffle_do is the
         # analogue of RandomActivation.
         self.agents.shuffle_do("step")
+
+        # ---------------- Labour market metrics ----------------------- #
+        total_households = sum(1 for ag in self.agents if isinstance(ag, HouseholdAgent))
+        total_labor_sold = sum(getattr(ag, "labor_sold", 0.0) for ag in self.agents if isinstance(ag, HouseholdAgent))
+        if total_households > 0:
+            self.unemployment_rate_prev = max(0.0, 1.0 - (total_labor_sold / total_households))
+        else:
+            self.unemployment_rate_prev = 0.0
 
         # ---------------- Record average wage for data collection ----- #
         firm_wages = [ag.wage_offer for ag in self.agents if isinstance(ag, FirmAgent)]

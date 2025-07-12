@@ -19,6 +19,7 @@ def _parse():
     )
     p.add_argument("--viz", action="store_true", help="Launch interactive Solara dashboard instead of headless run")
     p.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    p.add_argument("--start-year", type=int, default=0, help="Base calendar year for step 0 (optional; used for plotting)")
     p.add_argument("--topology", type=str, help="Optional JSON file describing firm supply-chain topology")
     p.add_argument(
         "--param-file",
@@ -61,6 +62,10 @@ def main() -> None:  # noqa: D401
         if args.seed == 42 and "seed" in param_data:
             args.seed = int(param_data["seed"])
 
+        # 3b. Start year ----------------------------------------------------
+        if args.start_year == 0 and "start_year" in param_data:
+            args.start_year = int(param_data["start_year"])
+
         # 4. Topology path --------------------------------------------------
         if not args.topology and param_data.get("topology"):
             args.topology = str(param_data["topology"])
@@ -98,6 +103,9 @@ def main() -> None:  # noqa: D401
         env["ABM_SEED"] = str(args.seed)
         if args.topology:
             env["ABM_TOPOLOGY_PATH"] = args.topology
+
+        if args.start_year:
+            env["ABM_START_YEAR"] = str(args.start_year)
 
         cmd = [sys.executable, "-m", "solara", "run", "visualization.py"]
         subprocess.run(cmd, env=env, check=False)

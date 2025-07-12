@@ -21,6 +21,13 @@ import networkx as nx
 import json, pathlib, datetime
 import matplotlib.pyplot as plt
 
+# Capture optional start year passed via environment
+_START_YEAR = None
+try:
+    _START_YEAR = int(os.getenv("ABM_START_YEAR", "0"))
+except ValueError:
+    _START_YEAR = None
+
 from mesa.visualization import SolaraViz, make_plot_component
 
 from agents import FirmAgent, HouseholdAgent
@@ -95,8 +102,15 @@ def CombinedBottleneckPlot(model):  # noqa: ANN001
     fig = _plt.Figure(figsize=(4, 2.5))
     ax = fig.subplots()
 
-    steps = model.results_to_dataframe().index
     df = model.results_to_dataframe()
+    steps = df.index
+    if _START_YEAR:
+        years = _START_YEAR + steps
+        x_vals = years
+        x_label = "Year"
+    else:
+        x_vals = steps
+        x_label = "Step"
 
     for metric, color in [
         ("Labor_Limited_Firms", "tab:blue"),
@@ -104,11 +118,11 @@ def CombinedBottleneckPlot(model):  # noqa: ANN001
         ("Input_Limited_Firms", "tab:green"),
     ]:
         if metric in df.columns:
-            ax.plot(steps, df[metric], label=metric.replace("_", " "), color=color)
+            ax.plot(x_vals, df[metric], label=metric.replace("_", " "), color=color)
 
     ax.set_title("Production bottlenecks")
     ax.set_ylabel("Firm count")
-    ax.set_xlabel("Step")
+    ax.set_xlabel(x_label)
     ax.legend(fontsize=6)
 
     fig.tight_layout()
