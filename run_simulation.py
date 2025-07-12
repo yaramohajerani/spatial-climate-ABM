@@ -13,9 +13,9 @@ def _parse():
         metavar="RP:START:END:TYPE:PATH",
         help=(
             "Add a GeoTIFF file. Format: <RP>:<START_STEP>:<END_STEP>:<HAZARD_TYPE>:<path>. "
+            "Required unless provided via --param-file. "
             "Example: --rp-file 100:1:20:FL:rp100_2030.tif"
         ),
-        required=True,
     )
     p.add_argument("--viz", action="store_true", help="Launch interactive Solara dashboard instead of headless run")
     p.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
@@ -64,6 +64,10 @@ def main() -> None:  # noqa: D401
         # 4. Topology path --------------------------------------------------
         if not args.topology and param_data.get("topology"):
             args.topology = str(param_data["topology"])
+
+    # Ensure we have at least one RP spec after merging param file -----------
+    if not args.rp_file:
+        raise SystemExit("No --rp-file entries provided and none found in parameter file.")
 
     # First, parse the RP files into a list irrespective of --viz so we can
     # pass them on to a potential Solara dashboard.
