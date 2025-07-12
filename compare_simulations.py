@@ -16,13 +16,13 @@ def _parse_args():
         "--rp-file",
         action="append",
         metavar="RP:TYPE:PATH",
-        required=True,
-        help="Add a GeoTIFF file. Format: <RP>:<HAZARD_TYPE>:<path>. Can be used multiple times.",
+        help="Add a GeoTIFF file. Format: <RP>:<HAZARD_TYPE>:<path>. Can be used multiple times. Required unless --simulation_output is given.",
     )
     p.add_argument("--steps", type=int, default=10, help="Number of timesteps / years to simulate")
     p.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     p.add_argument("--out", type=str, default="comparison_plot.png", help="Output plot file")
     p.add_argument("--topology", type=str, help="Optional JSON file describing firm supply-chain topology")
+    p.add_argument("--simulation_output", type=str, help="Existing CSV produced by a prior run; if given we skip running the model and only regenerate the plot")
     return p.parse_args()
 
 
@@ -45,43 +45,49 @@ def run_simulation(model: EconomyModel, n_steps: int):
 
 def main():
     args = _parse_args()
-    events = _parse_events(args.rp_file)
 
-    # ---------------- Simulation with hazards ---------------- #
-    model_hazard = EconomyModel(
-        num_households=100,
-        num_firms=20,
-        hazard_events=events,
-        seed=args.seed,
-        apply_hazard_impacts=True,
-        firm_topology_path=args.topology,
-    )
-    df_hazard = run_simulation(model_hazard, args.steps)
-    df_hazard["Scenario"] = "With Hazard"
-    df_hazard["Step"] = df_hazard.index  # preserve timestep before concatenation
+    if not args.simulation_output and not args.rp_file:
+        raise SystemExit("Either --rp-file or --simulation_output must be provided.")
 
-    # ---------------- Baseline simulation (no hazard impacts) -------------- #
-    model_baseline = EconomyModel(
-        num_households=100,
-        num_firms=20,
-        hazard_events=events,
-        seed=args.seed,
-        apply_hazard_impacts=False,
-        firm_topology_path=args.topology,
-    )
-    df_base = run_simulation(model_baseline, args.steps)
-    df_base["Scenario"] = "No Hazard"
-    df_base["Step"] = df_base.index
+    if args.simulation_output:
+        df_combined = pd.read_csv(args.simulation_output)
+        print(f"Loaded data from {args.simulation_output}")
+    else:
+        events = _parse_events(args.rp_file)
 
-    # Combine results ------------------------------------------------------ #
-    df_combined = pd.concat([df_hazard, df_base], ignore_index=True)
+        # ---------------- Simulation with hazards ---------------- #
+        model_hazard = EconomyModel(
+            num_households=100,
+            num_firms=20,
+            hazard_events=events,
+            seed=args.seed,
+            apply_hazard_impacts=True,
+            firm_topology_path=args.topology,
+        )
+        df_hazard = run_simulation(model_hazard, args.steps)
+        df_hazard["Scenario"] = "With Hazard"
+        df_hazard["Step"] = df_hazard.index
 
-    # Persist combined DataFrame so users can inspect numeric differences
-    csv_path = Path(args.out).with_suffix('.csv')
-    df_combined.to_csv(csv_path, index=False)
-    print(f"Combined results saved to {csv_path}")
+        # ---------------- Baseline simulation ---------------------------- #
+        model_baseline = EconomyModel(
+            num_households=100,
+            num_firms=20,
+            hazard_events=events,
+            seed=args.seed,
+            apply_hazard_impacts=False,
+            firm_topology_path=args.topology,
+        )
+        df_base = run_simulation(model_baseline, args.steps)
+        df_base["Scenario"] = "No Hazard"
+        df_base["Step"] = df_base.index
 
-    # Plot each metric ------------------------------------------------------ #
+        df_combined = pd.concat([df_hazard, df_base], ignore_index=True)
+
+        # Persist combined DataFrame ------------------------------------------------
+        csv_path = Path(args.out).with_suffix('.csv')
+        df_combined.to_csv(csv_path, index=False)
+        print(f"Combined results saved to {csv_path}")
+
     # renaming for readability and polish of plot
     rename_map = {
         "Base_Wage": "Mean_Wage",
@@ -102,6 +108,9 @@ def main():
         "Average_Risk": "Score (0–1)",
         "Mean_Wage": "$ / Unit of Labor",
         "Mean_Price": "$ / Unit of Goods",
+        "Labor_Limited_Firms": "count",
+        "Capital_Limited_Firms": "count",
+        "Input_Limited_Firms": "count",
     }
 
     # Organise metrics: firms (col 0) vs households (col 1)
@@ -122,11 +131,17 @@ def main():
     ]
 
     rows = max(len(firm_metrics), len(household_metrics))
-    fig, axes = plt.subplots(rows, 2, figsize=(10, rows * 3), sharex=True)
+    extra_bottleneck_row = True
+    if extra_bottleneck_row:
+        rows += 1
+    import matplotlib.gridspec as gridspec
+    fig = plt.figure(figsize=(10, rows * 3))
+    gs = gridspec.GridSpec(rows, 2, height_ratios=[1]*(rows-1)+[1.2])
+    axes_matrix = [[fig.add_subplot(gs[r, c]) for c in range(2)] for r in range(rows)]
 
     # Ensure axes is 2-D even if rows == 1
     if rows == 1:
-        axes = axes.reshape(1, 2)
+        axes_matrix = axes_matrix.reshape(1, 2)
 
     # Helper to plot one metric
     def _plot_metric(metric_name: str, ax):
@@ -143,15 +158,51 @@ def main():
     for r in range(rows):
         # Column 0 – firm metrics
         if r < len(firm_metrics):
-            _plot_metric(firm_metrics[r], axes[r, 0])
+            _plot_metric(firm_metrics[r], axes_matrix[r][0])
         else:
-            axes[r, 0].set_visible(False)
+            if r == len(firm_metrics):
+                # Plot all three bottleneck series on same axis
+                ax = axes_matrix[r][0]
+                bottlenecks = [
+                    ("Labor_Limited_Firms", "tab:blue"),
+                    ("Capital_Limited_Firms", "tab:red"),
+                    ("Input_Limited_Firms", "tab:green"),
+                ]
+                for metric_name, color in bottlenecks:
+                    for scenario, grp in df_combined.groupby("Scenario"):
+                        ax.plot(grp["Step"], grp[metric_name], label=f"{metric_name} – {scenario}", color=color, alpha=0.7 if scenario=="With Hazard" else 0.4, linestyle="-" if scenario=="With Hazard" else "--")
+                ax.set_title("Production Bottlenecks", fontsize=10)
+                ax.set_ylabel("count")
+                ax.set_xlabel("Step")
+                ax.legend(fontsize=7)
+            else:
+                axes_matrix[r][0].set_visible(False)
 
         # Column 1 – household metrics
         if r < len(household_metrics):
-            _plot_metric(household_metrics[r], axes[r, 1])
+            _plot_metric(household_metrics[r], axes_matrix[r][1])
         else:
-            axes[r, 1].set_visible(False)
+            axes_matrix[r][1].set_visible(False)
+
+    # Expand bottleneck plot across both columns
+    gs_bott = gs[-1, :]
+    ax_bott = fig.add_subplot(gs_bott)
+    bottlenecks = [
+        ("Labor_Limited_Firms", "tab:blue"),
+        ("Capital_Limited_Firms", "tab:red"),
+        ("Input_Limited_Firms", "tab:green"),
+    ]
+    for metric_name, color in bottlenecks:
+        for scenario, grp in df_combined.groupby("Scenario"):
+            ax_bott.plot(grp["Step"], grp[metric_name], label=f"{metric_name} – {scenario}", color=color, alpha=0.7 if scenario=="With Hazard" else 0.4, linestyle="-" if scenario=="With Hazard" else "--")
+    ax_bott.set_title("Production Bottlenecks", fontsize=10)
+    ax_bott.set_ylabel("count")
+    ax_bott.set_xlabel("Step")
+    ax_bott.legend(fontsize=7, loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=2)
+
+    # Hide the original small axes allocated for bottleneck row
+    axes_matrix[-1][0].set_visible(False)
+    axes_matrix[-1][1].set_visible(False)
 
     fig.tight_layout()
     Path(args.out).with_suffix(Path(args.out).suffix).parent.mkdir(parents=True, exist_ok=True)

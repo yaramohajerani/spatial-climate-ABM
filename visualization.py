@@ -76,8 +76,43 @@ PLOT_WAGE = make_plot_component("Mean_Wage")
 PLOT_FIRM_CAP = make_plot_component("Firm_Capital")
 PLOT_HH_WEALTH = make_plot_component("Household_Wealth")
 PLOT_HH_CAP = make_plot_component("Household_Capital")
-PLOT_HH_LABOR = make_plot_component("Household_LaborSold")
+PLOT_HH_LABOR = make_plot_component("Household_Labor_Sold")
 PLOT_HH_CONS = make_plot_component("Household_Consumption")
+
+# ------------------------------------------------------------------ #
+# Custom combined plot for production bottlenecks
+# ------------------------------------------------------------------ #
+
+
+@solara.component
+def CombinedBottleneckPlot(model):  # noqa: ANN001
+    """Plot labour-, capital-, and input-limited firm counts on one axis."""
+
+    update_counter.get()
+
+    import matplotlib.pyplot as _plt
+
+    fig = _plt.Figure(figsize=(4, 2.5))
+    ax = fig.subplots()
+
+    steps = model.results_to_dataframe().index
+    df = model.results_to_dataframe()
+
+    for metric, color in [
+        ("Labor_Limited_Firms", "tab:blue"),
+        ("Capital_Limited_Firms", "tab:red"),
+        ("Input_Limited_Firms", "tab:green"),
+    ]:
+        if metric in df.columns:
+            ax.plot(steps, df[metric], label=metric.replace("_", " "), color=color)
+
+    ax.set_title("Production bottlenecks")
+    ax.set_ylabel("Firm count")
+    ax.set_xlabel("Step")
+    ax.legend(fontsize=6)
+
+    fig.tight_layout()
+    solara.FigureMatplotlib(fig)
 
 # ----------------------------- Parameters ------------------------------- #
 
@@ -390,6 +425,7 @@ def DashboardRow(model):  # noqa: ANN001
             PLOT_PROD(model)
             PLOT_CONS(model)
             PLOT_PRICE(model)
+            CombinedBottleneckPlot(model)
         with solara.Column(style={"flex": "1", "minWidth": "300px", "overflowY": "auto"}):
             solara.Markdown("## Household metrics")
             PLOT_HH_WEALTH(model)
@@ -420,12 +456,19 @@ def SaveExitButton(model):  # noqa: ANN001
             ("Mean_Price", "Mean price"),
             ("Household_Wealth", "Household wealth"),
             ("Household_Capital", "Household capital"),
-            ("Household_LaborSold", "Household labour sold"),
+            ("Household_Labor_Sold", "Household labour sold"),
             ("Household_Consumption", "Household consumption"),
             ("Mean_Wage", "Mean wage"),
         ]
 
-        rows = int(np.ceil(len(variables) / 2))
+        # One extra combined subplot for bottlenecks
+        bottleneck_metrics = [
+            ("Labor_Limited_Firms", "Labor limited"),
+            ("Capital_Limited_Firms", "Capital limited"),
+            ("Input_Limited_Firms", "Input limited"),
+        ]
+
+        rows = int(np.ceil((len(variables)+1) / 2))
         fig, axes = plt.subplots(rows, 2, figsize=(12, 2.5 * rows), sharex=True)
         axes = axes.flatten()
 
@@ -434,6 +477,15 @@ def SaveExitButton(model):  # noqa: ANN001
                 ax.plot(df.index, df[col])
             ax.set_title(title, fontsize=9)
             ax.tick_params(labelsize=8)
+
+        # Plot bottlenecks in the last available axis
+        ax_bott = axes[-1]
+        for col, title in bottleneck_metrics:
+            if col in df.columns:
+                ax_bott.plot(df.index, df[col], label=title)
+        ax_bott.set_title("Production bottlenecks", fontsize=9)
+        ax_bott.tick_params(labelsize=8)
+        ax_bott.legend(fontsize=7)
 
         fig.tight_layout()
         img_path = pathlib.Path("dashboard_timeseries.png")

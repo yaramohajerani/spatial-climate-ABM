@@ -314,6 +314,17 @@ class FirmAgent(Agent):
 
         capital_limited = possible_output < max_possible and (max_output_from_capital <= labour_units / self.LABOR_COEFF)
 
+        # Determine primary limiting factor for diagnostic plotting
+        # Compare theoretical maxima before damage factor applied
+        limits = {
+            "labor": labour_units / self.LABOR_COEFF,
+            "input": max_output_from_inputs,
+            "capital": max_output_from_capital,
+        }
+        min_limit_val = min(limits.values())
+        # Pick first factor that equals the min within small tolerance
+        self.limiting_factor: str = next(k for k, v in limits.items() if abs(v - min_limit_val) < 1e-6)
+
         self.production = possible_output
         if possible_output > 0:
             # Consume inputs from each supplier

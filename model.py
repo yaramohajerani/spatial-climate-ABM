@@ -152,7 +152,7 @@ class EconomyModel(Model):
                 "Household_Capital": lambda m: sum(
                     ag.capital for ag in m.agents if isinstance(ag, HouseholdAgent)
                 ),
-                "Household_LaborSold": lambda m: sum(
+                "Household_Labor_Sold": lambda m: sum(
                     ag.labor_sold for ag in m.agents if isinstance(ag, HouseholdAgent)
                 ),
                 "Household_Consumption": lambda m: sum(
@@ -161,6 +161,15 @@ class EconomyModel(Model):
                 "Average_Risk": lambda m: np.mean(list(m.hazard_map.values())),
                 "Mean_Wage": lambda m: m.mean_wage,
                 "Mean_Price": lambda m: np.mean([ag.price for ag in m.agents if isinstance(ag, FirmAgent)]),
+                "Labor_Limited_Firms": lambda m: sum(
+                    1 for ag in m.agents if isinstance(ag, FirmAgent) and getattr(ag, "limiting_factor", "") == "labor"
+                ),
+                "Capital_Limited_Firms": lambda m: sum(
+                    1 for ag in m.agents if isinstance(ag, FirmAgent) and getattr(ag, "limiting_factor", "") == "capital"
+                ),
+                "Input_Limited_Firms": lambda m: sum(
+                    1 for ag in m.agents if isinstance(ag, FirmAgent) and getattr(ag, "limiting_factor", "") == "input"
+                ),
             },
             agent_reporters={
                 "money": lambda a: getattr(a, "money", np.nan),
