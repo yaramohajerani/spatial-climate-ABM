@@ -72,7 +72,7 @@ PLOT_WEALTH = make_plot_component("Firm_Wealth")
 PLOT_PROD = make_plot_component("Firm_Production")
 PLOT_CONS = make_plot_component("Firm_Consumption")
 PLOT_PRICE = make_plot_component("Mean_Price")
-PLOT_WAGE = make_plot_component("Base_Wage")
+PLOT_WAGE = make_plot_component("Mean_Wage")
 PLOT_FIRM_CAP = make_plot_component("Firm_Capital")
 PLOT_HH_WEALTH = make_plot_component("Household_Wealth")
 PLOT_HH_CAP = make_plot_component("Household_Capital")
@@ -153,7 +153,7 @@ def MapView(model):  # noqa: ANN001
         cmap="Blues",
         interpolation="nearest",
         vmin=0,
-        vmax=0.1,
+        vmax=0.05,
     )
 
     # Make the colorbar shorter so it doesn't exceed the figure height
@@ -422,7 +422,7 @@ def SaveExitButton(model):  # noqa: ANN001
             ("Household_Capital", "Household capital"),
             ("Household_LaborSold", "Household labour sold"),
             ("Household_Consumption", "Household consumption"),
-            ("Base_Wage", "Base wage"),
+            ("Mean_Wage", "Mean wage"),
         ]
 
         rows = int(np.ceil(len(variables) / 2))

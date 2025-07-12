@@ -82,24 +82,76 @@ def main():
     print(f"Combined results saved to {csv_path}")
 
     # Plot each metric ------------------------------------------------------ #
-    metrics = [col for col in df_combined.columns if col not in {"Scenario", "Step"}]
-    n_metrics = len(metrics)
-    cols = 2
-    rows = (n_metrics + cols - 1) // cols
-    fig, axes = plt.subplots(rows, cols, figsize=(cols * 5, rows * 3), sharex=True)
-    axes = axes.flatten()
+    # renaming for readability and polish of plot
+    rename_map = {
+        "Base_Wage": "Mean_Wage",
+        "Household_LaborSold": "Household_Labor_Sold",
+    }
+    df_combined = df_combined.rename(columns=rename_map)
 
-    for i, metric in enumerate(metrics):
-        ax = axes[i]
+    # Units for y-axis labels
+    units = {
+        "Firm_Production": "Units of Goods",
+        "Firm_Consumption": "Units of Goods",
+        "Firm_Wealth": "$",
+        "Firm_Capital": "Units of Capital",
+        "Household_Wealth": "$",
+        "Household_Capital": "Units of Capital",
+        "Household_Labor_Sold": "Units of Labor",
+        "Household_Consumption": "Units of Goods",
+        "Average_Risk": "Score (0–1)",
+        "Mean_Wage": "$ / Unit of Labor",
+        "Mean_Price": "$ / Unit of Goods",
+    }
+
+    # Organise metrics: firms (col 0) vs households (col 1)
+    firm_metrics = [
+        "Firm_Production",
+        "Firm_Consumption",
+        "Firm_Wealth",
+        "Firm_Capital",
+        "Mean_Price",
+    ]
+
+    household_metrics = [
+        "Household_Labor_Sold",
+        "Household_Consumption",
+        "Household_Wealth",
+        "Mean_Wage",
+        "Average_Risk",
+    ]
+
+    rows = max(len(firm_metrics), len(household_metrics))
+    fig, axes = plt.subplots(rows, 2, figsize=(10, rows * 3), sharex=True)
+
+    # Ensure axes is 2-D even if rows == 1
+    if rows == 1:
+        axes = axes.reshape(1, 2)
+
+    # Helper to plot one metric
+    def _plot_metric(metric_name: str, ax):
         for scenario, grp in df_combined.groupby("Scenario"):
-            ax.plot(grp["Step"], grp[metric], label=scenario)
-        ax.set_title(metric)
+            ax.plot(grp["Step"], grp[metric_name], label=scenario)
+        ax.set_title(metric_name.replace("_", " "), fontsize=10)
+        ylabel = units.get(metric_name, "")
+        if ylabel:
+            ax.set_ylabel(ylabel)
         ax.set_xlabel("Step")
         ax.legend()
 
-    # Hide unused subplots
-    for ax in axes[n_metrics:]:
-        ax.set_visible(False)
+    # Fill grid ----------------------------------------------------------- #
+    for r in range(rows):
+        # Column 0 – firm metrics
+        if r < len(firm_metrics):
+            _plot_metric(firm_metrics[r], axes[r, 0])
+        else:
+            axes[r, 0].set_visible(False)
+
+        # Column 1 – household metrics
+        if r < len(household_metrics):
+            _plot_metric(household_metrics[r], axes[r, 1])
+        else:
+            axes[r, 1].set_visible(False)
 
     fig.tight_layout()
     Path(args.out).with_suffix(Path(args.out).suffix).parent.mkdir(parents=True, exist_ok=True)

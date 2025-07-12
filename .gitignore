@@ -15,6 +15,9 @@ data/
 *.h5
 *.csv
 *.png
+*.gif
+*.mp4
+*.mov
 network_topology_*.json
 
 # Distribution / packaging

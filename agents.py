@@ -147,7 +147,7 @@ class FirmAgent(Agent):
         self.capital_stock = capital_stock
 
         # Firm-specific wage offer (labour price) – starts at model base wage
-        self.wage_offer: float = model.base_wage if hasattr(model, "base_wage") else 1.0
+        self.wage_offer: float = model.mean_wage if hasattr(model, "mean_wage") else 1.0
         self.last_hired_labor: int = 0  # employees hired in previous step
 
         # ---------------- Economic state ------------------------------- #
@@ -338,24 +338,30 @@ class FirmAgent(Agent):
         self.capital_stock *= (1 - DEPR)
 
         # ---------------- Capital purchase stage ----------------------- #
-        if capital_limited and self.money > self.price and self.connected_firms:
+        if capital_limited and self.money > self.price:
             needed_capital_units = int(max_possible - possible_output)
             budget_units = int(self.money / self.price)
             to_buy = min(needed_capital_units, budget_units)
 
             if to_buy > 0:
-                # Try suppliers in random order
-                for supplier in self.random.sample(self.connected_firms, len(self.connected_firms)):
+                # Candidate sellers: upstream suppliers *and* any firm with stock
+                all_firms = [ag for ag in self.model.agents if isinstance(ag, FirmAgent) and ag is not self]
+                candidates = list({*self.connected_firms, *all_firms})  # set union, preserve objects
+
+                # Randomise search order to avoid bias
+                for seller in self.random.sample(candidates, len(candidates)):
                     if to_buy == 0:
                         break
-                    avail = supplier.inventory_output
-                    qty = min(avail, to_buy)
+                    if seller.inventory_output <= 0:
+                        continue
+                    qty = min(seller.inventory_output, to_buy)
+                    cost = qty * seller.price
+                    if self.money < cost:
+                        qty = int(self.money / seller.price)
                     if qty <= 0:
                         continue
-                    bought = supplier.sell_goods_to_firm(self, qty)
+                    bought = seller.sell_goods_to_firm(self, qty)
                     if bought:
-                        # Redirect from inputs to capital_stock
-                        self.inventory_inputs[supplier.unique_id] -= bought
                         self.capital_stock += bought
                         to_buy -= bought
 

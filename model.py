@@ -16,7 +16,7 @@ from agents import FirmAgent, HouseholdAgent
 from hazard_utils import hazard_from_geotiffs
 
 from climada.hazard import Hazard
-from climada.entity import Exposures, ImpactFunc, ImpactFuncSet
+from climada.entity import Exposures, ImpactFunc
 
 Coords = Tuple[int, int]
 
@@ -126,7 +126,7 @@ class EconomyModel(Model):
         self.hazard_type = hazard_type
 
         # Base wage used by firms when hiring labour
-        self.base_wage = 1.0
+        self.mean_wage = 1.0
 
         # Compatibility stub – we no longer model migration but keep the attribute
         self.migrants_this_step: int = 0
@@ -159,7 +159,7 @@ class EconomyModel(Model):
                     ag.consumption for ag in m.agents if isinstance(ag, HouseholdAgent)
                 ),
                 "Average_Risk": lambda m: np.mean(list(m.hazard_map.values())),
-                "Base_Wage": lambda m: m.base_wage,
+                "Mean_Wage": lambda m: m.mean_wage,
                 "Mean_Price": lambda m: np.mean([ag.price for ag in m.agents if isinstance(ag, FirmAgent)]),
             },
             agent_reporters={
@@ -261,8 +261,11 @@ class EconomyModel(Model):
             # Fetch firm positions once we finish creating firms below.
             pass  # postpone until firms created
         else:
+            filtered_land = [c for c in self.land_coordinates if float(self.lat_vals[c[1]]) <= 60.0]
+            if not filtered_land:
+                filtered_land = self.land_coordinates
             for _ in range(num_households):
-                pos = self.random.choice(self.land_coordinates)
+                pos = self.random.choice(filtered_land)
                 hh_positions.append(pos)
 
         # ---------------- Firms --------------------- #
@@ -306,8 +309,13 @@ class EconomyModel(Model):
                 buyer.connected_firms.append(supplier)
 
         else:
+            # Limit random placement to economically active latitudes (≤ 60°N)
+            filtered_land = [c for c in self.land_coordinates if float(self.lat_vals[c[1]]) <= 60.0]
+            if not filtered_land:
+                filtered_land = self.land_coordinates  # fall back if raster truncated
+
             for _ in range(num_firms):
-                pos = self.random.choice(self.land_coordinates)
+                pos = self.random.choice(filtered_land)
                 agent = FirmAgent(model=self, pos=pos, sector="manufacturing")
                 self.grid.place_agent(agent, pos)
                 firm_agents_list.append(agent)
@@ -425,7 +433,7 @@ class EconomyModel(Model):
         # ---------------- Record average wage for data collection ----- #
         firm_wages = [ag.wage_offer for ag in self.agents if isinstance(ag, FirmAgent)]
         if firm_wages:
-            self.base_wage = float(np.mean(firm_wages))
+            self.mean_wage = float(np.mean(firm_wages))
 
         # Collect outputs after wage update so next step sees new wage
         self.datacollector.collect(self)
