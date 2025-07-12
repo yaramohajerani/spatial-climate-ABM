@@ -32,24 +32,24 @@ from model import EconomyModel
 # ------------------------------------------------------------------ #
 
 
-def _parse_hazard_events() -> List[Tuple[int, str, str]]:
+def _parse_hazard_events() -> List[Tuple[int, int, int, str, str]]:
     """Parse the semicolon-separated ABM_HAZARD_EVENTS string.
 
     Expected format:
-        "<RP>:<TYPE>:<PATH>;<RP2>:<TYPE2>:<PATH2>"
+        "<RP>:<START>:<END>:<TYPE>:<PATH>;..."
     """
 
     env_str = os.getenv("ABM_HAZARD_EVENTS", "")
     if not env_str:
         return []
 
-    events: List[Tuple[int, str, str]] = []
+    events: List[Tuple[int, int, int, str, str]] = []
     for item in env_str.split(";"):
         if not item:
             continue
         try:
-            rp_str, type_str, path_str = item.split(":", 2)
-            events.append((int(rp_str), type_str, path_str))
+            rp_str, start_str, end_str, type_str, path_str = item.split(":", 4)
+            events.append((int(rp_str), int(start_str), int(end_str), type_str, path_str))
         except ValueError:
             # Ignore malformed entries but keep going with others
             continue

@@ -33,8 +33,8 @@ class EconomyModel(Model):
         num_households: int = 100,
         num_firms: int = 20,
         shock_step: int = 5,
-        # Iterable of (return_period, hazard_type, path) tuples
-        hazard_events: Iterable[Tuple[int, str, str]] | None = None,
+        # Iterable of (return_period, start_step, end_step, hazard_type, path) tuples
+        hazard_events: Iterable[Tuple[int, int, int, str, str]] | None = None,
         hazard_type: str = "FL",  # CLIMADA hazard tag for flood
         seed: int | None = None,
         firm_topology_path: str | None = None,
@@ -68,14 +68,22 @@ class EconomyModel(Model):
             raise ValueError("hazard_events must be provided.")
 
         from collections import defaultdict
-        grouped: dict[str, list[Tuple[int, str]]] = defaultdict(list)
-        for rp, htype, path in hazard_events:
-            grouped[htype].append((rp, path))
+
+        # Group by hazard type while preserving order to keep mapping consistent
+        grouped_files: dict[str, list[Tuple[int, str]]] = defaultdict(list)
+        grouped_ranges: dict[str, list[Tuple[int, int]]] = defaultdict(list)
+
+        for rp, start, end, htype, path in hazard_events:
+            grouped_files[htype].append((rp, path))
+            grouped_ranges[htype].append((start, end))
+
+        # Store mapping of event index -> (start, end) per hazard type
+        self._hazard_event_ranges: dict[str, List[Tuple[int, int]]] = dict(grouped_ranges)
 
         self.hazards: dict[str, Tuple[Hazard, ImpactFunc]] = {}
 
         first_lon, first_lat = None, None
-        for htype, grp in grouped.items():
+        for htype, grp in grouped_files.items():
             haz, lon_vals, lat_vals = hazard_from_geotiffs(grp, haz_type=htype)
             vul = self._build_vulnerability(htype)
             self.hazards[htype] = (haz, vul)
@@ -494,7 +502,13 @@ class EconomyModel(Model):
         for htype, (haz, impf) in self.hazards.items():
             # Build per-hazard intensity map this year
             intens = np.zeros(n_cells, dtype=float)
+            ranges = self._hazard_event_ranges.get(htype, [])
             for i in range(haz.intensity.shape[0]):
+                # Skip events that are outside their active step window
+                if i < len(ranges):
+                    start, end = ranges[i]
+                    if not (start <= self.current_step <= end):
+                        continue
                 p_hit = haz.frequency[i]
                 if p_hit <= 0:
                     continue

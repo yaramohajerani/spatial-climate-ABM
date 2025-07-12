@@ -46,24 +46,52 @@ pip install -r requirements.txt
 ### 3. Run the model
 
 The model now expects external GeoTIFF rasters instead of CLIMADA HDF5 files. Each
-file is mapped to a *hazard event* via an explicit triple:
+raster is mapped to a *hazard event* via a **five-field spec** that also
+defines the simulation years (steps) for which the file is valid:
 
 ```
-<RETURN-PERIOD>:<HAZARD_TYPE>:<path/to/geotiff.tif>
+<RETURN-PERIOD>:<START_STEP>:<END_STEP>:<HAZARD_TYPE>:<path/to/geotiff.tif>
 ```
 
-You can pass any number of `--rp-file` arguments – one per event – to mix
-different return periods and years, for example:
+For instance, to splice 2030, 2050 and 2080 projections of a 10-year flood:
+
+```text
+10:1:20:FL:data/processed/flood_2030_rp10.tif
+10:21:40:FL:data/processed/flood_2050_rp10.tif
+10:41:70:FL:data/processed/flood_2080_rp10.tif
+```
+
+You can still pass each event directly via `--rp-file`, but for long lists it
+is far more convenient to keep them in a **JSON parameter file**:
+
+```json
+{
+  "rp_files": [
+    "10:1:20:FL:data/processed/flood_2030_rp10.tif",
+    "10:21:40:FL:data/processed/flood_2050_rp10.tif",
+    "10:41:70:FL:data/processed/flood_2080_rp10.tif",
+    "100:1:20:FL:data/processed/flood_2030_rp100.tif",
+    "100:21:40:FL:data/processed/flood_2050_rp100.tif",
+    "100:41:70:FL:data/processed/flood_2080_rp100.tif"
+  ],
+  "steps": 70,
+  "seed": 42,
+  "topology": "sample_firm_topology.json"
+}
+```
+
+Run the model headless or with the dashboard without the unwieldy command-line:
 
 ```bash
-# Mixed hazards: a 10-year flood and a 50-year wildfire raster
-python run_simulation.py \
-    --rp-file 10:FL:data/flood_rp10.tif \
-    --rp-file 50:WF:data/wildfire_rp50.tif
+# Headless
+python run_simulation.py --param-file sample_params.json
+
+# Interactive dashboard
+python run_simulation.py --param-file sample_params.json --viz
 ```
 
-Add `--viz` to launch the interactive Solara dashboard instead of the headless
-batch run.
+Command-line flags still override the JSON, so you can tweak one-off parameters
+without editing the file (e.g. `--seed 99`).
 
 ### Optional preprocessing
 
@@ -96,12 +124,8 @@ agents (controlled via `--seed`).  The script automatically overlays every
 tracked metric in a multi-panel figure.
 
 ```bash
-# 30-year run, same hazard raster as above
-python compare_simulations.py \
-    --rp-file 10:FL:data/flood_rp10.tif \
-    --steps 30 \
-    --seed 42 \
-    --out comparison_plot.png
+# 70-year run using the same JSON parameter bundle as above
+python compare_simulations.py --param-file sample_params.json --out comparison_plot.png
 ```
 
 The resulting `comparison_plot.png` lets you visually inspect, for each metric

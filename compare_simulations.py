@@ -15,26 +15,83 @@ def _parse_args():
     p.add_argument(
         "--rp-file",
         action="append",
-        metavar="RP:TYPE:PATH",
-        help="Add a GeoTIFF file. Format: <RP>:<HAZARD_TYPE>:<path>. Can be used multiple times. Required unless --simulation_output is given.",
+        metavar="RP:START:END:TYPE:PATH",
+        help=(
+            "Add a GeoTIFF file in the form <RP>:<START_STEP>:<END_STEP>:<HAZARD_TYPE>:<path>. "
+            "Can be used multiple times. Required unless --simulation_output is given."
+        ),
     )
     p.add_argument("--steps", type=int, default=10, help="Number of timesteps / years to simulate")
     p.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     p.add_argument("--out", type=str, default="comparison_plot.png", help="Output plot file")
     p.add_argument("--topology", type=str, help="Optional JSON file describing firm supply-chain topology")
+    p.add_argument(
+        "--param-file",
+        type=str,
+        help="Path to a JSON file containing parameter overrides (rp_files, steps, seed, topology).",
+    )
     p.add_argument("--simulation_output", type=str, help="Existing CSV produced by a prior run; if given we skip running the model and only regenerate the plot")
     return p.parse_args()
 
 
 def _parse_events(rp_files: list[str]):
-    events: list[tuple[int, str, str]] = []
+    """Parse a list of RP file strings into tuples.
+
+    Expected each item: "<RP>:<START>:<END>:<TYPE>:<PATH>".
+    """
+
+    events: list[tuple[int, int, int, str, str]] = []
     for item in rp_files:
         try:
-            rp_str, type_str, path_str = item.split(":", 2)
-            events.append((int(rp_str), type_str, path_str))
+            rp_str, start_str, end_str, type_str, path_str = item.split(":", 4)
+            events.append((int(rp_str), int(start_str), int(end_str), type_str, path_str))
         except ValueError as exc:
-            raise SystemExit(f"Invalid --rp-file format: {item}. Expected <RP>:<TYPE>:<path>.") from exc
+            raise SystemExit(
+                f"Invalid --rp-file format: {item}. Expected <RP>:<START>:<END>:<TYPE>:<path>."
+            ) from exc
     return events
+
+
+# ------------------------------------------------------------------ #
+#                      Parameter file loader                         #
+# ------------------------------------------------------------------ #
+
+
+def _merge_param_file(args):  # noqa: ANN001
+    """If --param-file given, merge its settings into the argparse result."""
+
+    if not getattr(args, "param_file", None):
+        return
+
+    import json, pathlib
+
+    pth = pathlib.Path(args.param_file)
+    if not pth.exists():
+        raise SystemExit(f"Parameter file not found: {pth}")
+
+    try:
+        data = json.loads(pth.read_text())
+    except Exception as exc:  # noqa: BLE001
+        raise SystemExit(f"Failed to parse JSON parameter file: {pth}") from exc
+
+    # rp_files --------------------------------------------------------
+    file_rp = data.get("rp_files") or data.get("rp_file")
+    if file_rp and not args.rp_file:
+        args.rp_file = file_rp
+    elif file_rp and args.rp_file:
+        args.rp_file = file_rp + args.rp_file
+
+    # steps -----------------------------------------------------------
+    if args.steps == 10 and "steps" in data:
+        args.steps = int(data["steps"])
+
+    # seed ------------------------------------------------------------
+    if args.seed == 42 and "seed" in data:
+        args.seed = int(data["seed"])
+
+    # topology --------------------------------------------------------
+    if not args.topology and data.get("topology"):
+        args.topology = str(data["topology"])
 
 
 def run_simulation(model: EconomyModel, n_steps: int):
@@ -45,6 +102,9 @@ def run_simulation(model: EconomyModel, n_steps: int):
 
 def main():
     args = _parse_args()
+
+    # Merge optional config file
+    _merge_param_file(args)
 
     if not args.simulation_output and not args.rp_file:
         raise SystemExit("Either --rp-file or --simulation_output must be provided.")
