@@ -1,7 +1,9 @@
 """Run prototype climate-economy ABM for 10 timesteps and persist results."""
 
 import argparse
+# Import model and agent classes
 from model import EconomyModel
+from agents import FirmAgent
 # Runner now expects one or more --rp-file arguments in the form
 # "<RP>:<START_STEP>:<END_STEP>:<TYPE>:<path>"
 
@@ -174,7 +176,49 @@ def main() -> None:  # noqa: D401
         "Average_Risk",
     ]
 
-    rows = max(len(firm_metrics), len(household_metrics)) + 1  # extra row for bottlenecks
+    # ------------------ Compute trophic levels & agent DataFrame ---------- #
+    def _compute_trophic_levels(model: EconomyModel):
+        firms = [ag for ag in model.agents if isinstance(ag, FirmAgent)]
+        id_map = {f.unique_id: f for f in firms}
+        memo: dict[int, int] = {}
+
+        def _level(fid: int, visiting: set[int]) -> int:
+            if fid in memo:
+                return memo[fid]
+            if fid in visiting:  # cycle safeguard
+                return 0
+            visiting.add(fid)
+            f = id_map[fid]
+            if not f.connected_firms:
+                lvl = 0
+            else:
+                lvl = 1 + min(_level(s.unique_id, visiting) for s in f.connected_firms)
+            visiting.remove(fid)
+            memo[fid] = lvl
+            return lvl
+
+        for fid in id_map:
+            _level(fid, set())
+        return memo
+
+    lvl_map = _compute_trophic_levels(model)
+
+    agent_df = model.datacollector.get_agent_vars_dataframe().reset_index()
+    agent_df.rename(columns={"level_0": "Step", "level_1": "AgentID"}, inplace=True, errors="ignore")
+    agent_df = agent_df[agent_df["type"] == "FirmAgent"].copy()
+    agent_df["Level"] = agent_df["AgentID"].map(lvl_map)
+
+    levels_sorted = sorted(agent_df["Level"].dropna().unique())
+    cmap_levels = plt.cm.viridis
+
+    # --------------- Plotting configuration ----------------------------- #
+    bottleneck_types = [
+        ("Labor_Limited_Firms", "Labor"),
+        ("Capital_Limited_Firms", "Capital"),
+        ("Input_Limited_Firms", "Input"),
+    ]
+
+    rows = max(len(firm_metrics), len(household_metrics)) + len(bottleneck_types)
     fig = plt.figure(figsize=(10, rows * 3))
     gs = gridspec.GridSpec(rows, 2, height_ratios=[1]*(rows-1)+[1.2])
     axes_matrix = [[fig.add_subplot(gs[r, c]) for c in range(2)] for r in range(rows)]
@@ -183,8 +227,34 @@ def main() -> None:  # noqa: D401
     if args.start_year:
         df["Year"] = args.start_year + df.index.astype(int) / 4
 
-    def _plot(col, ax):
-        ax.plot(df[x_col], df[col])
+    # Map firm metric names to agent DataFrame columns
+    firm_metric_map = {
+        "Firm_Production": "production",
+        "Firm_Consumption": "consumption",
+        "Firm_Wealth": "money",
+        "Firm_Capital": "capital",
+    }
+
+    def _plot_firm(col, ax):
+        if col == "Mean_Price":
+            # Mean_Price is model-level, not agent-level, so plot aggregate
+            ax.plot(df[x_col], df[col], color="tab:blue", label="All Firms")
+        else:
+            agent_col = firm_metric_map.get(col, col.lower())
+            for idx_lvl, lvl in enumerate(levels_sorted):
+                grp = agent_df[agent_df["Level"] == lvl].groupby("Step")[agent_col].sum()
+                x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int) / 4
+                color = cmap_levels(idx_lvl / max(1, len(levels_sorted) - 1))
+                ax.plot(x_vals, grp.values, label=f"Level {lvl}", color=color)
+        ax.set_title(col.replace("_", " "), fontsize=10)
+        ylabel = units.get(col, "")
+        if ylabel:
+            ax.set_ylabel(ylabel)
+        ax.set_xlabel(x_col)
+        ax.legend(fontsize=7)
+
+    def _plot_household(col, ax):
+        ax.plot(df[x_col], df[col], color="tab:orange")
         ax.set_title(col.replace("_", " "), fontsize=10)
         ylabel = units.get(col, "")
         if ylabel:
@@ -193,28 +263,30 @@ def main() -> None:  # noqa: D401
 
     for r in range(rows-1):
         if r < len(firm_metrics):
-            _plot(firm_metrics[r], axes_matrix[r][0])
+            _plot_firm(firm_metrics[r], axes_matrix[r][0])
         else:
             axes_matrix[r][0].set_visible(False)
 
         if r < len(household_metrics):
-            _plot(household_metrics[r], axes_matrix[r][1])
+            _plot_household(household_metrics[r], axes_matrix[r][1])
         else:
             axes_matrix[r][1].set_visible(False)
 
-    # bottlenecks row
-    ax_bott = fig.add_subplot(gs[-1, :])
-    for col, color in [
-        ("Labor_Limited_Firms", "tab:blue"),
-        ("Capital_Limited_Firms", "tab:red"),
-        ("Input_Limited_Firms", "tab:green"),
-    ]:
-        if col in df.columns:
-            ax_bott.plot(df[x_col], df[col], label=col, color=color)
-    ax_bott.set_title("Production Bottlenecks", fontsize=10)
-    ax_bott.set_ylabel("count")
-    ax_bott.set_xlabel(x_col)
-    ax_bott.legend(fontsize=7)
+    # bottleneck rows (one per type)
+    for idx_bt, (col_bt, label_bt) in enumerate(bottleneck_types):
+        ax_bt = fig.add_subplot(gs[rows - len(bottleneck_types) + idx_bt, :])
+
+        # Per-level counts
+        for idx_lvl, lvl in enumerate(levels_sorted):
+            mask = (agent_df["Level"] == lvl) & (agent_df["limiting_factor"] == label_bt.lower())
+            counts = agent_df[mask].groupby("Step").size()
+            x_vals = counts.index if not args.start_year else args.start_year + counts.index.astype(int) / 4
+            ax_bt.plot(x_vals, counts.values, label=f"Level {lvl}", color=cmap_levels(idx_lvl / max(1, len(levels_sorted) - 1)))
+
+        ax_bt.set_title(f"{label_bt} Bottlenecks", fontsize=10)
+        ax_bt.set_ylabel("count")
+        ax_bt.set_xlabel(x_col)
+        ax_bt.legend(fontsize=7)
 
     fig.tight_layout()
     fig.savefig("simulation_timeseries.png", dpi=150)

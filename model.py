@@ -190,6 +190,7 @@ class EconomyModel(Model):
                 "consumption": lambda a: getattr(a, "consumption", 0.0),
                 "labor_sold": lambda a: getattr(a, "labor_sold", 0.0),
                 "capital": lambda a: getattr(a, "capital_stock", getattr(a, "capital", 0.0)),
+                "limiting_factor": lambda a: getattr(a, "limiting_factor", ""),
                 "type": lambda a: type(a).__name__,
             },
         )

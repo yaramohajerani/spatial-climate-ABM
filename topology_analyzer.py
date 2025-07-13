@@ -99,14 +99,35 @@ def plot_network(g: nx.DiGraph, levels: Dict[int, int], outfile: Path):
         else:
             colours.append(plt.cm.viridis(lvl / max_lvl))
 
-    pos = nx.spring_layout(g, seed=42)
-    nx.draw_networkx_edges(g, pos, alpha=0.3, arrows=True, width=0.5)
-    nx.draw_networkx_nodes(g, pos, node_color=colours, node_size=100)
+    # Use layered layout by trophic level to reduce overlap
+    for n, lvl in levels.items():
+        g.nodes[n]["subset"] = lvl  # subset key recognised by multipartite
+    try:
+        pos = nx.multipartite_layout(g, subset_key="subset", align="horizontal", scale=2)
+    except Exception:
+        pos = nx.spring_layout(g, seed=42)
 
-    # Label a few nodes (or all if small)
-    if g.number_of_nodes() <= 50:
-        labels = {n: str(n) for n in g.nodes()}
-        nx.draw_networkx_labels(g, pos, labels, font_size=6)
+    nx.draw_networkx_edges(g, pos, alpha=0.3, arrows=True, width=0.5)
+    nx.draw_networkx_nodes(g, pos, node_color=colours, node_size=120, edgecolors="black", linewidths=0.3)
+
+    # Label nodes with sector initial + id; white text for dark nodes
+    if g.number_of_nodes() <= 120:
+        def _abbr(sector: str) -> str:
+            return {
+                "agriculture": "A",
+                "mining": "M",
+                "extraction": "E",
+                "manufacturing": "F",  # factory
+                "services": "S",
+                "wholesale": "W",
+            }.get(sector.lower(), sector[:1].upper())
+
+        ax = plt.gca()
+        for n in g.nodes():
+            lbl = f"{_abbr(g.nodes[n].get('sector', ''))}{n}"
+            x, y = pos[n]
+            font_color = "white" if levels.get(n, 0) < 1.5 else "black"
+            ax.text(x, y, lbl, fontsize=6, ha="center", va="center", color=font_color)
 
     # Add legend/colour bar for trophic levels
     from matplotlib.cm import ScalarMappable
@@ -115,6 +136,16 @@ def plot_network(g: nx.DiGraph, levels: Dict[int, int], outfile: Path):
     ax = plt.gca()
     cbar = plt.colorbar(sm, ax=ax, shrink=0.7, pad=0.02)
     cbar.set_label("Trophic level")
+
+    # Sector legend (using label initials)
+    unique_sectors = sorted({g.nodes[n].get("sector", "") for n in g.nodes()})
+    if unique_sectors:
+        handles = []
+        labels_sec = []
+        for sec in unique_sectors:
+            handles.append(plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="lightgrey", markersize=6))
+            labels_sec.append(f"{_abbr(sec)} = {sec}")
+        ax.legend(handles, labels_sec, title="Sector key", fontsize=6, loc="upper left", bbox_to_anchor=(1.02, 1.0))
 
     plt.title("Supply-chain network coloured by trophic level")
     plt.axis("off")

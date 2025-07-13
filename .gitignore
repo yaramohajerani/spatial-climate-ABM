@@ -19,6 +19,7 @@ data/
 *.mp4
 *.mov
 network_topology_*.json
+*.pdf
 
 # Distribution / packaging
 .Python
