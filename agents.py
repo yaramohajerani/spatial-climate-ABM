@@ -244,7 +244,17 @@ class FirmAgent(Agent):
         # ---------------- Wage adjustment ----------------------------- #
         # Continuous wage update inspired by matching/Phillips-curve logic
         tightness = 1.0 - getattr(self.model, "unemployment_rate_prev", 0.0)
-        signal = 1.0 if self.labor_limited_last_step else -0.5  # asymmetric
+        # Determine direction based on type of labour constraint ----------------
+        if self.labor_limited_last_step:
+            # If firm could not hire AND lacks cash for current wage → demand-limited
+            if self.money < self.wage_offer:
+                signal = -1.0  # wages too expensive relative to budget
+            else:
+                # Could afford but still lacked workers → supply-limited, raise wage
+                signal = 1.0
+        else:
+            # Not labour-constrained → mild downward pressure
+            signal = -0.5
         strength = 0.1  # responsiveness coefficient
 
         adjustment = 1 + strength * signal * tightness

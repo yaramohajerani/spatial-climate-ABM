@@ -7,7 +7,8 @@
     "10:41:80:FL:data/processed/inunriver_rcp8p5_00000NorESM1-M_2080_rp00010_scaled-0.05.tif",
     "100:41:80:FL:data/processed/inunriver_rcp8p5_00000NorESM1-M_2080_rp00100_scaled-0.05.tif"
   ],
-  "steps": 70,
+  "steps": 80,
   "seed": 42,
-  "topology": "sample_firm_topology.json"
+  "topology": "sample_firm_topology.json",
+  "start_year": 2020
 } 
