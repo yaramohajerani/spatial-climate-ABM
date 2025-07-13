@@ -378,7 +378,7 @@ class FirmAgent(Agent):
         self.employees.clear()
 
         # ---------------- Capital depreciation ------------------------ #
-        DEPR = 0.02  # 2% per step
+        DEPR = 0.005  # 0.5 % per step (quarterly), roughly 2 % annually
         self.capital_stock *= (1 - DEPR)
 
         # ---------------- Capital purchase stage ----------------------- #

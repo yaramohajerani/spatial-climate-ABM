@@ -18,6 +18,7 @@ def _parse():
         ),
     )
     p.add_argument("--viz", action="store_true", help="Launch interactive Solara dashboard instead of headless run")
+    p.add_argument("--steps", type=int, default=10, help="Number of timesteps to simulate")
     p.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     p.add_argument("--start-year", type=int, default=0, help="Base calendar year for step 0 (optional; used for plotting)")
     p.add_argument("--topology", type=str, help="Optional JSON file describing firm supply-chain topology")
@@ -61,6 +62,10 @@ def main() -> None:  # noqa: D401
         # 3. Seed -----------------------------------------------------------
         if args.seed == 42 and "seed" in param_data:
             args.seed = int(param_data["seed"])
+
+        # 3a. Steps ---------------------------------------------------------
+        if args.steps == 10 and "steps" in param_data:
+            args.steps = int(param_data["steps"])
 
         # 3b. Start year ----------------------------------------------------
         if args.start_year == 0 and "start_year" in param_data:
@@ -122,11 +127,100 @@ def main() -> None:  # noqa: D401
         start_year=args.start_year,
     )
 
-    for _ in range(10):  # simulate 10 years
+    for _ in range(args.steps):
         model.step()
 
     model.save_results("simulation_results")
-    print("Simulation complete. Results stored in simulation_results.csv")
+
+    # ------------------------- Plotting ---------------------------- #
+    import matplotlib.pyplot as plt
+    import matplotlib.gridspec as gridspec
+
+    df = model.results_to_dataframe()
+
+    rename_map = {"Base_Wage": "Mean_Wage", "Household_LaborSold": "Household_Labor_Sold"}
+    df = df.rename(columns=rename_map)
+
+    units = {
+        "Firm_Production": "Units of Goods",
+        "Firm_Consumption": "Units of Goods",
+        "Firm_Wealth": "$",
+        "Firm_Capital": "Units of Capital",
+        "Household_Wealth": "$",
+        "Household_Capital": "Units of Capital",
+        "Household_Labor_Sold": "Units of Labor",
+        "Household_Consumption": "Units of Goods",
+        "Average_Risk": "Score (0–1)",
+        "Mean_Wage": "$ / Unit of Labor",
+        "Mean_Price": "$ / Unit of Goods",
+        "Labor_Limited_Firms": "count",
+        "Capital_Limited_Firms": "count",
+        "Input_Limited_Firms": "count",
+    }
+
+    firm_metrics = [
+        "Firm_Production",
+        "Firm_Consumption",
+        "Firm_Wealth",
+        "Firm_Capital",
+        "Mean_Price",
+    ]
+
+    household_metrics = [
+        "Household_Labor_Sold",
+        "Household_Consumption",
+        "Household_Wealth",
+        "Mean_Wage",
+        "Average_Risk",
+    ]
+
+    rows = max(len(firm_metrics), len(household_metrics)) + 1  # extra row for bottlenecks
+    fig = plt.figure(figsize=(10, rows * 3))
+    gs = gridspec.GridSpec(rows, 2, height_ratios=[1]*(rows-1)+[1.2])
+    axes_matrix = [[fig.add_subplot(gs[r, c]) for c in range(2)] for r in range(rows)]
+
+    x_col = "Year" if args.start_year else "Step"
+    if args.start_year:
+        df["Year"] = args.start_year + df.index.astype(int) / 4
+
+    def _plot(col, ax):
+        ax.plot(df[x_col], df[col])
+        ax.set_title(col.replace("_", " "), fontsize=10)
+        ylabel = units.get(col, "")
+        if ylabel:
+            ax.set_ylabel(ylabel)
+        ax.set_xlabel(x_col)
+
+    for r in range(rows-1):
+        if r < len(firm_metrics):
+            _plot(firm_metrics[r], axes_matrix[r][0])
+        else:
+            axes_matrix[r][0].set_visible(False)
+
+        if r < len(household_metrics):
+            _plot(household_metrics[r], axes_matrix[r][1])
+        else:
+            axes_matrix[r][1].set_visible(False)
+
+    # bottlenecks row
+    ax_bott = fig.add_subplot(gs[-1, :])
+    for col, color in [
+        ("Labor_Limited_Firms", "tab:blue"),
+        ("Capital_Limited_Firms", "tab:red"),
+        ("Input_Limited_Firms", "tab:green"),
+    ]:
+        if col in df.columns:
+            ax_bott.plot(df[x_col], df[col], label=col, color=color)
+    ax_bott.set_title("Production Bottlenecks", fontsize=10)
+    ax_bott.set_ylabel("count")
+    ax_bott.set_xlabel(x_col)
+    ax_bott.legend(fontsize=7)
+
+    fig.tight_layout()
+    fig.savefig("simulation_timeseries.png", dpi=150)
+    plt.close(fig)
+
+    print("Simulation complete. Results stored in simulation_results.csv and simulation_timeseries.png")
 
 
 if __name__ == "__main__":
