@@ -137,6 +137,7 @@ def main() -> None:  # noqa: D401
     # ------------------------- Plotting ---------------------------- #
     import matplotlib.pyplot as plt
     import matplotlib.gridspec as gridspec
+    import numpy as np
 
     df = model.results_to_dataframe()
 
@@ -213,14 +214,37 @@ def main() -> None:  # noqa: D401
 
     # --------------- Plotting configuration ----------------------------- #
     bottleneck_types = [
-        ("Labor_Limited_Firms", "Labor"),
-        ("Capital_Limited_Firms", "Capital"),
-        ("Input_Limited_Firms", "Input"),
+        ("Capital_Limited_Firms", "Capital"),  # for left column
+        ("Labor_Limited_Firms", "Labor"),     # for right column
+        ("Input_Limited_Firms", "Input"),     # for right column
     ]
 
-    rows = max(len(firm_metrics), len(household_metrics)) + len(bottleneck_types)
-    fig = plt.figure(figsize=(10, rows * 3))
-    gs = gridspec.GridSpec(rows, 2, height_ratios=[1]*(rows-1)+[1.2])
+    # Add sector-based pricing to firm metrics
+    unique_sectors = sorted(agent_df["sector"].dropna().unique())
+
+    metrics_left = [
+        "Firm_Production",
+        "Firm_Consumption",
+        "Firm_Wealth",
+        "Firm_Capital",
+        "Firm_Inventory",
+        "Mean_Price",
+        "Capital_Bottleneck",
+    ]
+
+    metrics_right = [
+        "Household_Labor_Sold",
+        "Household_Consumption",
+        "Household_Wealth",
+        "Average_Risk",
+        "Wage_By_Level",
+        "Labor_Bottleneck",
+        "Input_Bottleneck",
+    ]
+
+    rows = len(metrics_left)
+    fig = plt.figure(figsize=(15, rows * 3))
+    gs = gridspec.GridSpec(rows, 2, height_ratios=[1]*(rows))
     axes_matrix = [[fig.add_subplot(gs[r, c]) for c in range(2)] for r in range(rows)]
 
     x_col = "Year" if args.start_year else "Step"
@@ -233,12 +257,23 @@ def main() -> None:  # noqa: D401
         "Firm_Consumption": "consumption",
         "Firm_Wealth": "money",
         "Firm_Capital": "capital",
+        "Firm_Inventory": "inventory",
     }
 
     def _plot_firm(col, ax):
         if col == "Mean_Price":
-            # Mean_Price is model-level, not agent-level, so plot aggregate
-            ax.plot(df[x_col], df[col], color="tab:blue", label="All Firms")
+            # Plot aggregate mean price
+            ax.plot(df[x_col], df[col], color="black", linewidth=2, label="Mean Price")
+            
+            # Plot price by sector
+            sector_colors = plt.cm.Set1(np.linspace(0, 1, len(unique_sectors)))
+            for idx_sec, sector in enumerate(unique_sectors):
+                sector_data = agent_df[agent_df["sector"] == sector]
+                if not sector_data.empty:
+                    price_by_step = sector_data.groupby("Step")["price"].mean()
+                    x_vals = price_by_step.index if not args.start_year else args.start_year + price_by_step.index.astype(int) / 4
+                    ax.plot(x_vals, price_by_step.values, color=sector_colors[idx_sec], 
+                           linestyle="--", alpha=0.7, label=f"{sector}")
         else:
             agent_col = firm_metric_map.get(col, col.lower())
             for idx_lvl, lvl in enumerate(levels_sorted):
@@ -261,32 +296,59 @@ def main() -> None:  # noqa: D401
             ax.set_ylabel(ylabel)
         ax.set_xlabel(x_col)
 
-    for r in range(rows-1):
-        if r < len(firm_metrics):
-            _plot_firm(firm_metrics[r], axes_matrix[r][0])
-        else:
-            axes_matrix[r][0].set_visible(False)
-
-        if r < len(household_metrics):
-            _plot_household(household_metrics[r], axes_matrix[r][1])
-        else:
-            axes_matrix[r][1].set_visible(False)
-
-    # bottleneck rows (one per type)
-    for idx_bt, (col_bt, label_bt) in enumerate(bottleneck_types):
-        ax_bt = fig.add_subplot(gs[rows - len(bottleneck_types) + idx_bt, :])
-
-        # Per-level counts
+    # ---------------- Plotting row by row ----------------------------- #
+    def _plot_bottleneck(btype_str: str, ax):
         for idx_lvl, lvl in enumerate(levels_sorted):
-            mask = (agent_df["Level"] == lvl) & (agent_df["limiting_factor"] == label_bt.lower())
+            mask = (agent_df["Level"] == lvl) & (agent_df["limiting_factor"] == btype_str.lower())
             counts = agent_df[mask].groupby("Step").size()
+            if counts.empty:
+                continue
             x_vals = counts.index if not args.start_year else args.start_year + counts.index.astype(int) / 4
-            ax_bt.plot(x_vals, counts.values, label=f"Level {lvl}", color=cmap_levels(idx_lvl / max(1, len(levels_sorted) - 1)))
+            color = cmap_levels(idx_lvl / max(1, len(levels_sorted) - 1))
+            ax.plot(x_vals, counts.values, label=f"Level {lvl}", color=color)
+        ax.set_ylabel("count")
+        ax.set_xlabel(x_col)
+        ax.legend(fontsize=7)
 
-        ax_bt.set_title(f"{label_bt} Bottlenecks", fontsize=10)
-        ax_bt.set_ylabel("count")
-        ax_bt.set_xlabel(x_col)
-        ax_bt.legend(fontsize=7)
+    def _plot_wage(ax):
+        sector_colors = plt.cm.Set1(np.linspace(0, 1, len(levels_sorted)))
+        for idx_lvl, lvl in enumerate(levels_sorted):
+            wage_by_step = agent_df[agent_df["Level"] == lvl].groupby("Step")["wage"].mean()
+            if wage_by_step.empty:
+                continue
+            x_vals = wage_by_step.index if not args.start_year else args.start_year + wage_by_step.index.astype(int) / 4
+            color = cmap_levels(idx_lvl / max(1, len(levels_sorted) - 1))
+            ax.plot(x_vals, wage_by_step.values, label=f"Level {lvl}", color=color)
+        ax.set_title("Wages by Level", fontsize=10)
+        ax.set_ylabel("$ / Unit of Labor")
+        ax.set_xlabel(x_col)
+        ax.legend(fontsize=7)
+
+    for r in range(rows):
+        # Left column
+        metric_left = metrics_left[r]
+        ax_left = axes_matrix[r][0]
+        if metric_left.endswith("_Bottleneck"):
+            if metric_left.startswith("Capital"):
+                ax_left.set_title("Capital Bottlenecks", fontsize=10)
+                _plot_bottleneck("capital", ax_left)
+        else:
+            _plot_firm(metric_left, ax_left)
+
+        # Right column
+        metric_right = metrics_right[r]
+        ax_right = axes_matrix[r][1]
+        if metric_right == "Wage_By_Level":
+            _plot_wage(ax_right)
+        elif metric_right.endswith("_Bottleneck"):
+            if metric_right.startswith("Labor"):
+                ax_right.set_title("Labor Bottlenecks", fontsize=10)
+                _plot_bottleneck("labor", ax_right)
+            elif metric_right.startswith("Input"):
+                ax_right.set_title("Input Bottlenecks", fontsize=10)
+                _plot_bottleneck("input", ax_right)
+        else:
+            _plot_household(metric_right, ax_right)
 
     fig.tight_layout()
     fig.savefig("simulation_timeseries.png", dpi=150)
