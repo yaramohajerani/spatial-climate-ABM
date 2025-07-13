@@ -3,8 +3,10 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 
 from model import EconomyModel
+from agents import FirmAgent
 
 
 def _parse_args():
@@ -102,7 +104,7 @@ def _merge_param_file(args):  # noqa: ANN001
 def run_simulation(model: EconomyModel, n_steps: int):
     for _ in range(n_steps):
         model.step()
-    return model.results_to_dataframe()
+    return model.results_to_dataframe(), model  # return model for agent access
 
 
 def main():
@@ -130,7 +132,7 @@ def main():
             firm_topology_path=args.topology,
             start_year=args.start_year,
         )
-        df_hazard = run_simulation(model_hazard, args.steps)
+        df_hazard, model_haz_ref = run_simulation(model_hazard, args.steps)
         df_hazard["Scenario"] = "With Hazard"
         df_hazard["Step"] = df_hazard.index
 
@@ -144,9 +146,53 @@ def main():
             firm_topology_path=args.topology,
             start_year=args.start_year,
         )
-        df_base = run_simulation(model_baseline, args.steps)
+        df_base, model_base_ref = run_simulation(model_baseline, args.steps)
         df_base["Scenario"] = "No Hazard"
         df_base["Step"] = df_base.index
+
+        # ---------------- Agent-level aggregation ---------------------- #
+        def _compute_levels(model_obj: EconomyModel):
+            firms = [ag for ag in model_obj.agents if isinstance(ag, FirmAgent)]
+            id_map = {f.unique_id: f for f in firms}
+            memo: dict[int, int] = {}
+
+            def _lvl(fid: int, visiting: set[int]):
+                if fid in memo:
+                    return memo[fid]
+                if fid in visiting:
+                    return 0
+                visiting.add(fid)
+                f = id_map[fid]
+                if not f.connected_firms:
+                    l = 0
+                else:
+                    l = 1 + min(_lvl(s.unique_id, visiting) for s in f.connected_firms)
+                visiting.remove(fid)
+                memo[fid] = l
+                return l
+
+            for fid in id_map:
+                _lvl(fid, set())
+            return memo
+
+        # Build agent DataFrame combined
+        def _agent_df(model_obj, scenario_label):
+            df_ag = model_obj.datacollector.get_agent_vars_dataframe().reset_index()
+            df_ag.rename(columns={"level_0": "Step", "level_1": "AgentID"}, inplace=True, errors="ignore")
+            lvl_map = _compute_levels(model_obj)
+            df_ag = df_ag[df_ag["type"] == "FirmAgent"].copy()
+            df_ag["Level"] = df_ag["AgentID"].map(lvl_map)
+            df_ag["Scenario"] = scenario_label
+            return df_ag
+
+        agent_haz = _agent_df(model_haz_ref, "With Hazard")
+        agent_base = _agent_df(model_base_ref, "No Hazard")
+        agent_df_combined = pd.concat([agent_haz, agent_base], ignore_index=True)
+
+        # Persist rich agent-level results
+        agent_csv_path = Path(args.out).with_suffix("_agents.csv")
+        agent_df_combined.to_csv(agent_csv_path, index=False)
+        print(f"Agent-level data saved to {agent_csv_path}")
 
         df_combined = pd.concat([df_hazard, df_base], ignore_index=True)
 
@@ -216,15 +262,56 @@ def main():
     if args.start_year:
         df_combined["Year"] = args.start_year + df_combined["Step"].astype(int) / 4
 
+    levels_sorted = sorted(agent_df_combined["Level"].dropna().unique())
+    cmap_levels = plt.cm.viridis
+
+    firm_metric_map = {
+        "Firm_Production": "production",
+        "Firm_Consumption": "consumption",
+        "Firm_Wealth": "money",
+        "Firm_Capital": "capital",
+    }
+
     def _plot_metric(metric_name: str, ax):
-        for scenario, grp in df_combined.groupby("Scenario"):
-            ax.plot(grp[x_col], grp[metric_name], label=scenario)
+        if metric_name == "Mean_Price":
+            # Aggregate line per scenario
+            for scenario, grp in df_combined.groupby("Scenario"):
+                ax.plot(grp[x_col], grp[metric_name], label=f"Mean – {scenario}")
+            # Sector breakdown
+            sectors = sorted(agent_df_combined["sector"].dropna().unique())
+            sector_colors = plt.cm.Set1(np.linspace(0, 1, len(sectors)))
+            for idx_sec, sector in enumerate(sectors):
+                for scenario in ["With Hazard", "No Hazard"]:
+                    df_sec = agent_df_combined[(agent_df_combined["sector"] == sector) & (agent_df_combined["Scenario"] == scenario)]
+                    if df_sec.empty:
+                        continue
+                    price_by_step = df_sec.groupby("Step")["price"].mean()
+                    x_vals = price_by_step.index if not args.start_year else args.start_year + price_by_step.index.astype(int) / 4
+                    ax.plot(x_vals, price_by_step.values, linestyle="--", color=sector_colors[idx_sec], alpha=0.6,
+                            label=f"{sector} – {scenario}")
+        elif metric_name in firm_metric_map:
+            agent_col = firm_metric_map[metric_name]
+            for scenario in ["With Hazard", "No Hazard"]:
+                df_scen = agent_df_combined[agent_df_combined["Scenario"] == scenario]
+                for idx_lvl, lvl in enumerate(levels_sorted):
+                    grp = df_scen[df_scen["Level"] == lvl].groupby("Step")[agent_col].sum()
+                    if grp.empty:
+                        continue
+                    x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int) / 4
+                    color = cmap_levels(idx_lvl / max(1, len(levels_sorted)-1))
+                    ls = "-" if scenario=="With Hazard" else "--"
+                    ax.plot(x_vals, grp.values, label=f"Lvl {lvl} – {scenario}", color=color, linestyle=ls)
+        else:
+            # household metrics etc.
+            for scenario, grp in df_combined.groupby("Scenario"):
+                ax.plot(grp[x_col], grp[metric_name], label=scenario)
+
         ax.set_title(metric_name.replace("_", " "), fontsize=10)
         ylabel = units.get(metric_name, "")
         if ylabel:
             ax.set_ylabel(ylabel)
         ax.set_xlabel(x_col)
-        ax.legend()
+        ax.legend(fontsize=7)
 
     # Fill grid ----------------------------------------------------------- #
     for r in range(rows):
@@ -264,13 +351,25 @@ def main():
         ("Capital_Limited_Firms", "tab:red"),
         ("Input_Limited_Firms", "tab:green"),
     ]
-    for metric_name, color in bottlenecks:
-        for scenario, grp in df_combined.groupby("Scenario"):
-            ax_bott.plot(grp[x_col], grp[metric_name], label=f"{metric_name} – {scenario}", color=color, alpha=0.7 if scenario=="With Hazard" else 0.4, linestyle="-" if scenario=="With Hazard" else "--")
+    # bottlenecks row – now detailed per level & scenario
+    for metric_name, _color in bottlenecks:
+        bt_type = metric_name.split("_")[0].lower()  # labor, capital, input
+        for scenario in ["With Hazard", "No Hazard"]:
+            df_scen = agent_df_combined[agent_df_combined["Scenario"] == scenario]
+            for idx_lvl, lvl in enumerate(levels_sorted):
+                mask = (df_scen["Level"]==lvl) & (df_scen["limiting_factor"]==bt_type)
+                counts = df_scen[mask].groupby("Step").size()
+                if counts.empty:
+                    continue
+                x_vals = counts.index if not args.start_year else args.start_year+counts.index.astype(int)/4
+                color = cmap_levels(idx_lvl / max(1, len(levels_sorted)-1))
+                ls = "-" if scenario=="With Hazard" else "--"
+                ax_bott.plot(x_vals, counts.values, color=color, linestyle=ls,
+                             label=f"{bt_type.capitalize()} L{lvl} {scenario}")
     ax_bott.set_title("Production Bottlenecks", fontsize=10)
     ax_bott.set_ylabel("count")
     ax_bott.set_xlabel("Step")
-    ax_bott.legend(fontsize=7, loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=2)
+    ax_bott.legend(fontsize=6, loc="upper center", bbox_to_anchor=(0.5, -0.25), ncol=3)
 
     # Hide the original small axes allocated for bottleneck row
     axes_matrix[-1][0].set_visible(False)

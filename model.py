@@ -69,6 +69,9 @@ class EconomyModel(Model):
             # components (e.g. dashboards, logging) see the correct value.
             num_firms = len(self._firm_topology.get("firms", []))
 
+            # also overwrite num_households to increase proportionaly to num_firms
+            num_households = num_firms * 10
+
         if hazard_events is None:
             raise ValueError("hazard_events must be provided.")
 
