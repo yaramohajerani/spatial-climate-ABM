@@ -330,7 +330,7 @@ class FirmAgent(Agent):
         max_output_from_capital = self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf")
 
         max_possible = min(labour_units / self.LABOR_COEFF, max_output_from_inputs, max_output_from_capital)
-        possible_output = int(max_possible * self.damage_factor)
+        possible_output = max_possible * self.damage_factor
 
         capital_limited = possible_output < max_possible and (max_output_from_capital <= labour_units / self.LABOR_COEFF)
 
@@ -349,7 +349,7 @@ class FirmAgent(Agent):
         if possible_output > 0:
             # Consume inputs from each supplier
             for supplier in self.connected_firms:
-                use_qty = int(possible_output * self.INPUT_COEFF)
+                use_qty = possible_output * self.INPUT_COEFF
                 self.inventory_inputs[supplier.unique_id] -= use_qty
 
             # Add production to inventory
