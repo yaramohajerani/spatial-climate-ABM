@@ -105,7 +105,7 @@ def CombinedBottleneckPlot(model):  # noqa: ANN001
     df = model.results_to_dataframe()
     steps = df.index
     if _START_YEAR:
-        years = _START_YEAR + steps
+        years = _START_YEAR + steps / 4
         x_vals = years
         x_label = "Year"
     else:
@@ -409,6 +409,9 @@ def make_page_with_custom_components() -> Any:  # noqa: D401, ANN401
     seed_env = os.getenv("ABM_SEED")
     if seed_env is not None:
         init_kwargs["seed"] = int(seed_env)
+
+    if _START_YEAR:
+        init_kwargs["start_year"] = _START_YEAR
 
     topo_env = os.getenv("ABM_TOPOLOGY_PATH")
     if topo_env:

@@ -128,6 +128,7 @@ def main():
             seed=args.seed,
             apply_hazard_impacts=True,
             firm_topology_path=args.topology,
+            start_year=args.start_year,
         )
         df_hazard = run_simulation(model_hazard, args.steps)
         df_hazard["Scenario"] = "With Hazard"
@@ -141,6 +142,7 @@ def main():
             seed=args.seed,
             apply_hazard_impacts=False,
             firm_topology_path=args.topology,
+            start_year=args.start_year,
         )
         df_base = run_simulation(model_baseline, args.steps)
         df_base["Scenario"] = "No Hazard"
@@ -212,7 +214,7 @@ def main():
     x_col = "Year" if args.start_year else "Step"
 
     if args.start_year:
-        df_combined["Year"] = args.start_year + df_combined["Step"].astype(int)
+        df_combined["Year"] = args.start_year + df_combined["Step"].astype(int) / 4
 
     def _plot_metric(metric_name: str, ax):
         for scenario, grp in df_combined.groupby("Scenario"):

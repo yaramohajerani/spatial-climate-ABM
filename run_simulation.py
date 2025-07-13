@@ -119,6 +119,7 @@ def main() -> None:  # noqa: D401
         hazard_events=events,
         seed=args.seed,
         firm_topology_path=args.topology,
+        start_year=args.start_year,
     )
 
     for _ in range(10):  # simulate 10 years

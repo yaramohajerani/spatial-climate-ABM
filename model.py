@@ -37,6 +37,7 @@ class EconomyModel(Model):
         hazard_events: Iterable[Tuple[int, int, int, str, str]] | None = None,
         hazard_type: str = "FL",  # CLIMADA hazard tag for flood
         seed: int | None = None,
+        start_year: int = 0,
         firm_topology_path: str | None = None,
         apply_hazard_impacts: bool = True,
     ) -> None:  # noqa: D401
@@ -50,6 +51,10 @@ class EconomyModel(Model):
         # If False, hazards are still sampled to preserve random draws but
         # impacts (capital loss, damage, relocation triggers) are disabled.
         self.apply_hazard_impacts: bool = apply_hazard_impacts
+
+        # Calendar mapping -------------------------------------------------- #
+        self.start_year: int = start_year
+        self.steps_per_year: int = 4  # quarters
 
         # --- Spatial environment & custom topology --- #
         self._firm_topology: dict | None = None
@@ -470,8 +475,12 @@ class EconomyModel(Model):
     #                            EXPORT HELPERS                              #
     # --------------------------------------------------------------------- #
     def results_to_dataframe(self) -> pd.DataFrame:
-        """Return model-level DataFrame containing tracked variables."""
-        return self.datacollector.get_model_vars_dataframe().copy()
+        """Return model-level DataFrame containing tracked variables plus Date column."""
+        df = self.datacollector.get_model_vars_dataframe().copy()
+        if self.start_year:
+            dates = [f"{self.start_year + idx//self.steps_per_year}-Q{idx%self.steps_per_year + 1}" for idx in df.index]
+            df.insert(0, "Date", dates)
+        return df
 
     def save_results(self, out_path: str | Path = "simulation_results.csv") -> None:
         """Save collected data to CSV."""
@@ -482,6 +491,8 @@ class EconomyModel(Model):
         agents_df = self.datacollector.get_agent_vars_dataframe().reset_index()
         # Rename columns for clarity; DataCollector returns 'AgentID' index.
         agents_df.rename(columns={"level_0": "Step", "level_1": "AgentID"}, inplace=True, errors="ignore")
+        if self.start_year and "Step" in agents_df.columns:
+            agents_df["Date"] = [f"{self.start_year + s//self.steps_per_year}-Q{s%self.steps_per_year + 1}" for s in agents_df["Step"].astype(int)]
 
         agents_path = Path(out_path).with_name("simulation_agents.csv")
         agents_path.write_text(agents_df.to_csv(index=False))
@@ -520,7 +531,9 @@ class EconomyModel(Model):
                     start, end = ranges[i]
                     if not (start <= self.current_step <= end):
                         continue
-                p_hit = haz.frequency[i]
+                # Annual frequency → per‐step probability (quarterly steps)
+                p_annual = haz.frequency[i]
+                p_hit = p_annual / self.steps_per_year  # approx small-λ
                 if p_hit <= 0:
                     continue
                 hit_mask = np.random.random(n_cells) < p_hit
