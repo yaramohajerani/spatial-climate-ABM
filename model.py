@@ -581,7 +581,7 @@ class EconomyModel(Model):
                 ag.capital *= 1 - loss_frac
 
         flooded_cells = (max_depth > 0).sum()
-        print(f"[INFO] Year {self.current_step}: flooded cells = {flooded_cells}/{n_cells}")
+        print(f"[INFO] Step {self.current_step}: flooded cells = {flooded_cells}/{n_cells}")
 
     # ------------------------------------------------------------------ #
     #                        TRADE NETWORK BUILDER                       #

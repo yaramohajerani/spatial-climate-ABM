@@ -255,7 +255,7 @@ class FirmAgent(Agent):
         else:
             # Not labour-constrained → mild downward pressure
             signal = -0.5
-        strength = 0.1  # responsiveness coefficient
+        strength = 0.2  # responsiveness coefficient
 
         adjustment = 1 + strength * signal * tightness
         # Friction: wage cuts (adjustment < 1) dampened by 50 %
@@ -263,7 +263,8 @@ class FirmAgent(Agent):
             adjustment = 1 - (1 - adjustment) * 0.5
 
         self.wage_offer *= adjustment
-        self.wage_offer = float(min(10.0, max(0.1, self.wage_offer)))
+        # Keep wage positive but allow unbounded growth
+        self.wage_offer = float(max(0.01, self.wage_offer))
 
         # Recover 50% of remaining damage each step
         self.damage_factor += (1.0 - self.damage_factor) * 0.5
@@ -278,7 +279,8 @@ class FirmAgent(Agent):
         elif self.inventory_output > 5:
             self.price *= 0.95
 
-        self.price = float(min(10.0, max(0.1, self.price)))
+        # Ensure strictly positive price; no upper cap
+        self.price = float(max(0.01, self.price))
 
         # Reset per-step statistics
         self.production = 0.0
