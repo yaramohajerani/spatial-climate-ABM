@@ -95,7 +95,8 @@ class HouseholdAgent(Agent):
         affordable_firms = [f for f in self.nearby_firms if f.inventory_output > 0 and f.price <= self.money]
         if affordable_firms:
             seller = self.random.choice(affordable_firms)
-            qty_bought = seller.sell_goods_to_household(self, quantity=1)
+            # Attempt to buy up to 1 unit; method will reduce if only fraction affordable
+            qty_bought = seller.sell_goods_to_household(self, quantity=1.0)
             if qty_bought:
                 self.consumption += qty_bought
 
@@ -202,17 +203,28 @@ class FirmAgent(Agent):
         self.employees.append(household)
         return True
 
-    def sell_goods_to_household(self, household: HouseholdAgent, quantity: int = 1) -> int:
-        """Sell up to *quantity* units to *household*, return actual units sold."""
+    def sell_goods_to_household(self, household: HouseholdAgent, quantity: float = 1.0) -> float:
+        """Sell up to *quantity* units (can be fractional) to *household*.
+
+        Returns the actual units sold (float). If buyer cannot afford full
+        quantity, sells the largest affordable fraction. Always returns 0 if
+        no transaction occurs.
+        """
+
         if quantity <= 0 or self.inventory_output <= 0:
-            return 0
+            return 0.0
 
         qty = min(quantity, self.inventory_output)
         total_cost = qty * self.price
         if household.money < total_cost:
-            return 0  # buyer cannot afford
+            # Adjust quantity downward to what buyer can afford
+            qty_affordable = household.money / self.price
+            qty = min(qty, qty_affordable)
+            total_cost = qty * self.price
+            if qty <= 0:
+                return 0.0
 
-        # Execute transaction
+        # Execute transaction with possibly reduced qty
         household.money -= total_cost
         self.money += total_cost
         self.inventory_output -= qty
