@@ -30,6 +30,7 @@ from typing import List, Dict, Any, Tuple
 import networkx as nx
 import matplotlib.pyplot as plt
 import numpy as np
+import geopandas as gpd
 
 from trophic_utils import compute_trophic_levels
 
@@ -183,6 +184,49 @@ def plot_network(g: nx.DiGraph, levels: Dict[int, int], outfile: Path):
     print(f"Saved network plot to {outfile}")
 
 
+# ------------------------------------------------------------------ #
+#                            MAP PLOTTER                             #
+# ------------------------------------------------------------------ #
+
+
+def plot_world_map(g: nx.DiGraph, outfile: Path):
+    """Scatter firm locations on a world map coloured by sector."""
+
+    # Build DataFrame of nodes
+    records = []
+    for n, data in g.nodes(data=True):
+        lon = float(data.get("lon", 0))
+        lat = float(data.get("lat", 0))
+        records.append({"id": n, "sector": data.get("sector", ""), "lon": lon, "lat": lat})
+
+    import pandas as pd
+
+    df_nodes = pd.DataFrame.from_records(records)
+
+    # World coastlines
+    world = gpd.read_file(gpd.datasets.get_path("naturalearth_lowres"))
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    world.plot(ax=ax, color="lightgrey", edgecolor="white", linewidth=0.3)
+
+    sectors = sorted(df_nodes["sector"].unique())
+    colors = plt.cm.Set1(np.linspace(0, 1, len(sectors)))
+    color_map = {sec: colors[i] for i, sec in enumerate(sectors)}
+
+    for sec in sectors:
+        subset = df_nodes[df_nodes["sector"] == sec]
+        ax.scatter(subset["lon"], subset["lat"], color=color_map[sec], label=sec, edgecolors="black", s=40, alpha=0.9)
+
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    ax.set_title("Firm locations by sector")
+    ax.legend(title="Sector", fontsize=6, loc="lower left")
+    plt.tight_layout()
+    plt.savefig(outfile)
+    plt.close()
+    print(f"Saved map plot to {outfile}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Supply-chain topology analyzer")
     parser.add_argument("topology", type=Path, help="Path to topology JSON file")
@@ -199,6 +243,10 @@ def main():
     if args.plot:
         outfile = args.topology.with_name(args.topology.stem + "_network.pdf")
         plot_network(g, levels, outfile)
+
+        # Additional world map plot
+        outfile_map = args.topology.with_name(args.topology.stem + "_map.pdf")
+        plot_world_map(g, outfile_map)
 
 
 if __name__ == "__main__":

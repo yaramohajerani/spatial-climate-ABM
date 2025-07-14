@@ -1,30 +1,36 @@
 {
   "firms": [
-    {"id": 1,  "sector": "agriculture",   "lon": 90.4,  "lat": 23.7,  "capital": 5.0},
-    {"id": 2,  "sector": "agriculture",   "lon": 91.8,  "lat": 22.5,  "capital": 5.0},
-    {"id": 3,  "sector": "agriculture",   "lon": 92.3,  "lat": 24.0,  "capital": 5.0},
-    {"id": 4,  "sector": "agriculture",   "lon": 95.0,  "lat": 21.9,  "capital": 5.0},
-    {"id": 5,  "sector": "agriculture",   "lon": 96.1,  "lat": 20.5,  "capital": 5.0},
+    {"id": 1, "sector": "commodity", "lon": -91.2, "lat": 29.0, "capital": 5.0},
+    {"id": 2, "sector": "commodity", "lon": 106.7, "lat": 10.8, "capital": 5.0},
+    {"id": 3, "sector": "commodity", "lon": 90.4,  "lat": 23.7, "capital": 5.0},
+    {"id": 4, "sector": "commodity", "lon": 3.0,   "lat": 6.5,  "capital": 5.0},
+    {"id": 5, "sector": "commodity", "lon": 77.2,  "lat": 28.4, "capital": 5.0},
 
-    {"id": 6, "sector": "manufacturing", "lon": -90.0, "lat": 29.9, "capital": 3.0},
-    {"id": 7, "sector": "manufacturing", "lon": -91.3, "lat": 30.4, "capital": 3.0},
-    {"id": 8, "sector": "manufacturing", "lon": -92.5, "lat": 31.2, "capital": 3.0},
-    {"id": 9, "sector": "manufacturing", "lon": -93.7, "lat": 29.8, "capital": 3.0},
-    {"id": 10, "sector": "manufacturing", "lon": -94.9, "lat": 30.5, "capital": 3.0},
+    {"id": 6, "sector": "manufacturing", "lon": 120.9, "lat": 14.6, "capital": 3.0},
+    {"id": 7, "sector": "manufacturing", "lon": 100.5, "lat": 13.7, "capital": 3.0},
+    {"id": 8, "sector": "manufacturing", "lon": -95.3, "lat": 29.8, "capital": 3.0},
+    {"id": 9, "sector": "manufacturing", "lon": 106.8, "lat": 6.2,  "capital": 3.0},
+    {"id": 10, "sector": "manufacturing", "lon": 74.0, "lat": 31.5, "capital": 3.0},
 
-    {"id": 11, "sector": "services",      "lon": 116.4, "lat": 39.9, "capital": 2.0},
-    {"id": 12, "sector": "services",      "lon": 121.5, "lat": 31.2, "capital": 2.0},
-    {"id": 13, "sector": "services",      "lon": 114.2, "lat": 22.4, "capital": 2.0},
-    {"id": 14, "sector": "services",      "lon": 103.8, "lat": 1.3,  "capital": 2.0},
-    {"id": 15, "sector": "services",      "lon": 100.5, "lat": 13.7, "capital": 2.0}
+    {"id": 11, "sector": "retail", "lon": 103.8, "lat": 1.3,  "capital": 2.0},
+    {"id": 12, "sector": "retail", "lon": -74.0, "lat": 40.7, "capital": 2.0},
+    {"id": 13, "sector": "retail", "lon": 139.7, "lat": 35.7, "capital": 2.0},
+    {"id": 14, "sector": "retail", "lon": -0.1,  "lat": 51.5, "capital": 2.0},
+    {"id": 15, "sector": "retail", "lon": 151.2, "lat": -33.9, "capital": 2.0}
   ],
 
   "edges": [
-    {"src": 1, "dst": 6}, {"src": 2, "dst": 7}, {"src": 3, "dst": 8}, {"src": 4, "dst": 9}, {"src": 5, "dst": 10},
-    {"src": 1, "dst": 7}, {"src": 2, "dst": 8}, {"src": 3, "dst": 9}, {"src": 4, "dst": 10}, {"src": 5, "dst": 6},
+    {"src": 1, "dst": 6}, {"src": 2, "dst": 6},
+    {"src": 2, "dst": 7}, {"src": 3, "dst": 7},
+    {"src": 3, "dst": 8}, {"src": 4, "dst": 8},
+    {"src": 1, "dst": 9}, {"src": 4, "dst": 9},
+    {"src": 5, "dst": 10}, {"src": 2, "dst": 10},
+
     {"src": 6, "dst": 7}, {"src": 7, "dst": 8}, {"src": 8, "dst": 9}, {"src": 9, "dst": 10},
+
     {"src": 6, "dst": 11}, {"src": 7, "dst": 12}, {"src": 8, "dst": 13}, {"src": 9, "dst": 14}, {"src": 10, "dst": 15},
-    {"src": 6, "dst": 12}, {"src": 7, "dst": 13}, {"src": 8, "dst": 14}, {"src": 9, "dst": 15}, {"src": 10, "dst": 11},
-    {"src": 11, "dst": 12}, {"src": 12, "dst": 13}, {"src": 13, "dst": 14}, {"src": 14, "dst": 15}
+    {"src": 7, "dst": 11}, {"src": 8, "dst": 12}, {"src": 10, "dst": 13}, {"src": 6, "dst": 14}, {"src": 9, "dst": 15},
+
+    {"src": 1, "dst": 11}, {"src": 3, "dst": 12}, {"src": 4, "dst": 13}, {"src": 2, "dst": 14}, {"src": 5, "dst": 15}
   ]
 } 

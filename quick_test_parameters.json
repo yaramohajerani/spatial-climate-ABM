@@ -1,8 +1,8 @@
 {
   "rp_files": [
-   "10:1:320:FL:data/processed/inunriver_rcp8p5_00000NorESM1-M_2030_rp00010_scaled-0.05.tif"
+   "10:1:180:FL:data/processed/inunriver_historical_000000000WATCH_1980_rp00010_scaled-0.05.tif"
   ],
-  "steps": 30,
+  "steps": 180,
   "seed": 42,
   "topology": "small_firm_topology.json",
   "start_year": 2020
