@@ -210,7 +210,7 @@ def plot_world_map(g: nx.DiGraph, outfile: Path):
     world.plot(ax=ax, color="lightgrey", edgecolor="white", linewidth=0.3)
 
     sectors = sorted(df_nodes["sector"].unique())
-    colors = plt.cm.Set1(np.linspace(0, 1, len(sectors)))
+    colors = plt.cm.tab10(np.linspace(0, 1, len(sectors)))
     color_map = {sec: colors[i] for i, sec in enumerate(sectors)}
 
     for sec in sectors:

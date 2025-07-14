@@ -2,7 +2,7 @@
   "rp_files": [
    "10:1:180:FL:data/processed/inunriver_historical_000000000WATCH_1980_rp00010_scaled-0.05.tif"
   ],
-  "steps": 180,
+  "steps": 20,
   "seed": 42,
   "topology": "small_firm_topology.json",
   "start_year": 2020

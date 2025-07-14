@@ -162,21 +162,7 @@ def main() -> None:  # noqa: D401
         "Input_Limited_Firms": "count",
     }
 
-    firm_metrics = [
-        "Firm_Production",
-        "Firm_Consumption",
-        "Firm_Wealth",
-        "Firm_Capital",
-        "Mean_Price",
-    ]
-
-    household_metrics = [
-        "Household_Labor_Sold",
-        "Household_Consumption",
-        "Household_Wealth",
-        "Mean_Wage",
-        "Average_Risk",
-    ]
+    # Metric lists kept for readability; plotting uses metrics_left / metrics_right
 
     # ------------------ Compute trophic levels --------------------------- #
     firm_adj = {
@@ -208,16 +194,16 @@ def main() -> None:  # noqa: D401
         "Firm_Capital",
         "Firm_Inventory",
         "Mean_Price",
-        "Capital_Bottleneck",
         "Sector_Trophic_Level",
+        "Capital_Bottleneck", 
     ]
 
     metrics_right = [
         "Household_Labor_Sold",
         "Household_Consumption",
         "Household_Wealth",
-        "Average_Risk",
         "Wage_By_Level",
+        "Average_Risk",
         "Labor_Bottleneck",
         "Input_Bottleneck",
     ]
@@ -330,25 +316,31 @@ def main() -> None:  # noqa: D401
         # Left column
         metric_left = metrics_left[r]
         ax_left = axes_matrix[r][0]
-        if metric_left == "Sector_Trophic_Level":
-            _plot_firm("Sector_Trophic_Level", ax_left)
+        if metric_left.endswith("_Bottleneck"):
+            bt_type = metric_left.split("_")[0].lower()  # capital
+            ax_left.set_title(f"{bt_type.capitalize()} Bottlenecks", fontsize=10)
+            _plot_bottleneck(bt_type, ax_left)
         else:
-            _plot_bottleneck("capital", ax_left)
+            _plot_firm(metric_left, ax_left)
 
-        # Right column
-        metric_right = metrics_right[r]
-        ax_right = axes_matrix[r][1]
-        if metric_right == "Wage_By_Level":
-            _plot_wage(ax_right)
-        elif metric_right.endswith("_Bottleneck"):
-            if metric_right.startswith("Labor"):
-                ax_right.set_title("Labor Bottlenecks", fontsize=10)
-                _plot_bottleneck("labor", ax_right)
-            elif metric_right.startswith("Input"):
-                ax_right.set_title("Input Bottlenecks", fontsize=10)
-                _plot_bottleneck("input", ax_right)
+        # Right column – may not have corresponding metric for last row
+        if r < len(metrics_right):
+            metric_right = metrics_right[r]
+            ax_right = axes_matrix[r][1]
+            if metric_right == "Wage_By_Level":
+                _plot_wage(ax_right)
+            elif metric_right.endswith("_Bottleneck"):
+                if metric_right.startswith("Labor"):
+                    ax_right.set_title("Labor Bottlenecks", fontsize=10)
+                    _plot_bottleneck("labor", ax_right)
+                elif metric_right.startswith("Input"):
+                    ax_right.set_title("Input Bottlenecks", fontsize=10)
+                    _plot_bottleneck("input", ax_right)
+            else:
+                _plot_household(metric_right, ax_right)
         else:
-            _plot_household(metric_right, ax_right)
+            # Hide unused subplot
+            axes_matrix[r][1].set_visible(False)
 
     fig.tight_layout()
     fig.savefig("simulation_timeseries.png", dpi=150)

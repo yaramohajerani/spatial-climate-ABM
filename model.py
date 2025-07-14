@@ -70,7 +70,7 @@ class EconomyModel(Model):
             num_firms = len(self._firm_topology.get("firms", []))
 
             # also overwrite num_households to increase proportionaly to num_firms
-            num_households = num_firms * 10
+            num_households = num_firms * 5
 
         if hazard_events is None:
             raise ValueError("hazard_events must be provided.")
