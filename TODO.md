@@ -11,6 +11,7 @@
 - [x] Add abilitiy to simultanously run climate and no-cimate simulations for comparison
 - [ ] We are currently assuming input goods are interchangeable. Only retail can have this assumption. For other sectors, we need to treat them as indepedent inputs. 
 - [ ] Make per-sector specifications for the coefficients of the production function.
+- [ ] Currently we are deciding how much inputs to buy to match production enabled by labour. So by definition we can never be input limited. We need to make this more realistic.
 
 ## longer-term / tentative
 - [x] Add capital requirement for production

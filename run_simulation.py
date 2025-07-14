@@ -187,30 +187,26 @@ def main() -> None:  # noqa: D401
     # Add sector-based pricing to firm metrics
     unique_hh_sectors = sorted(household_df["sector"].dropna().unique())
 
+    # ---------------- Metric selection --------------------------- #
     metrics_left = [
         "Firm_Production",
         "Firm_Consumption",
         "Firm_Wealth",
         "Firm_Capital",
-        "Firm_Inventory",
-        "Mean_Price",
-        "Sector_Trophic_Level",
-        "Capital_Bottleneck", 
+        "Mean_Price",  # 5th left-hand metric
     ]
 
     metrics_right = [
         "Household_Labor_Sold",
         "Household_Consumption",
         "Household_Wealth",
-        "Wage_By_Level",
-        "Average_Risk",
-        "Labor_Bottleneck",
-        "Input_Bottleneck",
+        "Mean_Wage",  # average and by sector
+        "Production_Bottleneck",  # combined bottlenecks plot
     ]
 
-    rows = len(metrics_left)
-    fig = plt.figure(figsize=(15, rows * 3))
-    gs = gridspec.GridSpec(rows, 2, height_ratios=[1]*(rows))
+    rows = len(metrics_left)  # expect 5
+    fig = plt.figure(figsize=(14, rows * 3))
+    gs = gridspec.GridSpec(rows, 2, height_ratios=[1] * rows)
     axes_matrix = [[fig.add_subplot(gs[r, c]) for c in range(2)] for r in range(rows)]
 
     x_col = "Year" if args.start_year else "Step"
@@ -267,9 +263,7 @@ def main() -> None:  # noqa: D401
     }
 
     def _plot_household(col, ax):
-        # Aggregate overall line
-        ax.plot(df[x_col], df[col], color="black", linewidth=2, label="All Households")
-
+        # Only sector lines (no aggregate) to preserve scale visibility
         hh_col = household_metric_map.get(col, None)
         if hh_col:
             sector_colors = plt.cm.Set2(np.linspace(0, 1, len(unique_hh_sectors)))
@@ -278,7 +272,10 @@ def main() -> None:  # noqa: D401
                 if grp.empty:
                     continue
                 x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int) / 4
-                ax.plot(x_vals, grp.values, color=sector_colors[idx_sec], linestyle="--", alpha=0.7, label=f"{sector}")
+                ax.plot(x_vals, grp.values, color=sector_colors[idx_sec], linestyle="-", alpha=0.8, label=sector)
+        else:
+            # Fallback: plot aggregate series from df (e.g., Average_Risk)
+            ax.plot(df[x_col], df[col], color="black", linewidth=2, label=col.replace("_", " "))
 
         ax.set_title(col.replace("_", " "), fontsize=10)
         ylabel = units.get(col, "")
@@ -288,17 +285,28 @@ def main() -> None:  # noqa: D401
         ax.legend(fontsize=7)
 
     # ---------------- Plotting row by row ----------------------------- #
-    def _plot_bottleneck(btype_str: str, ax):
-        for idx_sec, sector in enumerate(unique_sectors):
-            mask = (firm_df["sector"] == sector) & (firm_df["limiting_factor"] == btype_str.lower())
-            counts = firm_df[mask].groupby("Step").size()
-            if counts.empty:
-                continue
-            x_vals = counts.index if not args.start_year else args.start_year + counts.index.astype(int)/4
-            ax.plot(x_vals, counts.values, color=sec_colors[idx_sec], label=sector)
-        ax.set_ylabel("count")
+    def _plot_bottleneck(ax):
+        # ---------- Combined bottleneck stacked-area -------------------- #
+        bt_series = {}
+        for bt in ["labor", "capital", "input"]:
+            counts = (firm_df[firm_df["limiting_factor"] == bt]
+                        .groupby("Step").size().reindex(df.index, fill_value=0))
+            bt_series[bt] = counts
+
+        totals = sum(bt_series.values())
+        pct_arrays = [100 * bt_series[bt] / totals for bt in ["labor", "capital", "input"]]
+
+        ax.stackplot(df[x_col],
+                            *pct_arrays,
+                            labels=["Labour", "Capital", "Input"],
+                            colors=["#1f77b4", "#d62728", "#2ca02c"],
+                            alpha=0.7)
+
+        ax.set_title("Production Bottlenecks (%)")
+        ax.set_ylabel("% of firms")
         ax.set_xlabel(x_col)
-        ax.legend(fontsize=7)
+        ax.set_ylim(0, 100)
+        ax.legend(fontsize=8, loc="upper center", ncol=3)
 
     def _plot_wage(ax):
         for idx_sec, sector in enumerate(unique_sectors):
@@ -323,24 +331,15 @@ def main() -> None:  # noqa: D401
         else:
             _plot_firm(metric_left, ax_left)
 
-        # Right column – may not have corresponding metric for last row
-        if r < len(metrics_right):
-            metric_right = metrics_right[r]
-            ax_right = axes_matrix[r][1]
-            if metric_right == "Wage_By_Level":
-                _plot_wage(ax_right)
-            elif metric_right.endswith("_Bottleneck"):
-                if metric_right.startswith("Labor"):
-                    ax_right.set_title("Labor Bottlenecks", fontsize=10)
-                    _plot_bottleneck("labor", ax_right)
-                elif metric_right.startswith("Input"):
-                    ax_right.set_title("Input Bottlenecks", fontsize=10)
-                    _plot_bottleneck("input", ax_right)
-            else:
-                _plot_household(metric_right, ax_right)
+        # Right column
+        metric_right = metrics_right[r]
+        ax_right = axes_matrix[r][1]
+        if metric_right == "Mean_Wage":
+            _plot_wage(ax_right)
+        elif metric_right.endswith("_Bottleneck"):
+            _plot_bottleneck(ax_right)            
         else:
-            # Hide unused subplot
-            axes_matrix[r][1].set_visible(False)
+            _plot_household(metric_right, ax_right)
 
     fig.tight_layout()
     fig.savefig("simulation_timeseries.png", dpi=150)

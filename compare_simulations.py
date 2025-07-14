@@ -212,8 +212,8 @@ def main():
         "Input_Limited_Firms": "count",
     }
 
-    # Organise metrics: firms (col 0) vs households (col 1)
-    firm_metrics = [
+    # ---- Metric selection (5 left, 5 right) --------------------------- #
+    metrics_left = [
         "Firm_Production",
         "Firm_Consumption",
         "Firm_Wealth",
@@ -221,21 +221,18 @@ def main():
         "Mean_Price",
     ]
 
-    household_metrics = [
+    metrics_right = [
         "Household_Labor_Sold",
         "Household_Consumption",
         "Household_Wealth",
         "Mean_Wage",
-        "Average_Risk",
+        "Production_Bottleneck",  # combined plot
     ]
 
-    # Include sector trophic level plot
-    firm_metrics.append("Sector_Trophic_Level")
-
-    rows = max(len(firm_metrics), len(household_metrics)) + 1  # +1 for bottleneck row
+    rows = len(metrics_left)  # expect 5
     import matplotlib.gridspec as gridspec
-    fig = plt.figure(figsize=(10, rows * 3))
-    gs = gridspec.GridSpec(rows, 2, height_ratios=[1]*(rows-1)+[1.2])
+    fig = plt.figure(figsize=(14, rows * 3))
+    gs = gridspec.GridSpec(rows, 2, height_ratios=[1]*rows)
     axes_matrix = [[fig.add_subplot(gs[r, c]) for c in range(2)] for r in range(rows)]
 
     # Ensure axes is 2-D even if rows == 1
@@ -316,10 +313,6 @@ def main():
                 sector_colors = plt.cm.Set2(np.linspace(0, 1, len(sectors)))
                 for scenario in ["With Hazard", "No Hazard"]:
                     df_scen_hh = household_agents_df[household_agents_df["Scenario"] == scenario]
-                    # Overall line per scenario
-                    grp_tot = df_combined[df_combined["Scenario"] == scenario]
-                    ax.plot(grp_tot[x_col], grp_tot[metric_name], label=f"All – {scenario}", linestyle="-" if scenario=="With Hazard" else "--", color="black", alpha=0.8 if scenario=="With Hazard" else 0.5)
-
                     # Sector lines
                     for idx_sec, sector in enumerate(sectors):
                         grp = df_scen_hh[df_scen_hh["sector"] == sector].groupby("Step")[hh_col].sum()
@@ -341,64 +334,46 @@ def main():
 
     # Fill grid ----------------------------------------------------------- #
     for r in range(rows):
-        # Column 0 – firm metrics
-        if r < len(firm_metrics):
-            _plot_metric(firm_metrics[r], axes_matrix[r][0])
+        # Left metrics
+        _plot_metric(metrics_left[r], axes_matrix[r][0])
+
+        # Right metrics
+        if r < len(metrics_right) - 1:  # exclude last (bottleneck)
+            _plot_metric(metrics_right[r], axes_matrix[r][1])
         else:
-            if r == len(firm_metrics):
-                # Plot all three bottleneck series on same axis
-                ax = axes_matrix[r][0]
-                bottlenecks = [
-                    ("Labor_Limited_Firms", "tab:blue"),
-                    ("Capital_Limited_Firms", "tab:red"),
-                    ("Input_Limited_Firms", "tab:green"),
-                ]
-                for metric_name, color in bottlenecks:
-                    for scenario, grp in df_combined.groupby("Scenario"):
-                        ax.plot(grp["Step"], grp[metric_name], label=f"{metric_name} – {scenario}", color=color, alpha=0.7 if scenario=="With Hazard" else 0.4, linestyle="-" if scenario=="With Hazard" else "--")
-                ax.set_title("Production Bottlenecks", fontsize=10)
-                ax.set_ylabel("count")
-                ax.set_xlabel("Step")
-                ax.legend(fontsize=7)
-            else:
-                axes_matrix[r][0].set_visible(False)
+            # Combined bottleneck plot
+            ax_bt = axes_matrix[r][1]
 
-        # Column 1 – household metrics
-        if r < len(household_metrics):
-            _plot_metric(household_metrics[r], axes_matrix[r][1])
-        else:
-            axes_matrix[r][1].set_visible(False)
+            # --- Stacked area for 'With Hazard' scenario ------------------- #
+            df_haz = firm_agents_df[firm_agents_df["Scenario"] == "With Hazard"]
+            bt_series = {}
+            for bt in ["labor", "capital", "input"]:
+                counts = df_haz[df_haz["limiting_factor"] == bt].groupby("Step").size()
+                counts = counts.reindex(df_combined["Step"].unique(), fill_value=0)
+                bt_series[bt] = counts
 
-    # Expand bottleneck plot across both columns (last row)
-    gs_bott = gs[-1, :]
-    ax_bott = fig.add_subplot(gs_bott)
-    bottlenecks = [
-        ("Labor_Limited_Firms", "tab:blue"),
-        ("Capital_Limited_Firms", "tab:red"),
-        ("Input_Limited_Firms", "tab:green"),
-    ]
-    # bottlenecks row – now detailed per level & scenario
-    for metric_name, _color in bottlenecks:
-        bt_type = metric_name.split("_")[0].lower()  # labor, capital, input
-        for scenario in ["With Hazard", "No Hazard"]:
-            df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
-            for idx_sec, sector in enumerate(unique_sectors):
-                mask = (df_scen["sector"] == sector) & (df_scen["limiting_factor"] == bt_type)
-                counts = df_scen[mask].groupby("Step").size()
-                if counts.empty:
-                    continue
-                x_vals = counts.index if not args.start_year else args.start_year + counts.index.astype(int)/4
-                ls = "-" if scenario=="With Hazard" else "--"
-                ax_bott.plot(x_vals, counts.values, color=sec_colors[idx_sec], linestyle=ls,
-                             label=f"{sector} {bt_type} {scenario}")
-    ax_bott.set_title("Production Bottlenecks", fontsize=10)
-    ax_bott.set_ylabel("count")
-    ax_bott.set_xlabel("Step")
-    ax_bott.legend(fontsize=6, loc="upper center", bbox_to_anchor=(0.5, -0.25), ncol=3)
+            totals = sum(bt_series.values())
+            totals[totals == 0] = 1  # avoid division by zero if no firms yet
+            pct_arrays = [100 * bt_series[bt] / totals for bt in ["labor", "capital", "input"]]
 
-    # Hide the original small axes allocated for bottleneck row
-    axes_matrix[-1][0].set_visible(False)
-    axes_matrix[-1][1].set_visible(False)
+            ax_bt.stackplot(df_combined["Step"].unique(), *pct_arrays,
+                            labels=["Labour (Haz)", "Capital (Haz)", "Input (Haz)"],
+                            colors=["#1f77b4", "#d62728", "#2ca02c"], alpha=0.6)
+
+            # --- Overlay baseline scenario as dashed lines ------------------ #
+            df_base = firm_agents_df[firm_agents_df["Scenario"] == "No Hazard"]
+            dash_styles = {"labor": "-", "capital": "--", "input": ":"}
+            for bt, ls in dash_styles.items():
+                counts = df_base[df_base["limiting_factor"] == bt].groupby("Step").size()
+                counts = counts.reindex(df_combined["Step"].unique(), fill_value=0)
+                pct = 100 * counts / counts.sum() if counts.sum() else counts
+                ax_bt.plot(df_combined["Step"].unique(), pct, linestyle=ls, color="black", linewidth=1, label=f"{bt.capitalize()} (Base)")
+
+            ax_bt.set_title("Production Bottlenecks (%)", fontsize=10)
+            ax_bt.set_ylabel("% of firms")
+            ax_bt.set_xlabel(x_col)
+            ax_bt.set_ylim(0, 100)
+            ax_bt.legend(fontsize=6, ncol=3)
 
     fig.tight_layout()
     Path(args.out).with_suffix(Path(args.out).suffix).parent.mkdir(parents=True, exist_ok=True)

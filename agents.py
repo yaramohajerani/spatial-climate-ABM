@@ -228,20 +228,17 @@ class FirmAgent(Agent):
         self.sector = sector
         self.capital_stock = capital_stock
 
-        # Set starting price based on sector and ensure sufficient initial funds
+        # Set starting price based on sector (for simplicity assume all firms start with the same price)
         base_price_by_sector = {
             "commodity": 1.0,
             "agriculture": 1.0,
-            "manufacturing": 1.5,
-            "wholesale": 1.8,
-            "retail": 2.0,
-            "services": 2.0,
+            "manufacturing": 1.0,
+            "wholesale": 1.0,
+            "retail": 1.0,
+            "services": 1.0,
         }
         self.price: float = float(base_price_by_sector.get(self.sector, 1.0))
-
-        # Provide a cash buffer proportional to the price so every firm can pay wages
-        # and purchase at least some inputs in the first few steps.
-        self.money: float = self.price * 100.0
+        self.money: float = 100.0
 
         # Firm-specific wage offer (labour price) – starts at the model's base wage
         self.wage_offer: float = model.mean_wage if hasattr(model, "mean_wage") else 1.0
