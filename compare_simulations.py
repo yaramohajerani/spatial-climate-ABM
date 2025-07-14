@@ -229,10 +229,10 @@ def main():
         "Average_Risk",
     ]
 
-    rows = max(len(firm_metrics), len(household_metrics))
-    extra_bottleneck_row = True
-    if extra_bottleneck_row:
-        rows += 1
+    # Include sector trophic level plot
+    firm_metrics.append("Sector_Trophic_Level")
+
+    rows = max(len(firm_metrics), len(household_metrics)) + 1  # +1 for bottleneck row
     import matplotlib.gridspec as gridspec
     fig = plt.figure(figsize=(10, rows * 3))
     gs = gridspec.GridSpec(rows, 2, height_ratios=[1]*(rows-1)+[1.2])
@@ -252,8 +252,8 @@ def main():
     firm_agents_df = agent_df_combined[agent_df_combined["type"] == "FirmAgent"].copy()
     household_agents_df = agent_df_combined[agent_df_combined["type"] == "HouseholdAgent"].copy()
 
-    levels_sorted = sorted(firm_agents_df["Level"].dropna().unique())
-    cmap_levels = plt.cm.viridis
+    unique_sectors = sorted(firm_agents_df["sector"].dropna().unique())
+    sec_colors = plt.cm.Set1(np.linspace(0, 1, len(unique_sectors)))
 
     firm_metric_map = {
         "Firm_Production": "production",
@@ -286,18 +286,28 @@ def main():
                     x_vals = price_by_step.index if not args.start_year else args.start_year + price_by_step.index.astype(int) / 4
                     ax.plot(x_vals, price_by_step.values, linestyle="--", color=sector_colors[idx_sec], alpha=0.6,
                             label=f"{sector} – {scenario}")
+        elif metric_name == "Sector_Trophic_Level":
+            for scenario in ["With Hazard", "No Hazard"]:
+                df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
+                for idx_sec, sector in enumerate(unique_sectors):
+                    grp = df_scen[df_scen["sector"] == sector].groupby("Step")["Level"].mean()
+                    if grp.empty:
+                        continue
+                    x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int)/4
+                    ls = "-" if scenario=="With Hazard" else "--"
+                    ax.plot(x_vals, grp.values, color=sec_colors[idx_sec], linestyle=ls, label=f"{sector} – {scenario}")
+            ax.set_ylabel("trophic level")
         elif metric_name in firm_metric_map:
             agent_col = firm_metric_map[metric_name]
             for scenario in ["With Hazard", "No Hazard"]:
                 df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
-                for idx_lvl, lvl in enumerate(levels_sorted):
-                    grp = df_scen[df_scen["Level"] == lvl].groupby("Step")[agent_col].sum()
+                for idx_sec, sector in enumerate(unique_sectors):
+                    grp = df_scen[df_scen["sector"] == sector].groupby("Step")[agent_col].sum()
                     if grp.empty:
                         continue
-                    x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int) / 4
-                    color = cmap_levels(idx_lvl / max(1, len(levels_sorted)-1))
+                    x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int)/4
                     ls = "-" if scenario=="With Hazard" else "--"
-                    ax.plot(x_vals, grp.values, label=f"Lvl {lvl} – {scenario}", color=color, linestyle=ls)
+                    ax.plot(x_vals, grp.values, color=sec_colors[idx_sec], linestyle=ls, label=f"{sector} – {scenario}")
         else:
             # Household metrics
             if metric_name in household_metric_map:
@@ -359,7 +369,7 @@ def main():
         else:
             axes_matrix[r][1].set_visible(False)
 
-    # Expand bottleneck plot across both columns
+    # Expand bottleneck plot across both columns (last row)
     gs_bott = gs[-1, :]
     ax_bott = fig.add_subplot(gs_bott)
     bottlenecks = [
@@ -372,16 +382,15 @@ def main():
         bt_type = metric_name.split("_")[0].lower()  # labor, capital, input
         for scenario in ["With Hazard", "No Hazard"]:
             df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
-            for idx_lvl, lvl in enumerate(levels_sorted):
-                mask = (df_scen["Level"]==lvl) & (df_scen["limiting_factor"]==bt_type)
+            for idx_sec, sector in enumerate(unique_sectors):
+                mask = (df_scen["sector"] == sector) & (df_scen["limiting_factor"] == bt_type)
                 counts = df_scen[mask].groupby("Step").size()
                 if counts.empty:
                     continue
-                x_vals = counts.index if not args.start_year else args.start_year+counts.index.astype(int)/4
-                color = cmap_levels(idx_lvl / max(1, len(levels_sorted)-1))
+                x_vals = counts.index if not args.start_year else args.start_year + counts.index.astype(int)/4
                 ls = "-" if scenario=="With Hazard" else "--"
-                ax_bott.plot(x_vals, counts.values, color=color, linestyle=ls,
-                             label=f"{bt_type.capitalize()} L{lvl} {scenario}")
+                ax_bott.plot(x_vals, counts.values, color=sec_colors[idx_sec], linestyle=ls,
+                             label=f"{sector} {bt_type} {scenario}")
     ax_bott.set_title("Production Bottlenecks", fontsize=10)
     ax_bott.set_ylabel("count")
     ax_bott.set_xlabel("Step")

@@ -194,18 +194,11 @@ def main() -> None:  # noqa: D401
 
     household_df = agent_df[agent_df["type"] == "HouseholdAgent"].copy()
 
-    levels_sorted = sorted(firm_df["Level"].dropna().unique())
-    cmap_levels = plt.cm.viridis
-
-    # --------------- Plotting configuration ----------------------------- #
-    bottleneck_types = [
-        ("Capital_Limited_Firms", "Capital"),  # for left column
-        ("Labor_Limited_Firms", "Labor"),     # for right column
-        ("Input_Limited_Firms", "Input"),     # for right column
-    ]
+    # Sector palette
+    unique_sectors = sorted(firm_df["sector"].dropna().unique())
+    sec_colors = plt.cm.Set1(np.linspace(0, 1, len(unique_sectors)))
 
     # Add sector-based pricing to firm metrics
-    unique_sectors = sorted(firm_df["sector"].dropna().unique())
     unique_hh_sectors = sorted(household_df["sector"].dropna().unique())
 
     metrics_left = [
@@ -216,6 +209,7 @@ def main() -> None:  # noqa: D401
         "Firm_Inventory",
         "Mean_Price",
         "Capital_Bottleneck",
+        "Sector_Trophic_Level",
     ]
 
     metrics_right = [
@@ -248,25 +242,30 @@ def main() -> None:  # noqa: D401
 
     def _plot_firm(col, ax):
         if col == "Mean_Price":
-            # Plot aggregate mean price
+            # Aggregate mean price line
             ax.plot(df[x_col], df[col], color="black", linewidth=2, label="Mean Price")
-            
-            # Plot price by sector
-            sector_colors = plt.cm.Set1(np.linspace(0, 1, len(unique_sectors)))
+            # Sector breakdown
             for idx_sec, sector in enumerate(unique_sectors):
-                sector_data = firm_df[firm_df["sector"] == sector]
-                if not sector_data.empty:
-                    price_by_step = sector_data.groupby("Step")["price"].mean()
-                    x_vals = price_by_step.index if not args.start_year else args.start_year + price_by_step.index.astype(int) / 4
-                    ax.plot(x_vals, price_by_step.values, color=sector_colors[idx_sec], 
-                           linestyle="--", alpha=0.7, label=f"{sector}")
+                sec_data = firm_df[firm_df["sector"] == sector]
+                if sec_data.empty:
+                    continue
+                grp = sec_data.groupby("Step")["price"].mean()
+                x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int)/4
+                ax.plot(x_vals, grp.values, color=sec_colors[idx_sec], linestyle="--", alpha=0.8, label=sector)
+        elif col == "Sector_Trophic_Level":
+            for idx_sec, sector in enumerate(unique_sectors):
+                mean_lvl = firm_df[firm_df["sector"] == sector].groupby("Step")["Level"].mean()
+                x_vals = mean_lvl.index if not args.start_year else args.start_year + mean_lvl.index.astype(int)/4
+                ax.plot(x_vals, mean_lvl.values, color=sec_colors[idx_sec], label=sector)
+            ax.set_ylabel("trophic level")
         else:
             agent_col = firm_metric_map.get(col, col.lower())
-            for idx_lvl, lvl in enumerate(levels_sorted):
-                grp = firm_df[firm_df["Level"] == lvl].groupby("Step")[agent_col].sum()
-                x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int) / 4
-                color = cmap_levels(idx_lvl / max(1, len(levels_sorted) - 1))
-                ax.plot(x_vals, grp.values, label=f"Level {lvl}", color=color)
+            for idx_sec, sector in enumerate(unique_sectors):
+                grp = firm_df[firm_df["sector"] == sector].groupby("Step")[agent_col].sum()
+                if grp.empty:
+                    continue
+                x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int)/4
+                ax.plot(x_vals, grp.values, color=sec_colors[idx_sec], label=sector)
         ax.set_title(col.replace("_", " "), fontsize=10)
         ylabel = units.get(col, "")
         if ylabel:
@@ -304,28 +303,25 @@ def main() -> None:  # noqa: D401
 
     # ---------------- Plotting row by row ----------------------------- #
     def _plot_bottleneck(btype_str: str, ax):
-        for idx_lvl, lvl in enumerate(levels_sorted):
-            mask = (firm_df["Level"] == lvl) & (firm_df["limiting_factor"] == btype_str.lower())
+        for idx_sec, sector in enumerate(unique_sectors):
+            mask = (firm_df["sector"] == sector) & (firm_df["limiting_factor"] == btype_str.lower())
             counts = firm_df[mask].groupby("Step").size()
             if counts.empty:
                 continue
-            x_vals = counts.index if not args.start_year else args.start_year + counts.index.astype(int) / 4
-            color = cmap_levels(idx_lvl / max(1, len(levels_sorted) - 1))
-            ax.plot(x_vals, counts.values, label=f"Level {lvl}", color=color)
+            x_vals = counts.index if not args.start_year else args.start_year + counts.index.astype(int)/4
+            ax.plot(x_vals, counts.values, color=sec_colors[idx_sec], label=sector)
         ax.set_ylabel("count")
         ax.set_xlabel(x_col)
         ax.legend(fontsize=7)
 
     def _plot_wage(ax):
-        sector_colors = plt.cm.Set1(np.linspace(0, 1, len(levels_sorted)))
-        for idx_lvl, lvl in enumerate(levels_sorted):
-            wage_by_step = firm_df[firm_df["Level"] == lvl].groupby("Step")["wage"].mean()
+        for idx_sec, sector in enumerate(unique_sectors):
+            wage_by_step = firm_df[firm_df["sector"] == sector].groupby("Step")["wage"].mean()
             if wage_by_step.empty:
                 continue
-            x_vals = wage_by_step.index if not args.start_year else args.start_year + wage_by_step.index.astype(int) / 4
-            color = cmap_levels(idx_lvl / max(1, len(levels_sorted) - 1))
-            ax.plot(x_vals, wage_by_step.values, label=f"Level {lvl}", color=color)
-        ax.set_title("Wages by Level", fontsize=10)
+            x_vals = wage_by_step.index if not args.start_year else args.start_year + wage_by_step.index.astype(int)/4
+            ax.plot(x_vals, wage_by_step.values, label=sector, color=sec_colors[idx_sec])
+        ax.set_title("Wages by Sector", fontsize=10)
         ax.set_ylabel("$ / Unit of Labor")
         ax.set_xlabel(x_col)
         ax.legend(fontsize=7)
@@ -334,12 +330,10 @@ def main() -> None:  # noqa: D401
         # Left column
         metric_left = metrics_left[r]
         ax_left = axes_matrix[r][0]
-        if metric_left.endswith("_Bottleneck"):
-            if metric_left.startswith("Capital"):
-                ax_left.set_title("Capital Bottlenecks", fontsize=10)
-                _plot_bottleneck("capital", ax_left)
+        if metric_left == "Sector_Trophic_Level":
+            _plot_firm("Sector_Trophic_Level", ax_left)
         else:
-            _plot_firm(metric_left, ax_left)
+            _plot_bottleneck("capital", ax_left)
 
         # Right column
         metric_right = metrics_right[r]
