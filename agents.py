@@ -337,16 +337,22 @@ class FirmAgent(Agent):
         qty = min(quantity, self.inventory_output)
         cost = qty * self.price
         # Check buyer's dedicated input budget first if available
-        budget_attr = getattr(buyer, "_budget_input", None)
-        if budget_attr is not None and budget_attr < cost:
-            return 0
+        budget_in = getattr(buyer, "_budget_input", 0.0)
+        budget_cap = getattr(buyer, "_budget_capital", 0.0)
+
+        if cost > (budget_in + budget_cap):
+            return 0  # Not enough dedicated funds
+
         if buyer.money < cost:
             return 0
 
         # Transfer money & inventory
         buyer.money -= cost
-        if budget_attr is not None:
-            buyer._budget_input -= cost  # type: ignore[attr-defined]
+
+        # Deduct from budgets prioritising input budget, then capital
+        use_in = min(cost, budget_in)
+        buyer._budget_input -= use_in  # type: ignore[attr-defined]
+        buyer._budget_capital -= (cost - use_in)  # type: ignore[attr-defined]
         self.money += cost
         self.inventory_output -= qty
         # Register under this supplier's id inside buyer
@@ -539,28 +545,22 @@ class FirmAgent(Agent):
         self.capital_stock *= (1 - DEPR)
 
         # ---------------- Capital purchase stage ----------------------- #
-        if capital_limited and self.money > self.price:
-            needed_capital_units = int(max_possible - possible_output)
-            budget_units = int(self.money / self.price)
-            to_buy = min(needed_capital_units, budget_units)
+        # Purchase additional capital whenever it is the current bottleneck
+        if self.limiting_factor == "capital" and self._budget_capital > 0:
+            max_affordable_units = int(self._budget_capital / self.price)
+            if max_affordable_units <= 0:
+                max_affordable_units = int(self.money / self.price)
+
+            to_buy = max_affordable_units
 
             if to_buy > 0:
-                # Candidate sellers: upstream suppliers *and* any firm with stock
-                all_firms = [ag for ag in self.model.agents if isinstance(ag, FirmAgent) and ag is not self]
-                candidates = list({*self.connected_firms, *all_firms})  # set union, preserve objects
-
-                # Randomise search order to avoid bias
-                for seller in self.random.sample(candidates, len(candidates)):
-                    if to_buy == 0:
+                # Candidate sellers: any firm with inventory (including upstream suppliers)
+                sellers = [f for f in self.model.agents if isinstance(f, FirmAgent) and f is not self and f.inventory_output > 0]
+                self.random.shuffle(sellers)
+                for seller in sellers:
+                    if to_buy <= 0:
                         break
-                    if seller.inventory_output <= 0:
-                        continue
-                    qty = min(seller.inventory_output, to_buy)
-                    cost = qty * seller.price
-                    if self.money < cost:
-                        qty = int(self.money / seller.price)
-                    if qty <= 0:
-                        continue
+                    qty = min(to_buy, seller.inventory_output)
                     bought = seller.sell_goods_to_firm(self, qty)
                     if bought:
                         self.capital_stock += bought

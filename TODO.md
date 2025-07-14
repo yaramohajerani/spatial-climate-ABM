@@ -9,6 +9,8 @@
 - [x] Make sure randomized runs can be duplicated exactly with and without climate for comparison
 - [x] Create a dictionary of firm input/outputs and locations. Flooding is very spatially heterogenous, so randomized placing is very unlikely to get significant flood risk. 
 - [x] Add abilitiy to simultanously run climate and no-cimate simulations for comparison
+- [ ] We are currently assuming input goods are interchangeable. Only retail can have this assumption. For other sectors, we need to treat them as indepedent inputs. 
+- [ ] Make per-sector specifications for the coefficients of the production function.
 
 ## longer-term / tentative
 - [x] Add capital requirement for production
