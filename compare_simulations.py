@@ -190,7 +190,9 @@ def main():
         agent_df_combined = pd.concat([agent_haz, agent_base], ignore_index=True)
 
         # Persist rich agent-level results
-        agent_csv_path = Path(args.out).with_suffix("_agents.csv")
+        # Build agent-level CSV path by appending "_agents" before the extension
+        out_path = Path(args.out)
+        agent_csv_path = out_path.parent / f"{out_path.stem}_agents.csv"
         agent_df_combined.to_csv(agent_csv_path, index=False)
         print(f"Agent-level data saved to {agent_csv_path}")
 
