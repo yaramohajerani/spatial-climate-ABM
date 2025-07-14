@@ -25,10 +25,13 @@ import argparse
 import json
 from pathlib import Path
 from collections import Counter
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 import networkx as nx
 import matplotlib.pyplot as plt
+import numpy as np
+
+from trophic_utils import compute_trophic_levels
 
 RAW_MATERIAL_SECTORS: List[str] = ["agriculture", "mining", "extraction"]
 
@@ -62,15 +65,18 @@ def find_sources(g: nx.DiGraph) -> List[int]:
     return sources
 
 
-def compute_trophic_levels(g: nx.DiGraph, sources: List[int]) -> Dict[int, int]:
-    """Shortest path length from any source; unreachable => None (omitted)."""
-    levels: Dict[int, int] = {}
-    # Multi-source BFS
-    for source in sources:
-        lengths = nx.single_source_shortest_path_length(g, source)
-        for node, dist in lengths.items():
-            levels[node] = min(dist, levels.get(node, float("inf")))
-    return levels
+def _compute_levels_weighted(g: nx.DiGraph) -> Dict[int, float]:
+    """Compute trophic levels using the weighted-average definition."""
+
+    adjacency: Dict[int, List[int]] = {n: list(g.predecessors(n)) for n in g.nodes()}
+
+    # Edge weights if provided in JSON (e.g., "value")
+    weight_map: Dict[Tuple[int, int], float] = {}
+    for u, v, data in g.edges(data=True):  # u -> v (supplier -> buyer)
+        w = float(data.get("value", 1.0))
+        weight_map[(v, u)] = w  # note: key is (buyer, supplier)
+
+    return compute_trophic_levels(adjacency, weight_map if weight_map else None)
 
 
 def print_stats(g: nx.DiGraph, levels: Dict[int, int]):
@@ -90,22 +96,44 @@ def print_stats(g: nx.DiGraph, levels: Dict[int, int]):
 
 def plot_network(g: nx.DiGraph, levels: Dict[int, int], outfile: Path):
     # Colour map by trophic level (None => grey)
-    max_lvl = max(levels.values()) if levels else 1
+    if levels:
+        min_lvl = min(levels.values())
+        max_lvl = max(levels.values())
+    else:
+        min_lvl = 1.0
+        max_lvl = 1.0
+
+    from matplotlib import cm, colors as mcolors
+    norm = mcolors.Normalize(vmin=min_lvl, vmax=max_lvl)
+
     colours = []
     for n in g.nodes():
         lvl = levels.get(n, None)
         if lvl is None:
             colours.append("lightgrey")
         else:
-            colours.append(plt.cm.viridis(lvl / max_lvl))
+            colours.append(cm.viridis(norm(lvl)))
 
-    # Use layered layout by trophic level to reduce overlap
-    for n, lvl in levels.items():
-        g.nodes[n]["subset"] = lvl  # subset key recognised by multipartite
-    try:
-        pos = nx.multipartite_layout(g, subset_key="subset", align="horizontal", scale=2)
-    except Exception:
-        pos = nx.spring_layout(g, seed=42)
+    # -------------------------------------------------------------- #
+    # Layout strategy:
+    #   • x-positions from spring_layout for aesthetic spacing.
+    #   • y-positions fixed by (negative) trophic level so higher levels appear lower.
+    #   • This avoids an overly stretched horizontal diagram when many levels exist,
+    #     yet still groups firms of similar level together.
+    # -------------------------------------------------------------- #
+
+    # Initial spring layout (returns dict: node -> [x,y])
+    pos = nx.spring_layout(g, seed=42)
+
+    # Rescale and align Y coordinate by trophic level
+    lvl_vals = list(levels.values()) or [0]
+    max_lvl = max(lvl_vals)
+    for n in pos:
+        lvl = levels.get(n, max_lvl + 1)
+        # Keep spring x, but stack y by level (higher level → lower y)
+        pos[n][1] = -float(lvl)
+        # Optional small jitter to reduce perfect overlaps when many nodes share level
+        pos[n][0] += 0.2 * (np.random.random() - 0.5)
 
     nx.draw_networkx_edges(g, pos, alpha=0.3, arrows=True, width=0.5)
     nx.draw_networkx_nodes(g, pos, node_color=colours, node_size=120, edgecolors="black", linewidths=0.3)
@@ -126,12 +154,12 @@ def plot_network(g: nx.DiGraph, levels: Dict[int, int], outfile: Path):
         for n in g.nodes():
             lbl = f"{_abbr(g.nodes[n].get('sector', ''))}{n}"
             x, y = pos[n]
-            font_color = "white" if levels.get(n, 0) < 1.5 else "black"
+            font_color = "white" if levels.get(n, 0) < (max_lvl + min_lvl) / 2 else "black"
             ax.text(x, y, lbl, fontsize=6, ha="center", va="center", color=font_color)
 
     # Add legend/colour bar for trophic levels
     from matplotlib.cm import ScalarMappable
-    sm = ScalarMappable(cmap=plt.cm.viridis, norm=plt.Normalize(vmin=0, vmax=max_lvl))
+    sm = ScalarMappable(cmap=plt.cm.viridis, norm=norm)
     sm.set_array([])
     ax = plt.gca()
     cbar = plt.colorbar(sm, ax=ax, shrink=0.7, pad=0.02)
@@ -165,7 +193,7 @@ def main():
     sources = find_sources(g)
     print(f"Identified {len(sources)} primary producers (sources). IDs: {sources}")
 
-    levels = compute_trophic_levels(g, sources)
+    levels = _compute_levels_weighted(g)
     print_stats(g, levels)
 
     if args.plot:

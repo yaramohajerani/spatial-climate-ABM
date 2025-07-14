@@ -4,6 +4,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+from trophic_utils import compute_trophic_levels
 
 from model import EconomyModel
 from agents import FirmAgent
@@ -152,28 +153,10 @@ def main():
 
         # ---------------- Agent-level aggregation ---------------------- #
         def _compute_levels(model_obj: EconomyModel):
+            """Return mapping firm_id->trophic level using weighted definition."""
             firms = [ag for ag in model_obj.agents if isinstance(ag, FirmAgent)]
-            id_map = {f.unique_id: f for f in firms}
-            memo: dict[int, int] = {}
-
-            def _lvl(fid: int, visiting: set[int]):
-                if fid in memo:
-                    return memo[fid]
-                if fid in visiting:
-                    return 0
-                visiting.add(fid)
-                f = id_map[fid]
-                if not f.connected_firms:
-                    l = 0
-                else:
-                    l = 1 + min(_lvl(s.unique_id, visiting) for s in f.connected_firms)
-                visiting.remove(fid)
-                memo[fid] = l
-                return l
-
-            for fid in id_map:
-                _lvl(fid, set())
-            return memo
+            adjacency = {f.unique_id: [s.unique_id for s in f.connected_firms] for f in firms}
+            return compute_trophic_levels(adjacency)
 
         # Build agent DataFrame combined
         def _agent_df(model_obj, scenario_label):

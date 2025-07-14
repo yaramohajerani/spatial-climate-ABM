@@ -138,6 +138,7 @@ def main() -> None:  # noqa: D401
     import matplotlib.pyplot as plt
     import matplotlib.gridspec as gridspec
     import numpy as np
+    from trophic_utils import compute_trophic_levels
 
     df = model.results_to_dataframe()
 
@@ -177,32 +178,12 @@ def main() -> None:  # noqa: D401
         "Average_Risk",
     ]
 
-    # ------------------ Compute trophic levels & agent DataFrame ---------- #
-    def _compute_trophic_levels(model: EconomyModel):
-        firms = [ag for ag in model.agents if isinstance(ag, FirmAgent)]
-        id_map = {f.unique_id: f for f in firms}
-        memo: dict[int, int] = {}
-
-        def _level(fid: int, visiting: set[int]) -> int:
-            if fid in memo:
-                return memo[fid]
-            if fid in visiting:  # cycle safeguard
-                return 0
-            visiting.add(fid)
-            f = id_map[fid]
-            if not f.connected_firms:
-                lvl = 0
-            else:
-                lvl = 1 + min(_level(s.unique_id, visiting) for s in f.connected_firms)
-            visiting.remove(fid)
-            memo[fid] = lvl
-            return lvl
-
-        for fid in id_map:
-            _level(fid, set())
-        return memo
-
-    lvl_map = _compute_trophic_levels(model)
+    # ------------------ Compute trophic levels --------------------------- #
+    firm_adj = {
+        f.unique_id: [s.unique_id for s in f.connected_firms]
+        for f in model.agents if isinstance(f, FirmAgent)
+    }
+    lvl_map = compute_trophic_levels(firm_adj)
 
     agent_df = model.datacollector.get_agent_vars_dataframe().reset_index()
     agent_df.rename(columns={"level_0": "Step", "level_1": "AgentID"}, inplace=True, errors="ignore")
