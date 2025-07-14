@@ -28,12 +28,19 @@ class HouseholdAgent(Agent):
         pos: Coords,
         money: float = 100.0,
         labor_supply: float = 1.0,
+        sector: str = "manufacturing",
     ) -> None:
         super().__init__(model)
 
         self.money: float = money
         self.labor_supply: float = labor_supply
         self.capital: float = 1.0
+
+        # Sector specialisation – household will preferentially work for firms in this sector
+        self.sector: str = sector
+
+        # Counter of consecutive steps without finding work (used for job-driven relocation)
+        self._no_work_steps: int = 0
 
         # Trade-off coefficient between wage and distance when choosing employer.
         # Higher value → distance is more costly, so worker prefers closer firms.
@@ -54,9 +61,63 @@ class HouseholdAgent(Agent):
         # Filled by the model after all agents are created
         self.nearby_firms: List["FirmAgent"] = []
 
+    # ---------------- Internal helpers ------------------- #
+    def _update_nearby_firms(self) -> None:
+        """Refresh the list of nearby firms in the same sector within the model's work_radius."""
+
+        radius = getattr(self.model, "work_radius", 3)
+        self.nearby_firms.clear()
+        for ag in self.model.agents:
+            if not isinstance(ag, FirmAgent):
+                continue
+            if ag.sector != self.sector:
+                continue
+            dx = abs(self.pos[0] - ag.pos[0])
+            dy = abs(self.pos[1] - ag.pos[1])
+            if dx + dy <= radius:
+                self.nearby_firms.append(ag)
+
+    def _relocate_for_job(self) -> None:
+        """Move closer to a random firm in the same sector to improve employment prospects."""
+
+        firms_same_sector = [ag for ag in self.model.agents if isinstance(ag, FirmAgent) and ag.sector == self.sector]
+        if not firms_same_sector:
+            return  # no suitable firms exist
+
+        target_firm = self.random.choice(firms_same_sector)
+        fx, fy = target_firm.pos
+
+        # Candidate cells within work radius of the target firm
+        candidates: list[Coords] = []
+        radius = getattr(self.model, "work_radius", 3)
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                coord = (fx + dx, fy + dy)
+                if coord in self.model.land_coordinates:
+                    candidates.append(coord)
+
+        if not candidates:
+            return  # no land nearby
+
+        new_pos = self.random.choice(candidates)
+        if new_pos == self.pos:
+            return  # already there
+
+        self.model.grid.move_agent(self, new_pos)
+
+        # Apply relocation cost similar to climate‐driven migration
+        self.money *= (1 - self.RELOCATION_COST)
+        self.capital *= (1 - self.RELOCATION_COST)
+
+        # Refresh nearby firms after moving
+        self._update_nearby_firms()
+
     # ---------------- Mesa API ---------------- #
     def step(self) -> None:  # noqa: D401, N802
         """Provide labour and consume goods each tick."""
+
+        # Refresh employer list (in case we moved or firms relocated)
+        self._update_nearby_firms()
 
         # Reset per-step statistics
         self.production = 0.0
@@ -92,13 +153,26 @@ class HouseholdAgent(Agent):
 
         # 2. Buy one unit of goods if affordable -------------------------- #
         # Households consume a single generic good for simplicity.
-        affordable_firms = [f for f in self.nearby_firms if f.inventory_output > 0 and f.price <= self.money]
+        affordable_firms = [
+            f for f in self.nearby_firms if f.inventory_output > 0 and f.price <= self.money
+        ]
         if affordable_firms:
             seller = self.random.choice(affordable_firms)
             # Attempt to buy up to 1 unit; method will reduce if only fraction affordable
             qty_bought = seller.sell_goods_to_household(self, quantity=1.0)
             if qty_bought:
                 self.consumption += qty_bought
+
+        # ---------------- End-of-step unemployment tracking ------------- #
+        if self.labor_sold == 0:
+            self._no_work_steps += 1
+        else:
+            self._no_work_steps = 0
+
+        if self._no_work_steps >= 3:
+            # Could not find work for 3 consecutive steps → move closer to another firm of same sector
+            self._relocate_for_job()
+            self._no_work_steps = 0  # reset after relocation
 
     def _max_hazard_within_radius(self, radius: int) -> float:
         """Return the maximum hazard value within *radius* cells of current position."""
@@ -125,6 +199,8 @@ class HouseholdAgent(Agent):
 
         # Track migration for statistics
         self.model.migrants_this_step += 1
+
+    # ---------------- End of Household.step() bookkeeping -------- #
 
 
 class FirmAgent(Agent):

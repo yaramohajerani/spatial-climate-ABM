@@ -179,8 +179,9 @@ def main():
         def _agent_df(model_obj, scenario_label):
             df_ag = model_obj.datacollector.get_agent_vars_dataframe().reset_index()
             df_ag.rename(columns={"level_0": "Step", "level_1": "AgentID"}, inplace=True, errors="ignore")
+
+            # Assign levels only to firms; households keep NaN
             lvl_map = _compute_levels(model_obj)
-            df_ag = df_ag[df_ag["type"] == "FirmAgent"].copy()
             df_ag["Level"] = df_ag["AgentID"].map(lvl_map)
             df_ag["Scenario"] = scenario_label
             return df_ag
@@ -264,7 +265,11 @@ def main():
     if args.start_year:
         df_combined["Year"] = args.start_year + df_combined["Step"].astype(int) / 4
 
-    levels_sorted = sorted(agent_df_combined["Level"].dropna().unique())
+    # Separate combined agent data for convenience
+    firm_agents_df = agent_df_combined[agent_df_combined["type"] == "FirmAgent"].copy()
+    household_agents_df = agent_df_combined[agent_df_combined["type"] == "HouseholdAgent"].copy()
+
+    levels_sorted = sorted(firm_agents_df["Level"].dropna().unique())
     cmap_levels = plt.cm.viridis
 
     firm_metric_map = {
@@ -274,17 +279,24 @@ def main():
         "Firm_Capital": "capital",
     }
 
+    household_metric_map = {
+        "Household_Wealth": "money",
+        "Household_Capital": "capital",
+        "Household_Labor_Sold": "labor_sold",
+        "Household_Consumption": "consumption",
+    }
+
     def _plot_metric(metric_name: str, ax):
         if metric_name == "Mean_Price":
             # Aggregate line per scenario
             for scenario, grp in df_combined.groupby("Scenario"):
                 ax.plot(grp[x_col], grp[metric_name], label=f"Mean – {scenario}")
             # Sector breakdown
-            sectors = sorted(agent_df_combined["sector"].dropna().unique())
+            sectors = sorted(firm_agents_df["sector"].dropna().unique())
             sector_colors = plt.cm.Set1(np.linspace(0, 1, len(sectors)))
             for idx_sec, sector in enumerate(sectors):
                 for scenario in ["With Hazard", "No Hazard"]:
-                    df_sec = agent_df_combined[(agent_df_combined["sector"] == sector) & (agent_df_combined["Scenario"] == scenario)]
+                    df_sec = firm_agents_df[(firm_agents_df["sector"] == sector) & (firm_agents_df["Scenario"] == scenario)]
                     if df_sec.empty:
                         continue
                     price_by_step = df_sec.groupby("Step")["price"].mean()
@@ -294,7 +306,7 @@ def main():
         elif metric_name in firm_metric_map:
             agent_col = firm_metric_map[metric_name]
             for scenario in ["With Hazard", "No Hazard"]:
-                df_scen = agent_df_combined[agent_df_combined["Scenario"] == scenario]
+                df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
                 for idx_lvl, lvl in enumerate(levels_sorted):
                     grp = df_scen[df_scen["Level"] == lvl].groupby("Step")[agent_col].sum()
                     if grp.empty:
@@ -304,9 +316,28 @@ def main():
                     ls = "-" if scenario=="With Hazard" else "--"
                     ax.plot(x_vals, grp.values, label=f"Lvl {lvl} – {scenario}", color=color, linestyle=ls)
         else:
-            # household metrics etc.
-            for scenario, grp in df_combined.groupby("Scenario"):
-                ax.plot(grp[x_col], grp[metric_name], label=scenario)
+            # Household metrics
+            if metric_name in household_metric_map:
+                hh_col = household_metric_map[metric_name]
+                sectors = sorted(household_agents_df["sector"].dropna().unique())
+                sector_colors = plt.cm.Set2(np.linspace(0, 1, len(sectors)))
+                for scenario in ["With Hazard", "No Hazard"]:
+                    df_scen_hh = household_agents_df[household_agents_df["Scenario"] == scenario]
+                    # Overall line per scenario
+                    grp_tot = df_combined[df_combined["Scenario"] == scenario]
+                    ax.plot(grp_tot[x_col], grp_tot[metric_name], label=f"All – {scenario}", linestyle="-" if scenario=="With Hazard" else "--", color="black", alpha=0.8 if scenario=="With Hazard" else 0.5)
+
+                    # Sector lines
+                    for idx_sec, sector in enumerate(sectors):
+                        grp = df_scen_hh[df_scen_hh["sector"] == sector].groupby("Step")[hh_col].sum()
+                        if grp.empty:
+                            continue
+                        x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int) / 4
+                        ax.plot(x_vals, grp.values, color=sector_colors[idx_sec], linestyle="--" if scenario=="With Hazard" else ":", alpha=0.6, label=f"{sector} – {scenario}")
+            else:
+                # Other aggregated metrics (risk, etc.)
+                for scenario, grp in df_combined.groupby("Scenario"):
+                    ax.plot(grp[x_col], grp[metric_name], label=scenario)
 
         ax.set_title(metric_name.replace("_", " "), fontsize=10)
         ylabel = units.get(metric_name, "")
@@ -357,7 +388,7 @@ def main():
     for metric_name, _color in bottlenecks:
         bt_type = metric_name.split("_")[0].lower()  # labor, capital, input
         for scenario in ["With Hazard", "No Hazard"]:
-            df_scen = agent_df_combined[agent_df_combined["Scenario"] == scenario]
+            df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
             for idx_lvl, lvl in enumerate(levels_sorted):
                 mask = (df_scen["Level"]==lvl) & (df_scen["limiting_factor"]==bt_type)
                 counts = df_scen[mask].groupby("Step").size()

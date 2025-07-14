@@ -206,10 +206,14 @@ def main() -> None:  # noqa: D401
 
     agent_df = model.datacollector.get_agent_vars_dataframe().reset_index()
     agent_df.rename(columns={"level_0": "Step", "level_1": "AgentID"}, inplace=True, errors="ignore")
-    agent_df = agent_df[agent_df["type"] == "FirmAgent"].copy()
-    agent_df["Level"] = agent_df["AgentID"].map(lvl_map)
 
-    levels_sorted = sorted(agent_df["Level"].dropna().unique())
+    # Split firm vs household for convenience
+    firm_df = agent_df[agent_df["type"] == "FirmAgent"].copy()
+    firm_df["Level"] = firm_df["AgentID"].map(lvl_map)
+
+    household_df = agent_df[agent_df["type"] == "HouseholdAgent"].copy()
+
+    levels_sorted = sorted(firm_df["Level"].dropna().unique())
     cmap_levels = plt.cm.viridis
 
     # --------------- Plotting configuration ----------------------------- #
@@ -220,7 +224,8 @@ def main() -> None:  # noqa: D401
     ]
 
     # Add sector-based pricing to firm metrics
-    unique_sectors = sorted(agent_df["sector"].dropna().unique())
+    unique_sectors = sorted(firm_df["sector"].dropna().unique())
+    unique_hh_sectors = sorted(household_df["sector"].dropna().unique())
 
     metrics_left = [
         "Firm_Production",
@@ -268,7 +273,7 @@ def main() -> None:  # noqa: D401
             # Plot price by sector
             sector_colors = plt.cm.Set1(np.linspace(0, 1, len(unique_sectors)))
             for idx_sec, sector in enumerate(unique_sectors):
-                sector_data = agent_df[agent_df["sector"] == sector]
+                sector_data = firm_df[firm_df["sector"] == sector]
                 if not sector_data.empty:
                     price_by_step = sector_data.groupby("Step")["price"].mean()
                     x_vals = price_by_step.index if not args.start_year else args.start_year + price_by_step.index.astype(int) / 4
@@ -277,7 +282,7 @@ def main() -> None:  # noqa: D401
         else:
             agent_col = firm_metric_map.get(col, col.lower())
             for idx_lvl, lvl in enumerate(levels_sorted):
-                grp = agent_df[agent_df["Level"] == lvl].groupby("Step")[agent_col].sum()
+                grp = firm_df[firm_df["Level"] == lvl].groupby("Step")[agent_col].sum()
                 x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int) / 4
                 color = cmap_levels(idx_lvl / max(1, len(levels_sorted) - 1))
                 ax.plot(x_vals, grp.values, label=f"Level {lvl}", color=color)
@@ -288,19 +293,39 @@ def main() -> None:  # noqa: D401
         ax.set_xlabel(x_col)
         ax.legend(fontsize=7)
 
+    household_metric_map = {
+        "Household_Wealth": "money",
+        "Household_Capital": "capital",
+        "Household_Labor_Sold": "labor_sold",
+        "Household_Consumption": "consumption",
+    }
+
     def _plot_household(col, ax):
-        ax.plot(df[x_col], df[col], color="tab:orange")
+        # Aggregate overall line
+        ax.plot(df[x_col], df[col], color="black", linewidth=2, label="All Households")
+
+        hh_col = household_metric_map.get(col, None)
+        if hh_col:
+            sector_colors = plt.cm.Set2(np.linspace(0, 1, len(unique_hh_sectors)))
+            for idx_sec, sector in enumerate(unique_hh_sectors):
+                grp = household_df[household_df["sector"] == sector].groupby("Step")[hh_col].sum()
+                if grp.empty:
+                    continue
+                x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int) / 4
+                ax.plot(x_vals, grp.values, color=sector_colors[idx_sec], linestyle="--", alpha=0.7, label=f"{sector}")
+
         ax.set_title(col.replace("_", " "), fontsize=10)
         ylabel = units.get(col, "")
         if ylabel:
             ax.set_ylabel(ylabel)
         ax.set_xlabel(x_col)
+        ax.legend(fontsize=7)
 
     # ---------------- Plotting row by row ----------------------------- #
     def _plot_bottleneck(btype_str: str, ax):
         for idx_lvl, lvl in enumerate(levels_sorted):
-            mask = (agent_df["Level"] == lvl) & (agent_df["limiting_factor"] == btype_str.lower())
-            counts = agent_df[mask].groupby("Step").size()
+            mask = (firm_df["Level"] == lvl) & (firm_df["limiting_factor"] == btype_str.lower())
+            counts = firm_df[mask].groupby("Step").size()
             if counts.empty:
                 continue
             x_vals = counts.index if not args.start_year else args.start_year + counts.index.astype(int) / 4
@@ -313,7 +338,7 @@ def main() -> None:  # noqa: D401
     def _plot_wage(ax):
         sector_colors = plt.cm.Set1(np.linspace(0, 1, len(levels_sorted)))
         for idx_lvl, lvl in enumerate(levels_sorted):
-            wage_by_step = agent_df[agent_df["Level"] == lvl].groupby("Step")["wage"].mean()
+            wage_by_step = firm_df[firm_df["Level"] == lvl].groupby("Step")["wage"].mean()
             if wage_by_step.empty:
                 continue
             x_vals = wage_by_step.index if not args.start_year else args.start_year + wage_by_step.index.astype(int) / 4

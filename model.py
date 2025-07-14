@@ -357,28 +357,81 @@ class EconomyModel(Model):
                 firm_agents_list.append(agent)
 
         # ---------------- Place households if not already done --------------- #
-        if not hh_positions:
-            # Need to create household positions now (topology case)
+        # For randomly generated networks (no topology), we still need household positions
+        if not hh_positions and self._firm_topology is None:
             for _ in range(num_households):
                 firm = self.random.choice(firm_agents_list)
                 fx, fy = firm.pos
-                # Try positions within radius 3; fallback to firm cell
                 candidates = []
                 for dx in range(-self.work_radius, self.work_radius + 1):
                     for dy in range(-self.work_radius, self.work_radius + 1):
                         coord = (fx + dx, fy + dy)
                         if coord in self.land_coordinates:
                             candidates.append(coord)
-                if candidates:
-                    pos = self.random.choice(candidates)
-                else:
-                    pos = firm.pos
+                pos = self.random.choice(candidates) if candidates else firm.pos
                 hh_positions.append(pos)
 
-        # Finally create Household agents at the determined positions
-        for pos in hh_positions:
-            hh = HouseholdAgent(model=self, pos=pos)
-            self.grid.place_agent(hh, pos)
+        # ---------------- Allocate households across sectors ------------------- #
+        if self._firm_topology is not None and firm_agents_list:
+            # Determine sector distribution based on number of firms per sector
+            from collections import Counter
+
+            sector_counts = Counter(f.sector for f in firm_agents_list)
+            total_firms = sum(sector_counts.values())
+
+            # Initial allocation proportional to firm share
+            sector_alloc: dict[str, int] = {
+                sec: int(round(num_households * cnt / total_firms)) for sec, cnt in sector_counts.items()
+            }
+
+            # Adjust rounding so total matches num_households
+            diff = num_households - sum(sector_alloc.values())
+            if diff != 0:
+                # Distribute remainder starting with largest sectors
+                sorted_secs = sorted(sector_counts.items(), key=lambda t: -t[1])
+                idx = 0
+                while diff != 0 and sorted_secs:
+                    sec = sorted_secs[idx % len(sorted_secs)][0]
+                    sector_alloc[sec] += 1 if diff > 0 else -1
+                    diff += -1 if diff > 0 else 1
+                    idx += 1
+
+            # Build list of (pos, sector) tuples to instantiate households
+            hh_positions_sector: list[tuple[Coords, str]] = []
+
+            for sector, n_hh in sector_alloc.items():
+                if n_hh <= 0:
+                    continue
+                # Firms in this sector
+                sector_firms = [f for f in firm_agents_list if f.sector == sector]
+                if not sector_firms:
+                    continue  # should not happen
+
+                for _ in range(n_hh):
+                    firm = self.random.choice(sector_firms)
+                    fx, fy = firm.pos
+                    candidates = []
+                    for dx in range(-self.work_radius, self.work_radius + 1):
+                        for dy in range(-self.work_radius, self.work_radius + 1):
+                            coord = (fx + dx, fy + dy)
+                            if coord in self.land_coordinates:
+                                candidates.append(coord)
+                    pos_choice = self.random.choice(candidates) if candidates else firm.pos
+                    hh_positions_sector.append((pos_choice, sector))
+
+            # Replace hh_positions with sector-tagged list
+            hh_positions = [pos for pos, _ in hh_positions_sector]
+
+            # Finally create households with sector attribute from list
+            for (pos, sector) in hh_positions_sector:
+                hh = HouseholdAgent(model=self, pos=pos, sector=sector)
+                self.grid.place_agent(hh, pos)
+
+        else:
+            # No topology – households already have positions in hh_positions
+            for pos in hh_positions:
+                hh = HouseholdAgent(model=self, pos=pos)
+                self.grid.place_agent(hh, pos)
 
     # --------------------------------------------------------------------- #
     #                              UTILITIES                                #
@@ -678,15 +731,20 @@ class EconomyModel(Model):
                 continue
 
             for firm in firm_agents:
+                if getattr(firm, "sector", "") != getattr(hh, "sector", ""):
+                    continue  # only link to firms of the same sector
                 dx = abs(hh.pos[0] - firm.pos[0])
                 dy = abs(hh.pos[1] - firm.pos[1])
                 if dx + dy <= self.work_radius:
                     hh.nearby_firms.append(firm)
 
-            # Guarantee at least one connection (pick nearest firm) ----
+            # Guarantee at least one connection (pick nearest firm *in same sector*) ----
             if not hh.nearby_firms:
+                same_sector_firms = [f for f in firm_agents if f.sector == getattr(hh, "sector", "")]
+                if not same_sector_firms:
+                    same_sector_firms = firm_agents  # fallback to any sector
                 nearest = min(
-                    firm_agents,
+                    same_sector_firms,
                     key=lambda f: (f.pos[0] - hh.pos[0]) ** 2 + (f.pos[1] - hh.pos[1]) ** 2,
                 )
                 hh.nearby_firms.append(nearest) 
