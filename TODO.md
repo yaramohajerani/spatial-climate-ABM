@@ -2,6 +2,7 @@
 
 ## bugs
 - [x] fix production function such that input requirements are informed by network topology 
+- [ ] ensure average risk captures both household and firm agents
 
 ## immediate 
 - [x] Update network topology so firms can also buy form other firms. 
