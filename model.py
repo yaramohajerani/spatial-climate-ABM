@@ -227,6 +227,16 @@ class EconomyModel(Model):
 
         # Build exposures and assign centroids for each hazard
         self._exposures = self._build_exposures()
+
+        # ------------------ Pre-compute trophic levels ------------------- #
+        from trophic_utils import compute_trophic_levels
+
+        firm_adj_init = {
+            ag.unique_id: [s.unique_id for s in ag.connected_firms]
+            for ag in self.agents if isinstance(ag, FirmAgent)
+        }
+        self._firm_levels: dict[int, float] = compute_trophic_levels(firm_adj_init)
+
         for haz, _ in self.hazards.values():
             self._exposures.assign_centroids(haz)
 
@@ -514,10 +524,28 @@ class EconomyModel(Model):
         # Reset placeholder counters
         self.migrants_this_step = 0
 
-        # Agent actions – shuffle agents and call their step method
-        # In Mesa ≥3.0, self.agents provides an AgentSet; shuffle_do is the
-        # analogue of RandomActivation.
-        self.agents.shuffle_do("step")
+        # ---------------- Budget planning phase --------------------- #
+        for firm in (ag for ag in self.agents if isinstance(ag, FirmAgent)):
+            firm.prepare_budget()
+
+        # Agent actions – households then firms ---------------------- #
+        # This ensures labour contracts are settled before firms attempt
+        # to produce, preventing upstream sectors from perpetually running
+        # without inputs due to timing randomness.
+
+        # 1. Households – labour supply & consumption decisions
+        households = [ag for ag in self.agents if isinstance(ag, HouseholdAgent)]
+        self.random.shuffle(households)
+        for hh in households:
+            hh.step()
+
+        # 2. Firms – hire labour accumulated in phase 1, purchase inputs,
+        #    produce goods, and adjust prices/wages.
+        firms = [ag for ag in self.agents if isinstance(ag, FirmAgent)]
+        # Sort by trophic level so upstream suppliers act before downstream buyers
+        firms.sort(key=lambda f: (self._firm_levels.get(f.unique_id, 1.0), self.random.random()))
+        for firm in firms:
+            firm.step()
 
         # ---------------- Labour market metrics ----------------------- #
         total_households = sum(1 for ag in self.agents if isinstance(ag, HouseholdAgent))

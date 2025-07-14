@@ -152,12 +152,17 @@ class HouseholdAgent(Agent):
                     break
 
         # 2. Buy one unit of goods if affordable -------------------------- #
-        # Households consume a single generic good for simplicity.
-        affordable_firms = [
-            f for f in self.nearby_firms if f.inventory_output > 0 and f.price <= self.money
+        # Households can purchase from any retail firm in the economy.
+        retail_firms = [
+            f for f in self.model.agents
+            if isinstance(f, FirmAgent) and f.sector == "retail" and f.inventory_output > 0 and f.price <= self.money
         ]
-        if affordable_firms:
-            seller = self.random.choice(affordable_firms)
+
+        if retail_firms:
+            # Select the cheapest retail seller (break ties randomly)
+            min_price = min(f.price for f in retail_firms)
+            cheapest = [f for f in retail_firms if abs(f.price - min_price) < 1e-6]
+            seller = self.random.choice(cheapest)
             # Attempt to buy up to 1 unit; method will reduce if only fraction affordable
             qty_bought = seller.sell_goods_to_household(self, quantity=1.0)
             if qty_bought:
@@ -223,15 +228,27 @@ class FirmAgent(Agent):
         self.sector = sector
         self.capital_stock = capital_stock
 
-        # Firm-specific wage offer (labour price) – starts at model base wage
+        # Set starting price based on sector and ensure sufficient initial funds
+        base_price_by_sector = {
+            "commodity": 1.0,
+            "agriculture": 1.0,
+            "manufacturing": 1.5,
+            "wholesale": 1.8,
+            "retail": 2.0,
+            "services": 2.0,
+        }
+        self.price: float = float(base_price_by_sector.get(self.sector, 1.0))
+
+        # Provide a cash buffer proportional to the price so every firm can pay wages
+        # and purchase at least some inputs in the first few steps.
+        self.money: float = self.price * 100.0
+
+        # Firm-specific wage offer (labour price) – starts at the model's base wage
         self.wage_offer: float = model.mean_wage if hasattr(model, "mean_wage") else 1.0
+
         # Track whether labour was the binding constraint in the *previous* step
         self.labor_limited_last_step: bool = False
         self.last_hired_labor: int = 0  # employees hired in previous step
-
-        # ---------------- Economic state ------------------------------- #
-        self.money: float = 100.0
-        from collections import defaultdict
 
         # Input inventory keyed by supplier AgentID (or None for generic labour)
         self.inventory_inputs: dict[int, int] = defaultdict(int)  # per-supplier stock
@@ -245,9 +262,6 @@ class FirmAgent(Agent):
         self.production: float = 0.0  # units produced this step
         self.consumption: float = 0.0  # units of inputs consumed this step
 
-        # Pricing  – initial value
-        self.price: float = 1.0
-
         # Cumulative damage to productive capacity (1 = undamaged)
         self.damage_factor: float = 1.0
 
@@ -260,8 +274,16 @@ class FirmAgent(Agent):
         # Firm-specific relaxation ratio (0.2 → 20 % decay each step, etc.)
         self.relaxation_ratio: float = self.random.uniform(0.2, 0.5)
 
+        # Budget reservation placeholders (set each step by prepare_budget)
+        self._budget_input: float = 0.0
+        self._budget_capital: float = 0.0
+        self._budget_labor: float = 0.0
+
     # ---------------- Interaction helpers ----------------------------- #
     def hire_labor(self, household: HouseholdAgent, wage: float) -> bool:
+        # Reject hire if paying the wage would dip into funds reserved for inputs/capital
+        if self._budget_labor < wage:
+            return False
         """Attempt to hire one unit of labour from *household*.
 
         Returns True if the contract succeeded (wage transferred),
@@ -271,8 +293,9 @@ class FirmAgent(Agent):
         if self.money < wage:
             return False
 
-        # Transfer wage
+        # Transfer wage and update reservation tracking
         self.money -= wage
+        self._budget_labor -= wage
         household.money += wage
 
         # Register labour for this production cycle
@@ -313,16 +336,69 @@ class FirmAgent(Agent):
 
         qty = min(quantity, self.inventory_output)
         cost = qty * self.price
+        # Check buyer's dedicated input budget first if available
+        budget_attr = getattr(buyer, "_budget_input", None)
+        if budget_attr is not None and budget_attr < cost:
+            return 0
         if buyer.money < cost:
             return 0
 
         # Transfer money & inventory
         buyer.money -= cost
+        if budget_attr is not None:
+            buyer._budget_input -= cost  # type: ignore[attr-defined]
         self.money += cost
         self.inventory_output -= qty
         # Register under this supplier's id inside buyer
         buyer.inventory_inputs[self.unique_id] += qty
         return qty
+
+    # ---------------- Budgeting helper ---------------------------------- #
+    def prepare_budget(self) -> None:
+        """Allocate current cash across labour, inputs and capital reserves.
+
+        The allocation is guided by the previous step's limiting factor so the
+        firm directs more budget towards whichever input was scarce last time.
+        """
+
+        # Base weights: technical coefficients × price proxies (Leontief logic)
+        avg_input_price = np.mean([s.price for s in self.connected_firms]) if self.connected_firms else 1.0
+
+        lim = getattr(self, "limiting_factor", "")
+
+        # Allocate capital budget only if capital was the previous bottleneck
+        cap_weight = self.capital_coeff * self.price if lim == "capital" else 0.0
+
+        weights = {
+            "labor": self.LABOR_COEFF * self.wage_offer,
+            "input": self.INPUT_COEFF * avg_input_price,
+            "capital": cap_weight,
+        }
+
+        # Slightly prioritise last limiting factor (unless capital already handled above)
+        if lim in weights and weights[lim] > 0:
+            weights[lim] *= 1.3  # modest amplification
+
+        total_w = sum(weights.values())
+        if total_w <= 0:
+            total_w = 1.0
+
+        # Cash to be allocated (keep small buffer unallocated for flexibility)
+        liquid = self.money
+        # Keep 5 % buffer unallocated
+        liquid_alloc = liquid * 0.95
+        reserve_labor = liquid_alloc * weights["labor"] / total_w
+        reserve_input = liquid_alloc * weights["input"] / total_w
+        reserve_cap = liquid_alloc * weights["capital"] / total_w
+
+        # Labour reserve is implicit – it will be spent via wage payments up to this amount
+        self._budget_labor = reserve_labor
+
+        # Explicitly track non-labour reservations to block overspending during hiring
+        self._budget_input = reserve_input
+        self._budget_capital = reserve_cap
+
+    # -------------------------------------------------------------------- #
 
     # ---------------- Mesa API (production) --------------------------- #
     def step(self) -> None:  # noqa: D401, N802
@@ -389,31 +465,31 @@ class FirmAgent(Agent):
 
         # ----------------------------------------------------------------
         # 1. Ensure each required input type has enough stock to match labour
-        #    Each unit of output needs 1 unit from every supplier in connected_firms.
+        #    Treat the material input as a homogeneous good: we just need
+        #    INPUT_COEFF units in total per unit of output, regardless of which
+        #    supplier they come from.
         # ----------------------------------------------------------------
 
-        for supplier in self.connected_firms:
-            current_stock = self.inventory_inputs.get(supplier.unique_id, 0)
-            target_output_from_labour = labour_units / self.LABOR_COEFF
-            target_input_needed = int(np.ceil(target_output_from_labour * self.INPUT_COEFF))
-            required_qty = max(0, target_input_needed - current_stock)
-            if required_qty == 0:
-                continue
+        target_output_from_labour = labour_units / self.LABOR_COEFF
+        target_material_needed = int(np.ceil(target_output_from_labour * self.INPUT_COEFF))
 
-            purch_qty_needed = required_qty
-            # Attempt purchase from the designated supplier only
-            bought = supplier.sell_goods_to_firm(self, purch_qty_needed)
-            # If supplier cannot fulfil entire order, we leave shortage (production will be limited)
+        current_material = int(sum(self.inventory_inputs.values()))
+        required_qty = max(0, target_material_needed - current_material)
+
+        if required_qty > 0 and self.connected_firms:
+            # Randomise supplier search order
+            for supplier in self.random.sample(self.connected_firms, len(self.connected_firms)):
+                if required_qty <= 0:
+                    break
+                bought = supplier.sell_goods_to_firm(self, required_qty)
+                required_qty -= bought
 
         # ----------------------------------------------------------------
-        # 2. Compute possible output per Leontief: min(labour, each input)
+        # 2. Compute possible output per Leontief: min(labour, material, capital)
         # ----------------------------------------------------------------
 
-        if self.connected_firms:
-            min_input_units = min(self.inventory_inputs.get(s.unique_id, 0) for s in self.connected_firms)
-            max_output_from_inputs = min_input_units / self.INPUT_COEFF
-        else:
-            max_output_from_inputs = float("inf")  # no material input constraint
+        total_input_units = sum(self.inventory_inputs.values())
+        max_output_from_inputs = total_input_units / self.INPUT_COEFF if self.connected_firms else float("inf")
 
         max_output_from_capital = self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf")
 
@@ -435,15 +511,20 @@ class FirmAgent(Agent):
 
         self.production = possible_output
         if possible_output > 0:
-            # Consume inputs from each supplier
-            for supplier in self.connected_firms:
-                use_qty = possible_output * self.INPUT_COEFF
-                self.inventory_inputs[supplier.unique_id] -= use_qty
+            # Consume material inputs proportionally across suppliers
+            remaining_use = possible_output * self.INPUT_COEFF
+            for supp_id in list(self.inventory_inputs.keys()):
+                if remaining_use <= 0:
+                    break
+                available = self.inventory_inputs[supp_id]
+                use_qty = min(available, remaining_use)
+                self.inventory_inputs[supp_id] -= use_qty
+                remaining_use -= use_qty
 
             # Add production to inventory
             self.inventory_output += possible_output
 
-            self.consumption = possible_output * len(self.connected_firms) * self.INPUT_COEFF
+            self.consumption = possible_output * self.INPUT_COEFF
 
         # ----------------------------------------------------------------
         # 3. Clear employee list for next step
