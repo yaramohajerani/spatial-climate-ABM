@@ -275,6 +275,7 @@ class FirmAgent(Agent):
         self._budget_input: float = 0.0
         self._budget_capital: float = 0.0
         self._budget_labor: float = 0.0
+        self._budget_input_per_supplier: dict[int, float] = {} # New placeholder for independent input budgets
 
     # ---------------- Interaction helpers ----------------------------- #
     def hire_labor(self, household: HouseholdAgent, wage: float) -> bool:
@@ -333,23 +334,47 @@ class FirmAgent(Agent):
 
         qty = min(quantity, self.inventory_output)
         cost = qty * self.price
-        # Check buyer's dedicated input budget first if available
-        budget_in = getattr(buyer, "_budget_input", 0.0)
-        budget_cap = getattr(buyer, "_budget_capital", 0.0)
+        
+        # Handle budget checking based on buyer's sector
+        if buyer.sector == "retail":
+            # Retail: use original interchangeable input budget
+            budget_in = getattr(buyer, "_budget_input", 0.0)
+            budget_cap = getattr(buyer, "_budget_capital", 0.0)
 
-        if cost > (budget_in + budget_cap):
-            return 0  # Not enough dedicated funds
+            if cost > (budget_in + budget_cap):
+                return 0  # Not enough dedicated funds
+                
+            if buyer.money < cost:
+                return 0
 
-        if buyer.money < cost:
-            return 0
+            # Transfer money & inventory
+            buyer.money -= cost
 
-        # Transfer money & inventory
-        buyer.money -= cost
+            # Deduct from budgets prioritising input budget, then capital
+            use_in = min(cost, budget_in)
+            buyer._budget_input -= use_in  # type: ignore[attr-defined]
+            buyer._budget_capital -= (cost - use_in)  # type: ignore[attr-defined]
+            
+        else:
+            # Non-retail: use independent input budget per supplier
+            budget_per_supplier = getattr(buyer, "_budget_input_per_supplier", {})
+            supplier_budget = budget_per_supplier.get(self.unique_id, 0.0)
+            budget_cap = getattr(buyer, "_budget_capital", 0.0)
 
-        # Deduct from budgets prioritising input budget, then capital
-        use_in = min(cost, budget_in)
-        buyer._budget_input -= use_in  # type: ignore[attr-defined]
-        buyer._budget_capital -= (cost - use_in)  # type: ignore[attr-defined]
+            if cost > (supplier_budget + budget_cap):
+                return 0  # Not enough dedicated funds for this supplier
+                
+            if buyer.money < cost:
+                return 0
+
+            # Transfer money & inventory
+            buyer.money -= cost
+
+            # Deduct from supplier-specific budget first, then capital
+            use_supplier = min(cost, supplier_budget)
+            buyer._budget_input_per_supplier[self.unique_id] -= use_supplier
+            buyer._budget_capital -= (cost - use_supplier)  # type: ignore[attr-defined]
+        
         self.money += cost
         self.inventory_output -= qty
         # Register under this supplier's id inside buyer
@@ -362,6 +387,8 @@ class FirmAgent(Agent):
 
         The allocation is guided by the previous step's limiting factor so the
         firm directs more budget towards whichever input was scarce last time.
+        For non-retail sectors, each input good from connected firms is treated
+        as independent and gets separate budget allocation.
         """
 
         # Base weights: technical coefficients × price proxies (Leontief logic)
@@ -372,34 +399,91 @@ class FirmAgent(Agent):
         # Allocate capital budget only if capital was the previous bottleneck
         cap_weight = self.capital_coeff * self.price if lim == "capital" else 0.0
 
-        weights = {
-            "labor": self.LABOR_COEFF * self.wage_offer,
-            "input": self.INPUT_COEFF * avg_input_price,
-            "capital": cap_weight,
-        }
+        # For retail, treat inputs as interchangeable (homogeneous)
+        # For other sectors, treat each input type as independent
+        if self.sector == "retail":
+            # Original behavior: single input budget
+            weights = {
+                "labor": self.LABOR_COEFF * self.wage_offer,
+                "input": self.INPUT_COEFF * avg_input_price,
+                "capital": cap_weight,
+            }
+            
+            # Slightly prioritise last limiting factor
+            if lim in weights and weights[lim] > 0:
+                weights[lim] *= 1.3  # modest amplification
 
-        # Slightly prioritise last limiting factor (unless capital already handled above)
-        if lim in weights and weights[lim] > 0:
-            weights[lim] *= 1.3  # modest amplification
+            total_w = sum(weights.values())
+            if total_w <= 0:
+                total_w = 1.0
 
-        total_w = sum(weights.values())
-        if total_w <= 0:
-            total_w = 1.0
+            # Cash to be allocated (keep small buffer unallocated for flexibility)
+            liquid = self.money
+            # Keep 5% buffer unallocated
+            liquid_alloc = liquid * 0.95
+            reserve_labor = liquid_alloc * weights["labor"] / total_w
+            reserve_input = liquid_alloc * weights["input"] / total_w
+            reserve_cap = liquid_alloc * weights["capital"] / total_w
 
-        # Cash to be allocated (keep small buffer unallocated for flexibility)
-        liquid = self.money
-        # Keep 5 % buffer unallocated
-        liquid_alloc = liquid * 0.95
-        reserve_labor = liquid_alloc * weights["labor"] / total_w
-        reserve_input = liquid_alloc * weights["input"] / total_w
-        reserve_cap = liquid_alloc * weights["capital"] / total_w
+            # Labour reserve is implicit – it will be spent via wage payments up to this amount
+            self._budget_labor = reserve_labor
 
-        # Labour reserve is implicit – it will be spent via wage payments up to this amount
-        self._budget_labor = reserve_labor
+            # Explicitly track non-labour reservations to block overspending during hiring
+            self._budget_input = reserve_input
+            self._budget_capital = reserve_cap
+            
+        else:
+            # Non-retail sectors: independent inputs
+            # Each connected firm represents a different input type
+            num_input_types = len(self.connected_firms) if self.connected_firms else 1
+            
+            # Base weights for each input type
+            input_weights = {}
+            for supplier in self.connected_firms:
+                input_weights[supplier.unique_id] = self.INPUT_COEFF * supplier.price
+            
+            # If no connected firms, use average price as fallback
+            if not input_weights:
+                input_weights["generic"] = self.INPUT_COEFF * avg_input_price
+            
+            # Total input weight is sum of all individual input weights
+            total_input_weight = sum(input_weights.values())
+            
+            weights = {
+                "labor": self.LABOR_COEFF * self.wage_offer,
+                "input_total": total_input_weight,
+                "capital": cap_weight,
+            }
+            
+            # Prioritise last limiting factor
+            if lim in weights and weights[lim] > 0:
+                weights[lim] *= 1.3
+            
+            total_w = sum(weights.values())
+            if total_w <= 0:
+                total_w = 1.0
 
-        # Explicitly track non-labour reservations to block overspending during hiring
-        self._budget_input = reserve_input
-        self._budget_capital = reserve_cap
+            # Cash to be allocated
+            liquid = self.money
+            liquid_alloc = liquid * 0.95
+            reserve_labor = liquid_alloc * weights["labor"] / total_w
+            reserve_input_total = liquid_alloc * weights["input_total"] / total_w
+            reserve_cap = liquid_alloc * weights["capital"] / total_w
+
+            # Set budgets
+            self._budget_labor = reserve_labor
+            self._budget_capital = reserve_cap
+            
+            # Allocate input budget per supplier (independent inputs)
+            self._budget_input_per_supplier = {}
+            if self.connected_firms:
+                for supplier in self.connected_firms:
+                    # Proportional allocation based on supplier's price
+                    supplier_share = input_weights[supplier.unique_id] / total_input_weight
+                    self._budget_input_per_supplier[supplier.unique_id] = reserve_input_total * supplier_share
+            else:
+                # Fallback for no connected firms
+                self._budget_input = reserve_input_total 
 
     # -------------------------------------------------------------------- #
 
@@ -468,31 +552,55 @@ class FirmAgent(Agent):
 
         # ----------------------------------------------------------------
         # 1. Ensure each required input type has enough stock to match labour
-        #    Treat the material input as a homogeneous good: we just need
-        #    INPUT_COEFF units in total per unit of output, regardless of which
-        #    supplier they come from.
         # ----------------------------------------------------------------
-
+        
         target_output_from_labour = labour_units / self.LABOR_COEFF
-        target_material_needed = int(np.ceil(target_output_from_labour * self.INPUT_COEFF))
+        
+        if self.sector == "retail":
+            # RETAIL: Treat material inputs as homogeneous good
+            # We just need INPUT_COEFF units in total per unit of output, 
+            # regardless of which supplier they come from.
+            target_material_needed = int(np.ceil(target_output_from_labour * self.INPUT_COEFF))
+            current_material = int(sum(self.inventory_inputs.values()))
+            required_qty = max(0, target_material_needed - current_material)
 
-        current_material = int(sum(self.inventory_inputs.values()))
-        required_qty = max(0, target_material_needed - current_material)
-
-        if required_qty > 0 and self.connected_firms:
-            # Randomise supplier search order
-            for supplier in self.random.sample(self.connected_firms, len(self.connected_firms)):
-                if required_qty <= 0:
-                    break
-                bought = supplier.sell_goods_to_firm(self, required_qty)
-                required_qty -= bought
+            if required_qty > 0 and self.connected_firms:
+                # Randomise supplier search order
+                for supplier in self.random.sample(self.connected_firms, len(self.connected_firms)):
+                    if required_qty <= 0:
+                        break
+                    bought = supplier.sell_goods_to_firm(self, required_qty)
+                    required_qty -= bought
+                    
+        else:
+            # NON-RETAIL: Each input good from connected firms is independent
+            # Need INPUT_COEFF units from EACH supplier for maximum production
+            for supplier in self.connected_firms:
+                target_per_supplier = int(np.ceil(target_output_from_labour * self.INPUT_COEFF))
+                current_from_supplier = self.inventory_inputs.get(supplier.unique_id, 0)
+                required_from_supplier = max(0, target_per_supplier - current_from_supplier)
+                
+                if required_from_supplier > 0:
+                    bought = supplier.sell_goods_to_firm(self, required_from_supplier)
 
         # ----------------------------------------------------------------
         # 2. Compute possible output per Leontief: min(labour, material, capital)
         # ----------------------------------------------------------------
 
-        total_input_units = sum(self.inventory_inputs.values())
-        max_output_from_inputs = total_input_units / self.INPUT_COEFF if self.connected_firms else float("inf")
+        if self.sector == "retail":
+            # RETAIL: Use sum of all inputs (interchangeable)
+            total_input_units = sum(self.inventory_inputs.values())
+            max_output_from_inputs = total_input_units / self.INPUT_COEFF if self.connected_firms else float("inf")
+        else:
+            # NON-RETAIL: Each input is independent - limited by minimum available
+            if self.connected_firms:
+                min_input_units = min(
+                    self.inventory_inputs.get(supplier.unique_id, 0) 
+                    for supplier in self.connected_firms
+                )
+                max_output_from_inputs = min_input_units / self.INPUT_COEFF
+            else:
+                max_output_from_inputs = float("inf")
 
         max_output_from_capital = self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf")
 
@@ -514,15 +622,26 @@ class FirmAgent(Agent):
 
         self.production = possible_output
         if possible_output > 0:
-            # Consume material inputs proportionally across suppliers
-            remaining_use = possible_output * self.INPUT_COEFF
-            for supp_id in list(self.inventory_inputs.keys()):
-                if remaining_use <= 0:
-                    break
-                available = self.inventory_inputs[supp_id]
-                use_qty = min(available, remaining_use)
-                self.inventory_inputs[supp_id] -= use_qty
-                remaining_use -= use_qty
+            # Consume material inputs based on sector type
+            if self.sector == "retail":
+                # RETAIL: Consume inputs proportionally across suppliers
+                remaining_use = possible_output * self.INPUT_COEFF
+                for supp_id in list(self.inventory_inputs.keys()):
+                    if remaining_use <= 0:
+                        break
+                    available = self.inventory_inputs[supp_id]
+                    use_qty = min(available, remaining_use)
+                    self.inventory_inputs[supp_id] -= use_qty
+                    remaining_use -= use_qty
+            else:
+                # NON-RETAIL: Consume INPUT_COEFF units from each connected supplier
+                input_per_supplier = possible_output * self.INPUT_COEFF
+                for supplier in self.connected_firms:
+                    supp_id = supplier.unique_id
+                    if supp_id in self.inventory_inputs:
+                        available = self.inventory_inputs[supp_id]
+                        use_qty = min(available, input_per_supplier)
+                        self.inventory_inputs[supp_id] -= use_qty
 
             # Add production to inventory
             self.inventory_output += possible_output
