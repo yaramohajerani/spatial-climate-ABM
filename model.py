@@ -38,6 +38,7 @@ class EconomyModel(Model):
         hazard_type: str = "FL",  # CLIMADA hazard tag for flood
         seed: int | None = None,
         start_year: int = 0,
+        steps_per_year: int = 4,
         firm_topology_path: str | None = None,
         apply_hazard_impacts: bool = True,
     ) -> None:  # noqa: D401
@@ -54,7 +55,8 @@ class EconomyModel(Model):
 
         # Calendar mapping -------------------------------------------------- #
         self.start_year: int = start_year
-        self.steps_per_year: int = 4  # quarters
+        # Calendar granularity (e.g. 4 → quarterly, 12 → monthly)
+        self.steps_per_year: int = steps_per_year
 
         # --- Spatial environment & custom topology --- #
         self._firm_topology: dict | None = None
@@ -587,8 +589,8 @@ class EconomyModel(Model):
         """Return model-level DataFrame containing tracked variables plus Date column."""
         df = self.datacollector.get_model_vars_dataframe().copy()
         if self.start_year:
-            dates = [f"{self.start_year + idx//self.steps_per_year}-Q{idx%self.steps_per_year + 1}" for idx in df.index]
-            df.insert(0, "Date", dates)
+            years = [self.start_year + idx / self.steps_per_year for idx in df.index]
+            df.insert(0, "Year", years)
         return df
 
     def save_results(self, out_path: str | Path = "simulation_results.csv") -> None:
@@ -601,7 +603,7 @@ class EconomyModel(Model):
         # Rename columns for clarity; DataCollector returns 'AgentID' index.
         agents_df.rename(columns={"level_0": "Step", "level_1": "AgentID"}, inplace=True, errors="ignore")
         if self.start_year and "Step" in agents_df.columns:
-            agents_df["Date"] = [f"{self.start_year + s//self.steps_per_year}-Q{s%self.steps_per_year + 1}" for s in agents_df["Step"].astype(int)]
+            agents_df["Year"] = self.start_year + agents_df["Step"].astype(int) / self.steps_per_year
 
         agents_path = Path(out_path).with_name("simulation_agents.csv")
         agents_path.write_text(agents_df.to_csv(index=False))

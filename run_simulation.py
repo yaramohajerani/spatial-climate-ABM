@@ -73,6 +73,10 @@ def main() -> None:  # noqa: D401
         if args.start_year == 0 and "start_year" in param_data:
             args.start_year = int(param_data["start_year"])
 
+        # 3c. Steps per year -----------------------------------------------
+        if not hasattr(args, "steps_per_year"):
+            args.steps_per_year = int(param_data.get("steps_per_year", 4))
+
         # 4. Topology path --------------------------------------------------
         if not args.topology and param_data.get("topology"):
             args.topology = str(param_data["topology"])
@@ -118,6 +122,10 @@ def main() -> None:  # noqa: D401
         subprocess.run(cmd, env=env, check=False)
         return
 
+    # Ensure steps_per_year attribute exists even if no param file
+    if not hasattr(args, "steps_per_year"):
+        args.steps_per_year = 4
+
     # Headless mode: run the simulation directly
     model = EconomyModel(
         num_households=100,
@@ -127,6 +135,7 @@ def main() -> None:  # noqa: D401
         seed=args.seed,
         firm_topology_path=args.topology,
         start_year=args.start_year,
+        steps_per_year=args.steps_per_year,
     )
 
     for _ in range(args.steps):
@@ -184,7 +193,12 @@ def main() -> None:  # noqa: D401
     unique_sectors = sorted(firm_df["sector"].dropna().unique())
     sec_colors = plt.cm.Set1(np.linspace(0, 1, len(unique_sectors)))
 
-    # Add sector-based pricing to firm metrics
+    # Single, shared colour map for both firm & household plots
+    color_by_sector = {
+        sector: sec_colors[idx % len(sec_colors)]
+        for idx, sector in enumerate(unique_sectors)
+    }
+
     unique_hh_sectors = sorted(household_df["sector"].dropna().unique())
 
     # ---------------- Metric selection --------------------------- #
@@ -193,15 +207,15 @@ def main() -> None:  # noqa: D401
         "Firm_Consumption",
         "Firm_Wealth",
         "Firm_Capital",
-        "Mean_Price",  # 5th left-hand metric
+        "Mean_Price",
     ]
 
     metrics_right = [
         "Household_Labor_Sold",
         "Household_Consumption",
         "Household_Wealth",
-        "Mean_Wage",  # average and by sector
-        "Production_Bottleneck",  # combined bottlenecks plot
+        "Mean_Wage", 
+        "Average_Risk", 
     ]
 
     rows = len(metrics_left)  # expect 5
@@ -211,7 +225,7 @@ def main() -> None:  # noqa: D401
 
     x_col = "Year" if args.start_year else "Step"
     if args.start_year:
-        df["Year"] = args.start_year + df.index.astype(int) / 4
+        df["Year"] = args.start_year + df.index.astype(int) / args.steps_per_year
 
     # Map firm metric names to agent DataFrame columns
     firm_metric_map = {
@@ -232,12 +246,12 @@ def main() -> None:  # noqa: D401
                 if sec_data.empty:
                     continue
                 grp = sec_data.groupby("Step")["price"].mean()
-                x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int)/4
+                x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int)/args.steps_per_year
                 ax.plot(x_vals, grp.values, color=sec_colors[idx_sec], linestyle="--", alpha=0.8, label=sector)
         elif col == "Sector_Trophic_Level":
             for idx_sec, sector in enumerate(unique_sectors):
                 mean_lvl = firm_df[firm_df["sector"] == sector].groupby("Step")["Level"].mean()
-                x_vals = mean_lvl.index if not args.start_year else args.start_year + mean_lvl.index.astype(int)/4
+                x_vals = mean_lvl.index if not args.start_year else args.start_year + mean_lvl.index.astype(int)/args.steps_per_year
                 ax.plot(x_vals, mean_lvl.values, color=sec_colors[idx_sec], label=sector)
             ax.set_ylabel("trophic level")
         else:
@@ -246,7 +260,7 @@ def main() -> None:  # noqa: D401
                 grp = firm_df[firm_df["sector"] == sector].groupby("Step")[agent_col].sum()
                 if grp.empty:
                     continue
-                x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int)/4
+                x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int)/args.steps_per_year
                 ax.plot(x_vals, grp.values, color=sec_colors[idx_sec], label=sector)
         ax.set_title(col.replace("_", " "), fontsize=10)
         ylabel = units.get(col, "")
@@ -266,13 +280,12 @@ def main() -> None:  # noqa: D401
         # Only sector lines (no aggregate) to preserve scale visibility
         hh_col = household_metric_map.get(col, None)
         if hh_col:
-            sector_colors = plt.cm.Set2(np.linspace(0, 1, len(unique_hh_sectors)))
             for idx_sec, sector in enumerate(unique_hh_sectors):
                 grp = household_df[household_df["sector"] == sector].groupby("Step")[hh_col].sum()
                 if grp.empty:
                     continue
-                x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int) / 4
-                ax.plot(x_vals, grp.values, color=sector_colors[idx_sec], linestyle="-", alpha=0.8, label=sector)
+                x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int) / args.steps_per_year
+                ax.plot(x_vals, grp.values, color=color_by_sector.get(sector, "grey"), linestyle="-", alpha=0.8, label=sector)
         else:
             # Fallback: plot aggregate series from df (e.g., Average_Risk)
             ax.plot(df[x_col], df[col], color="black", linewidth=2, label=col.replace("_", " "))
@@ -313,8 +326,8 @@ def main() -> None:  # noqa: D401
             wage_by_step = firm_df[firm_df["sector"] == sector].groupby("Step")["wage"].mean()
             if wage_by_step.empty:
                 continue
-            x_vals = wage_by_step.index if not args.start_year else args.start_year + wage_by_step.index.astype(int)/4
-            ax.plot(x_vals, wage_by_step.values, label=sector, color=sec_colors[idx_sec])
+            x_vals = wage_by_step.index if not args.start_year else args.start_year + wage_by_step.index.astype(int)/args.steps_per_year
+            ax.plot(x_vals, wage_by_step.values, label=sector, color=color_by_sector[sector])
         ax.set_title("Wages by Sector", fontsize=10)
         ax.set_ylabel("$ / Unit of Labor")
         ax.set_xlabel(x_col)
@@ -343,6 +356,47 @@ def main() -> None:  # noqa: D401
 
     fig.tight_layout()
     fig.savefig("simulation_timeseries.png", dpi=150)
+
+    # ------------------- Sector-level bottleneck plot ------------------- #
+    n_sec = len(unique_sectors)
+    if n_sec > 0:
+        fig_bt, axes_bt = plt.subplots(n_sec, 1, figsize=(12, 3 * n_sec), sharex=True)
+        if n_sec == 1:
+            axes_bt = [axes_bt]
+
+        bt_colors = {"labor": "#1f77b4", "capital": "#d62728", "input": "#2ca02c"}
+
+        for ax_sec, sector in zip(axes_bt, unique_sectors):
+            # Counts per bottleneck
+            series_bt = {}
+            for bt in ["labor", "capital", "input"]:
+                counts = (
+                    firm_df[(firm_df["sector"] == sector) & (firm_df["limiting_factor"] == bt)]
+                    .groupby("Step").size().reindex(df.index, fill_value=0)
+                )
+                series_bt[bt] = counts
+
+            totals = sum(series_bt.values())
+            pct_arrays = [100 * series_bt[bt] / totals.replace(0, np.nan) for bt in ["labor", "capital", "input"]]
+
+            ax_sec.stackplot(
+                df[x_col],
+                *pct_arrays,
+                labels=["Labour", "Capital", "Input"],
+                colors=[bt_colors["labor"], bt_colors["capital"], bt_colors["input"]],
+                alpha=0.7,
+            )
+
+            ax_sec.set_title(f"{sector} – Production Bottlenecks (%)")
+            ax_sec.set_ylabel("% of firms")
+            ax_sec.set_ylim(0, 100)
+            ax_sec.legend(fontsize=8, loc="upper center", ncol=3)
+
+        axes_bt[-1].set_xlabel(x_col)
+        fig_bt.tight_layout()
+        fig_bt.savefig("sector_bottlenecks.png", dpi=150)
+        plt.close(fig_bt)
+
     plt.close(fig)
 
     print("Simulation complete. Results stored in simulation_results.csv and simulation_timeseries.png")

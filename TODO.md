@@ -2,7 +2,6 @@
 
 ## bugs
 - [x] fix production function such that input requirements are informed by network topology 
-- [ ] ensure average risk captures both household and firm agents
 
 ## immediate 
 - [x] Update network topology so firms can also buy form other firms. 
@@ -12,11 +11,12 @@
 - [x] Add abilitiy to simultanously run climate and no-cimate simulations for comparison
 - [x] We are currently assuming input goods are interchangeable. Only retail can have this assumption. For other sectors, we need to treat them as independent inputs. 
 - [ ] Make per-sector specifications for the coefficients of the production function.
-- [ ] Currently we are deciding how much inputs to buy to match production enabled by labour. So by definition we can never be input limited. We need to make this more realistic.
+
 
 ## longer-term / tentative
 - [x] Add capital requirement for production
 - [x] Use output of damage functions to proportionally affect productivity, capital, and inventory of firms 
+- [ ] Currently we are deciding how much inputs to buy to match production enabled by labour. So we would hit labour limit first if there's a budget issue. Input limit will only happen if upstream firms don't have inventory. May want to make this more realistic. 
 - [ ] Make firm damage functions a function of the sector
 - [ ] Add bankrupcy when firms can't pay their fixed costs. Update network topology when new firms pop up.
 - [x] Add damage threshold for households, above which they migrate -> implemented this differently, where each household makes a heuristic decision on when to migrate based on surrounding area risk.

@@ -89,6 +89,10 @@ def _merge_param_file(args):  # noqa: ANN001
     if args.steps == 10 and "steps" in data:
         args.steps = int(data["steps"])
 
+    # steps_per_year --------------------------------------------------
+    if not hasattr(args, "steps_per_year") and data.get("steps_per_year"):
+        args.steps_per_year = int(data["steps_per_year"])
+
     # seed ------------------------------------------------------------
     if args.seed == 42 and "seed" in data:
         args.seed = int(data["seed"])
@@ -132,6 +136,7 @@ def main():
             apply_hazard_impacts=True,
             firm_topology_path=args.topology,
             start_year=args.start_year,
+            steps_per_year=args.steps_per_year,
         )
         df_hazard, model_haz_ref = run_simulation(model_hazard, args.steps)
         df_hazard["Scenario"] = "With Hazard"
@@ -146,6 +151,7 @@ def main():
             apply_hazard_impacts=False,
             firm_topology_path=args.topology,
             start_year=args.start_year,
+            steps_per_year=args.steps_per_year,
         )
         df_base, model_base_ref = run_simulation(model_baseline, args.steps)
         df_base["Scenario"] = "No Hazard"
@@ -219,7 +225,7 @@ def main():
         "Firm_Wealth",
         "Firm_Capital",
         "Mean_Price",
-        "Average_Risk",  
+        "Average_Risk",
     ]
 
     metrics_right = [
@@ -227,11 +233,11 @@ def main():
         "Household_Consumption",
         "Household_Wealth",
         "Mean_Wage",
-        "Bottleneck_Hazard",   
-        "Bottleneck_Baseline", 
+        "Bottleneck_Hazard",
+        "Bottleneck_Baseline",
     ]
 
-    rows = len(metrics_left) 
+    rows = len(metrics_left)
     import matplotlib.gridspec as gridspec
     fig = plt.figure(figsize=(14, rows * 3))
     gs = gridspec.GridSpec(rows, 2, height_ratios=[1]*rows)
@@ -244,8 +250,12 @@ def main():
     # Helper to plot one metric
     x_col = "Year" if args.start_year else "Step"
 
+    # Ensure steps_per_year attribute
+    if not hasattr(args, "steps_per_year"):
+        args.steps_per_year = 4
+
     if args.start_year:
-        df_combined["Year"] = args.start_year + df_combined["Step"].astype(int) / 4
+        df_combined["Year"] = args.start_year + df_combined["Step"].astype(int) / args.steps_per_year
 
     # Separate combined agent data for convenience
     firm_agents_df = agent_df_combined[agent_df_combined["type"] == "FirmAgent"].copy()
@@ -282,7 +292,7 @@ def main():
                     if df_sec.empty:
                         continue
                     price_by_step = df_sec.groupby("Step")["price"].mean()
-                    x_vals = price_by_step.index if not args.start_year else args.start_year + price_by_step.index.astype(int) / 4
+                    x_vals = price_by_step.index if not args.start_year else args.start_year + price_by_step.index.astype(int) / args.steps_per_year
                     ax.plot(x_vals, price_by_step.values, linestyle="--", color=sector_colors[idx_sec], alpha=0.6,
                             label=f"{sector} – {scenario}")
         elif metric_name == "Sector_Trophic_Level":
@@ -292,7 +302,7 @@ def main():
                     grp = df_scen[df_scen["sector"] == sector].groupby("Step")["Level"].mean()
                     if grp.empty:
                         continue
-                    x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int)/4
+                    x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int)/args.steps_per_year
                     ls = "-" if scenario=="With Hazard" else "--"
                     ax.plot(x_vals, grp.values, color=sec_colors[idx_sec], linestyle=ls, label=f"{sector} – {scenario}")
             ax.set_ylabel("trophic level")
@@ -304,7 +314,7 @@ def main():
                     grp = df_scen[df_scen["sector"] == sector].groupby("Step")[agent_col].sum()
                     if grp.empty:
                         continue
-                    x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int)/4
+                    x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int)/args.steps_per_year
                     ls = "-" if scenario=="With Hazard" else "--"
                     ax.plot(x_vals, grp.values, color=sec_colors[idx_sec], linestyle=ls, label=f"{sector} – {scenario}")
         else:
@@ -319,8 +329,8 @@ def main():
                         grp = df_scen_hh[df_scen_hh["sector"] == sector].groupby("Step")[hh_col].sum()
                         if grp.empty:
                             continue
-                        x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int) / 4
-                        ax.plot(x_vals, grp.values, color=sec_colors[idx_sec], linestyle="--" if scenario=="With Hazard" else ":", alpha=0.6, label=f"{sector} – {scenario}")
+                        x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int) / args.steps_per_year
+                        ax.plot(x_vals, grp.values, color=sec_colors[idx_sec], linestyle="-" if scenario=="With Hazard" else "--", alpha=0.6, label=f"{sector} – {scenario}")
             else:
                 # Other aggregated metrics (risk, etc.)
                 for scenario, grp in df_combined.groupby("Scenario"):

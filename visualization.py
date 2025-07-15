@@ -105,7 +105,7 @@ def CombinedBottleneckPlot(model):  # noqa: ANN001
     df = model.results_to_dataframe()
     steps = df.index
     if _START_YEAR:
-        years = _START_YEAR + steps / 4
+        years = _START_YEAR + steps / model.steps_per_year
         x_vals = years
         x_label = "Year"
     else:
