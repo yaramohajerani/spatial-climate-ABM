@@ -1,106 +1,138 @@
-# Spatial economic ABM for climate risk
+# Spatial Climate-Economy Agent-Based Model
 
-This repository provides a **spatial agent-based model** (ABM) that couples basic economic behaviour with climate-hazard impacts. It is built with [Mesa](https://mesa.readthedocs.io) and is designed to plug into [CLIMADA](https://github.com/CLIMADA-project/climada_python) as the climate-impact engine.
+This is a spatial agent-based model (ABM) for simulating climate-economy interactions. The model couples economic behavior with climate hazard impacts using Mesa for agent-based modeling and CLIMADA for climate impact assessment.
 
-## Features included
-* Spatial grid derived from user-supplied GeoTIFF hazard rasters (`mesa.space.MultiGrid`).
-* Two agent classes:
-  * `HouseholdAgent` (supplies labour, earns wages, consumes goods).
-  * `FirmAgent` (multi-input Leontief production; supports agriculture, manufacturing, services … sectors).
-* Supply-chain topology
-  * Random, distance-weighted network **or** deterministic JSON file (`--topology`) with `lon/lat` coordinates & directed edges.
-* Endogenous markets
-  * Dynamic goods price (±5 % based on inventory).
-  * Firm-specific wages that adjust endogenously: firms raise wages when they fail to hire and cut them when labour is abundant. Households choose employers by maximising *wage − distance_cost × distance* where the distance cost is heterogeneous across households.
-  * Capital stock used in production, depreciates 2 % each step; firms reinvest when capital-constrained.
-* Labour geography
-  * A **1 ° geographic catchment** is converted to grid-cell units at start-up so the hiring radius is independent of raster resolution.
-  * When a custom topology JSON is supplied, households are spawned near existing firms (within the same 1 ° radius) to guarantee local labour supply.
-* Climate shocks via CLIMADA
-  * Per-cell loss fraction applied to capital, inventories and productive capacity (`damage_factor` with 50 % annual recovery).
-* Heterogenous adaptive risk behaviour
-  * **Households:** each household samples the maximum normalised hazard within a random radius of **1–50 grid cells**. If that value exceeds **0.1** they instantly relocate to a safer land cell (and are counted in the `migrants_this_step` metric).
-  * **Firms:** each firm monitors hazard in its own random radius (also 1–50 cells). When the local maximum hazard surpasses 0.1 the firm increases its **capital requirement** – operationalised as a 20 % rise in the Leontief capital coefficient. In the absence of new events the requirement relaxes back towards its baseline at a *firm-specific* decay rate between 20 % and 50 % per year.
-* Full data capture every step:
-  * Wealth, capital, production, consumption, labour sold, prices, wage, average risk.
-  * Model-level CSV `simulation_results.csv`.
-  * Agent panel CSV `simulation_agents.csv` (money, capital, etc.).
-  * Composite figure `dashboard_timeseries.png` saved from dashboard.
-* Reproducibility – pass `--seed` to freeze random placement, hazard draws and dashboard runs.
-* **Interactive dashboard** (`--viz`)
-  * Hazard map, network map (labour vs goods flows), live plots for all metrics, Save & Exit button.
+## Model Overview
 
-## Quick start
+The model simulates economic agents (households and firms) on a spatial grid derived from climate hazard rasters. Agents interact through labor markets, supply chains, and goods markets while adapting to climate risks through migration, wage adjustments, and capital investment decisions.
 
-### 1. Create and activate a virtual environment (optional but recommended)
+### Key Features
+
+- **Spatial Environment**: Grid derived from GeoTIFF hazard rasters with land mask using Natural Earth country boundaries
+- **Agent Types**: Households (labor suppliers) and firms (producers with Leontief technology)
+- **Economic Markets**: Endogenous wages, dynamic pricing, labor mobility, and supply chain networks
+- **Climate Integration**: CLIMADA-based damage functions with independent hazard sampling per grid cell
+- **Adaptive Behaviors**: Risk-based household migration and firm capital adjustments
+- **Multiple Sectors**: Agriculture, manufacturing, wholesale, retail, services, and commodity sectors
+
+## Core Architecture
+
+### Spatial Grid and Environment
+
+The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimensions. A 1° geographic catchment is automatically converted to grid cell units to ensure consistent distance calculations across different raster resolutions. Agents are only placed on land cells identified using Natural Earth country boundaries (excluding Antarctica).
+
+### Agent Classes
+
+#### HouseholdAgent
+- **Labor Supply**: Each household supplies 1 unit of labor per step
+- **Employment Choice**: Maximizes `wage - distance_cost × distance` utility function
+- **Consumption**: Purchases goods from retail firms when affordable
+- **Risk Behavior**: Monitors hazard within random radius (1-50 cells), relocates when max hazard > 0.1
+- **Job-Driven Migration**: Relocates closer to same-sector firms after 3 consecutive steps without work
+- **Sector Specialization**: Preferentially works for firms in the same sector
+
+#### FirmAgent
+- **Production Technology**: Leontief production function with labor, material inputs, and capital
+- **Technical Coefficients**: 0.5 units each of labor, inputs, and capital per unit output
+- **Wage Setting**: Endogenous wage adjustment based on labor market tightness and hiring success
+- **Dynamic Pricing**: ±5% price adjustments based on inventory levels
+- **Input Procurement**: 
+  - **Retail firms**: Treat inputs as interchangeable, purchase from any supplier
+  - **Non-retail firms**: Independent input requirements from each connected supplier
+- **Capital Investment**: Purchase additional capital when capital-constrained
+- **Risk Adaptation**: Increase capital requirements by 20% when local hazard > 0.1, with firm-specific relaxation rates (20-50% per year)
+
+### Economic Mechanics
+
+#### Labor Markets
+- Households choose employers within work radius based on wage-distance utility
+- Firms adjust wages continuously based on hiring success and market tightness
+- Unemployment tracking influences wage dynamics across the economy
+
+#### Supply Chain Networks
+- **Random Networks**: Distance-weighted probabilistic connections between firms
+- **Custom Topology**: JSON-specified firm locations and directed supply relationships
+- **Trophic Levels**: Computed network hierarchy determines production sequencing and initial inventory allocation
+
+#### Production and Trade
+- **Leontief Technology**: Output limited by minimum of labor/coeff, inputs/coeff, capital/coeff
+- **Damage Factor**: Climate impacts reduce productive capacity with 50% annual recovery
+- **Budget Allocation**: Firms pre-allocate cash across labor, inputs, and capital based on previous bottlenecks
+- **Inventory Management**: Finished goods inventory with sector-specific initial allocations
+
+### Climate Hazard System
+
+#### Hazard Events
+- **Format**: `"RP:START_STEP:END_STEP:HAZARD_TYPE:path/to/geotiff.tif"`
+- **Sampling**: Independent per-cell draws each step based on return period frequencies
+- **Multiple Events**: Supports overlapping hazard types and time windows
+- **Intensity Combination**: Maximum depth used when multiple events affect same cell
+
+#### Impact Calculation
+- **Vulnerability Curves**: JRC flood curves for FL hazard type, linear for others
+- **Damage Application**: Multiplicative combination across hazard types
+- **Asset Impact**: Reduces firm capital stock, household capital, and firm inventories
+- **Production Impact**: Temporary capacity reduction via damage_factor
+
+#### Time Resolution
+- Default: 4 steps per year (quarterly resolution)
+- Configurable via `steps_per_year` parameter
+- Hazard probabilities adjusted accordingly (p_step = p_annual / steps_per_year)
+
+## Usage
+
+### Installation
+
 ```bash
+# Create virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
-```
 
-### 2. Install dependencies
-```bash
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 3. Run the model
+### Basic Usage
 
-The model now expects external GeoTIFF rasters instead of CLIMADA HDF5 files. Each
-raster is mapped to a *hazard event* via a **five-field spec** that also
-defines the simulation years (steps) for which the file is valid:
-
-```
-<RETURN-PERIOD>:<START_STEP>:<END_STEP>:<HAZARD_TYPE>:<path/to/geotiff.tif>
-```
-
-For instance, to splice 2030, 2050 and 2080 projections of a 10-year flood:
-
-```text
-10:1:20:FL:data/processed/flood_2030_rp10.tif
-10:21:40:FL:data/processed/flood_2050_rp10.tif
-10:41:70:FL:data/processed/flood_2080_rp10.tif
-```
-
-You can still pass each event directly via `--rp-file`, but for long lists it
-is far more convenient to keep them in a **JSON parameter file**:
+#### Parameter Files (Recommended)
+Create a JSON parameter file for complex simulations:
 
 ```json
 {
   "rp_files": [
     "10:1:20:FL:data/processed/flood_2030_rp10.tif",
     "10:21:40:FL:data/processed/flood_2050_rp10.tif",
-    "10:41:70:FL:data/processed/flood_2080_rp10.tif",
-    "100:1:20:FL:data/processed/flood_2030_rp100.tif",
-    "100:21:40:FL:data/processed/flood_2050_rp100.tif",
-    "100:41:70:FL:data/processed/flood_2080_rp100.tif"
+    "100:1:20:FL:data/processed/flood_2030_rp100.tif"
   ],
   "steps": 70,
   "seed": 42,
+  "start_year": 2020,
+  "steps_per_year": 4,
   "topology": "sample_firm_topology.json"
 }
 ```
 
-Run the model headless or with the dashboard without the unwieldy command-line:
+#### Running Simulations
 
 ```bash
-# Headless
-python run_simulation.py --param-file sample_params.json
+# Headless simulation
+python run_simulation.py --param-file parameters.json
 
 # Interactive dashboard
-python run_simulation.py --param-file sample_params.json --viz
+python run_simulation.py --param-file parameters.json --viz
+
+# Direct command line (single hazard)
+python run_simulation.py --rp-file "10:1:20:FL:flood_rp10.tif" --steps 50 --seed 42
+
+# Compare baseline vs hazard scenarios
+python compare_simulations.py --param-file parameters.json --out comparison.png
 ```
 
-Command-line flags still override the JSON, so you can tweak one-off parameters
-without editing the file (e.g. `--seed 99`).
+### Data Preprocessing
 
-### Optional preprocessing
-
-Aqueduct tiles are large (~100 MB). Use the helper under
-`prepare_hazard/preprocess_geotiff.py` to crop or down-sample rasters before
-feeding them into the ABM:
+For large rasters, use the preprocessing utility:
 
 ```bash
-# Crop to bounding box and resample to half resolution
 python prepare_hazard/preprocess_geotiff.py \
     --input raw/*.tif \
     --crop-bounds -74 40 -73 42 \
@@ -108,26 +140,101 @@ python prepare_hazard/preprocess_geotiff.py \
     --output-dir data/processed
 ```
 
-Point the `--rp-file` paths to the generated `*_processed.tif` files. The model
-will automatically select an appropriate vulnerability curve for each
-`HAZARD_TYPE` (flood = JRC depth-damage, others default to linear until you
-add custom curves). The Solara dashboard and `simulation_results.csv` remain
-unchanged. A second CSV `applied_events.csv` logs which cells flooded each
-year.
+### Custom Network Topology
 
-### 4. Compare hazard vs baseline runs
+Specify firm locations and supply chains via JSON:
 
-To quantify the effect of climate hazards on the economy, run the helper
-`compare_simulations.py`.  It launches two simulations back-to-back – **with**
-and **without** hazard impacts – using the *exact same* random placement of
-agents (controlled via `--seed`).  The script automatically overlays every
-tracked metric in a multi-panel figure.
-
-```bash
-# 70-year run using the same JSON parameter bundle as above
-python compare_simulations.py --param-file sample_params.json --out comparison_plot.png
+```json
+{
+  "firms": [
+    {"id": 1, "lon": -73.5, "lat": 40.7, "sector": "agriculture", "capital": 100.0},
+    {"id": 2, "lon": -73.6, "lat": 40.8, "sector": "manufacturing", "capital": 150.0}
+  ],
+  "edges": [
+    {"src": 1, "dst": 2}
+  ]
+}
 ```
 
-The resulting `comparison_plot.png` lets you visually inspect, for each metric
-(total production, wealth, capital stock, wage, etc.), how trajectories differ
-between the risk-free baseline and the hazard-exposed economy.
+## Output Files
+
+### Standard Outputs
+- **simulation_results.csv**: Model-level time series (production, wealth, wages, prices, risk)
+- **simulation_agents.csv**: Agent-level panel data (money, capital, production, sector, type)
+- **applied_events.csv**: Log of hazard events (step, event_name, event_id)
+- **simulation_timeseries.png**: Multi-panel plots of key metrics
+- **dashboard_timeseries.png**: Composite plots from interactive dashboard
+
+### Comparison Analysis
+- **comparison_plot.png**: Side-by-side hazard vs baseline scenarios
+- **comparison_plot_agents.csv**: Agent-level data for both scenarios
+
+## Model Parameters
+
+### Agent Configuration
+- `num_households`: Number of household agents (default: 100)
+- `num_firms`: Number of firm agents (default: 20, overridden by topology file)
+- `seed`: Random seed for reproducibility
+
+### Spatial Parameters
+- `work_radius`: Employment/shopping radius in grid cells (auto-computed from 1° geographic)
+- Grid dimensions automatically derived from hazard raster extent
+
+### Economic Parameters
+- **Technical Coefficients**: Labor (0.5), Input (0.5), Capital (0.5) per unit output
+- **Depreciation Rate**: 0.5% per step (≈2% annually for quarterly steps)
+- **Price Adjustment**: ±5% based on inventory levels
+- **Wage Adjustment**: Continuous based on labor market conditions
+
+### Risk Parameters
+- **Household Migration**: Threshold 0.1, monitoring radius 1-50 cells
+- **Firm Adaptation**: Capital requirement increase 20%, relaxation 20-50% per year
+- **Relocation Cost**: 10% of wealth and capital lost during migration
+
+### Climate Parameters
+- **Recovery Rate**: 50% of damage factor recovered per step
+- **Vulnerability**: JRC depth-damage curves for floods, linear for other hazards
+- **Sampling**: Independent per-cell Poisson process based on return periods
+
+## File Organization
+
+```
+├── model.py              # Main EconomyModel class
+├── agents.py             # HouseholdAgent and FirmAgent classes
+├── run_simulation.py     # CLI runner with parameter file support
+├── compare_simulations.py # Baseline vs hazard comparison utility
+├── visualization.py      # Solara interactive dashboard
+├── hazard_utils.py       # GeoTIFF processing and CLIMADA integration
+├── trophic_utils.py      # Network topology analysis
+├── prepare_hazard/       # Data preprocessing utilities
+├── data/                 # Raw and processed hazard rasters
+├── frames/               # Animation frames from dashboard
+└── *_parameters.json     # Parameter files for different scenarios
+```
+
+## Development
+
+### Key Dependencies
+- Mesa ≥3.2.0 (agent-based modeling framework)
+- CLIMADA ≥4.1.0 (climate impact assessment)
+- Solara (interactive dashboard)
+- Rasterio, GDAL (GeoTIFF processing)
+- NumPy, Pandas, Matplotlib (data processing and visualization)
+
+### Model Extension Points
+- **New Agent Types**: Inherit from `mesa.Agent`, implement `step()` method
+- **Additional Hazards**: Add vulnerability curves in `_build_vulnerability()`
+- **Economic Mechanisms**: Modify production functions, market clearing in agent `step()` methods
+- **Spatial Features**: Extend grid properties, distance calculations in `EconomyModel`
+
+### Testing and Validation
+- Use consistent `seed` values for reproducible results
+- Monitor key invariants: wealth conservation, market clearing
+- Compare outcomes across parameter variations
+- Validate against empirical data where available
+
+### Performance Considerations
+- Grid size scales quadratically with memory usage
+- Agent count affects per-step computation time
+- Hazard raster resolution impacts both memory and disk I/O
+- Use preprocessing for large datasets to optimize performance
