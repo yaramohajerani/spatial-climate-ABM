@@ -151,22 +151,29 @@ class HouseholdAgent(Agent):
                     self.labor_sold += 1
                     break
 
-        # 2. Buy one unit of goods if affordable -------------------------- #
+        # 2. Buy goods based on wealth and needs -------------------------- #
         # Households can purchase from any retail firm in the economy.
         retail_firms = [
             f for f in self.model.agents
-            if isinstance(f, FirmAgent) and f.sector == "retail" and f.inventory_output > 0 and f.price <= self.money
+            if isinstance(f, FirmAgent) and f.sector == "retail" and f.inventory_output > 0
         ]
 
         if retail_firms:
+            # Determine how much to spend based on wealth (consume 20% of money each step)
+            consumption_budget = self.money * 0.2
+            
             # Select the cheapest retail seller (break ties randomly)
-            min_price = min(f.price for f in retail_firms)
-            cheapest = [f for f in retail_firms if abs(f.price - min_price) < 1e-6]
-            seller = self.random.choice(cheapest)
-            # Attempt to buy up to 1 unit; method will reduce if only fraction affordable
-            qty_bought = seller.sell_goods_to_household(self, quantity=1.0)
-            if qty_bought:
-                self.consumption += qty_bought
+            affordable_firms = [f for f in retail_firms if f.price <= consumption_budget]
+            if affordable_firms:
+                min_price = min(f.price for f in affordable_firms)
+                cheapest = [f for f in affordable_firms if abs(f.price - min_price) < 1e-6]
+                seller = self.random.choice(cheapest)
+                
+                # Buy as much as budget allows
+                max_quantity = consumption_budget / seller.price
+                qty_bought = seller.sell_goods_to_household(self, quantity=max_quantity)
+                if qty_bought:
+                    self.consumption += qty_bought
 
         # ---------------- End-of-step unemployment tracking ------------- #
         if self.labor_sold == 0:
@@ -420,9 +427,9 @@ class FirmAgent(Agent):
                 total_w = 1.0
 
             # Cash to be allocated (keep small buffer unallocated for flexibility)
-            liquid = self.money
-            # Keep 5% buffer unallocated
-            liquid_alloc = liquid * 0.95
+            liquid = max(0, self.money)  # Ensure non-negative
+            # Keep 10% buffer unallocated for operational flexibility
+            liquid_alloc = liquid * 0.9
             reserve_labor = liquid_alloc * weights["labor"] / total_w
             reserve_input = liquid_alloc * weights["input"] / total_w
             reserve_cap = liquid_alloc * weights["capital"] / total_w
@@ -466,8 +473,8 @@ class FirmAgent(Agent):
                 total_w = 1.0
 
             # Cash to be allocated
-            liquid = self.money
-            liquid_alloc = liquid * 0.95
+            liquid = max(0, self.money)  # Ensure non-negative
+            liquid_alloc = liquid * 0.9
             reserve_labor = liquid_alloc * weights["labor"] / total_w
             reserve_input_total = liquid_alloc * weights["input_total"] / total_w
             reserve_cap = liquid_alloc * weights["capital"] / total_w
@@ -508,7 +515,7 @@ class FirmAgent(Agent):
         else:
             # Not labour-constrained → mild downward pressure
             signal = -0.5
-        strength = 0.2  # responsiveness coefficient
+        strength = 0.05  # Reduced responsiveness to prevent wage explosion
 
         adjustment = 1 + strength * signal * tightness
         # Friction: wage cuts (adjustment < 1) dampened by 50 %
@@ -516,24 +523,39 @@ class FirmAgent(Agent):
             adjustment = 1 - (1 - adjustment) * 0.5
 
         self.wage_offer *= adjustment
-        # Keep wage positive but allow unbounded growth
-        self.wage_offer = float(max(0.01, self.wage_offer))
+        # Keep wage positive and bounded to prevent wage explosion
+        self.wage_offer = float(max(0.01, min(self.wage_offer, 10.0)))
 
         # Recover 50% of remaining damage each step
         self.damage_factor += (1.0 - self.damage_factor) * 0.5
         self.damage_factor = min(1.0, max(0.0, self.damage_factor))
 
         # ---------------- Dynamic pricing ----------------------------- #
-        # Simple rule-of-thumb: if we had no stock leftover raise price, if large
-        # stock (>5) lower price. Bound between 0.1 and 10.
-
-        if self.inventory_output == 0:
-            self.price *= 1.05
-        elif self.inventory_output > 5:
-            self.price *= 0.95
-
-        # Ensure strictly positive price; no upper cap
-        self.price = float(max(0.01, self.price))
+        # Improved pricing with demand feedback and bounds
+        # Consider both inventory levels and household purchasing power
+        
+        # Get household purchasing power indicator
+        total_household_money = sum(getattr(ag, "money", 0) for ag in self.model.agents if isinstance(ag, HouseholdAgent))
+        avg_household_money = total_household_money / max(1, sum(1 for ag in self.model.agents if isinstance(ag, HouseholdAgent)))
+        
+        # Calculate demand pressure based on inventory turnover
+        # If inventory is low relative to production, demand is high
+        recent_production = getattr(self, "production", 0)
+        if recent_production > 0:
+            inventory_ratio = self.inventory_output / max(1, recent_production)
+        else:
+            inventory_ratio = 1.0
+            
+        # Price adjustment based on demand pressure and affordability
+        if inventory_ratio < 0.5 and self.price < avg_household_money * 0.3:
+            # Low inventory and affordable → raise price slightly
+            self.price *= 1.01
+        elif inventory_ratio > 2.0 or self.price > avg_household_money * 0.5:
+            # High inventory or unaffordable → lower price
+            self.price *= 0.99
+        
+        # Bound prices to prevent explosion and ensure market accessibility
+        self.price = float(max(0.01, min(self.price, avg_household_money * 1.0)))
 
         # Reset per-step statistics
         self.production = 0.0
@@ -659,30 +681,37 @@ class FirmAgent(Agent):
         self.employees.clear()
 
         # ---------------- Capital depreciation ------------------------ #
-        DEPR = 0.005  # 0.5 % per step (quarterly), roughly 2 % annually
+        DEPR = 0.002  # 0.2 % per step (quarterly), roughly 0.8 % annually - reduced to prevent wealth drain
         self.capital_stock *= (1 - DEPR)
 
         # ---------------- Capital purchase stage ----------------------- #
         # Purchase additional capital whenever it is the current bottleneck
-        if self.limiting_factor == "capital" and self._budget_capital > 0:
-            max_affordable_units = int(self._budget_capital / self.price)
-            if max_affordable_units <= 0:
-                max_affordable_units = int(self.money / self.price)
-
-            to_buy = max_affordable_units
-
-            if to_buy > 0:
-                # Candidate sellers: any firm with inventory (including upstream suppliers)
+        if self.limiting_factor == "capital" and self._budget_capital > 0 and self.money > 0:
+            # Only attempt capital purchase if we have actual money and dedicated budget
+            available_funds = min(self._budget_capital, self.money * 0.5)  # Don't spend all money on capital
+            
+            if available_funds > 0:
+                # Find cheapest available capital goods
                 sellers = [f for f in self.model.agents if isinstance(f, FirmAgent) and f is not self and f.inventory_output > 0]
-                self.random.shuffle(sellers)
-                for seller in sellers:
-                    if to_buy <= 0:
-                        break
-                    qty = min(to_buy, seller.inventory_output)
-                    bought = seller.sell_goods_to_firm(self, qty)
-                    if bought:
-                        self.capital_stock += bought
-                        to_buy -= bought
+                if sellers:
+                    # Sort by price to buy from cheapest first
+                    sellers.sort(key=lambda f: f.price)
+                    
+                    remaining_budget = available_funds
+                    for seller in sellers:
+                        if remaining_budget <= 0:
+                            break
+                        
+                        # Calculate how much we can afford from this seller
+                        max_affordable = int(remaining_budget / seller.price)
+                        if max_affordable <= 0:
+                            continue
+                            
+                        qty = min(max_affordable, seller.inventory_output)
+                        bought = seller.sell_goods_to_firm(self, qty)
+                        if bought:
+                            self.capital_stock += bought
+                            remaining_budget -= bought * seller.price
 
     # ---------------- Internal helpers -------------------------------- #
     def _labor_available(self) -> int:
