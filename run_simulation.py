@@ -256,12 +256,17 @@ def main() -> None:  # noqa: D401
             ax.set_ylabel("trophic level")
         else:
             agent_col = firm_metric_map.get(col, col.lower())
+            # Add mean line for all firms
+            total_grp = firm_df.groupby("Step")[agent_col].sum()
+            x_vals = total_grp.index if not args.start_year else args.start_year + total_grp.index.astype(int)/args.steps_per_year
+            ax.plot(x_vals, total_grp.values, color="black", linewidth=2, label="Total")
+            # Sector breakdown
             for idx_sec, sector in enumerate(unique_sectors):
                 grp = firm_df[firm_df["sector"] == sector].groupby("Step")[agent_col].sum()
                 if grp.empty:
                     continue
                 x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int)/args.steps_per_year
-                ax.plot(x_vals, grp.values, color=sec_colors[idx_sec], label=sector)
+                ax.plot(x_vals, grp.values, color=sec_colors[idx_sec], linestyle="--", alpha=0.8, label=sector)
         ax.set_title(col.replace("_", " "), fontsize=10)
         ylabel = units.get(col, "")
         if ylabel:
@@ -277,15 +282,19 @@ def main() -> None:  # noqa: D401
     }
 
     def _plot_household(col, ax):
-        # Only sector lines (no aggregate) to preserve scale visibility
         hh_col = household_metric_map.get(col, None)
         if hh_col:
+            # Add total line for all households
+            total_grp = household_df.groupby("Step")[hh_col].sum()
+            x_vals = total_grp.index if not args.start_year else args.start_year + total_grp.index.astype(int) / args.steps_per_year
+            ax.plot(x_vals, total_grp.values, color="black", linewidth=2, label="Total")
+            # Sector breakdown
             for idx_sec, sector in enumerate(unique_hh_sectors):
                 grp = household_df[household_df["sector"] == sector].groupby("Step")[hh_col].sum()
                 if grp.empty:
                     continue
                 x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int) / args.steps_per_year
-                ax.plot(x_vals, grp.values, color=color_by_sector.get(sector, "grey"), linestyle="-", alpha=0.8, label=sector)
+                ax.plot(x_vals, grp.values, color=color_by_sector.get(sector, "grey"), linestyle="--", alpha=0.8, label=sector)
         else:
             # Fallback: plot aggregate series from df (e.g., Average_Risk)
             ax.plot(df[x_col], df[col], color="black", linewidth=2, label=col.replace("_", " "))
@@ -322,12 +331,18 @@ def main() -> None:  # noqa: D401
         ax.legend(fontsize=8, loc="upper center", ncol=3)
 
     def _plot_wage(ax):
+        # plot mean wage
+        wage_by_step = firm_df.groupby("Step")["wage"].mean()
+        x_vals = wage_by_step.index if not args.start_year else args.start_year + wage_by_step.index.astype(int)/args.steps_per_year
+        ax.plot(x_vals, wage_by_step.values, color="black", linewidth=2, label="Mean")
+
+        # plot sector-level wage
         for idx_sec, sector in enumerate(unique_sectors):
             wage_by_step = firm_df[firm_df["sector"] == sector].groupby("Step")["wage"].mean()
             if wage_by_step.empty:
                 continue
             x_vals = wage_by_step.index if not args.start_year else args.start_year + wage_by_step.index.astype(int)/args.steps_per_year
-            ax.plot(x_vals, wage_by_step.values, label=sector, color=color_by_sector[sector])
+            ax.plot(x_vals, wage_by_step.values, label=sector, color=color_by_sector[sector], linestyle="--", alpha=0.8)
         ax.set_title("Wages by Sector", fontsize=10)
         ax.set_ylabel("$ / Unit of Labor")
         ax.set_xlabel(x_col)

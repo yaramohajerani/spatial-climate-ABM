@@ -329,6 +329,15 @@ def main():
             ax.set_ylabel("trophic level")
         elif metric_name in firm_metric_map:
             agent_col = firm_metric_map[metric_name]
+            # Add total lines for each scenario
+            for scenario in ["With Hazard", "No Hazard"]:
+                df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
+                total_grp = df_scen.groupby("Step")[agent_col].sum()
+                if not total_grp.empty:
+                    x_vals = total_grp.index if not args.start_year else args.start_year + total_grp.index.astype(int)/args.steps_per_year
+                    ls = "-" if scenario=="With Hazard" else "--"
+                    ax.plot(x_vals, total_grp.values, color="black", linewidth=2, linestyle=ls, label=f"Total – {scenario}")
+            # Sector breakdown
             for scenario in ["With Hazard", "No Hazard"]:
                 df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
                 for idx_sec, sector in enumerate(unique_sectors):
@@ -337,21 +346,30 @@ def main():
                         continue
                     x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int)/args.steps_per_year
                     ls = "-" if scenario=="With Hazard" else "--"
-                    ax.plot(x_vals, grp.values, color=sec_colors[idx_sec], linestyle=ls, label=f"{sector} – {scenario}")
+                    ax.plot(x_vals, grp.values, color=sec_colors[idx_sec], linestyle=ls, alpha=0.6, label=f"{sector} – {scenario}")
         else:
             # Household metrics
             if metric_name in household_metric_map:
                 hh_col = household_metric_map[metric_name]
                 sectors = sorted(household_agents_df["sector"].dropna().unique())
+                # Add total lines for each scenario
                 for scenario in ["With Hazard", "No Hazard"]:
                     df_scen_hh = household_agents_df[household_agents_df["Scenario"] == scenario]
-                    # Sector lines
+                    total_grp = df_scen_hh.groupby("Step")[hh_col].sum()
+                    if not total_grp.empty:
+                        x_vals = total_grp.index if not args.start_year else args.start_year + total_grp.index.astype(int) / args.steps_per_year
+                        ls = "-" if scenario=="With Hazard" else "--"
+                        ax.plot(x_vals, total_grp.values, color="black", linewidth=2, linestyle=ls, label=f"Total – {scenario}")
+                # Sector breakdown
+                for scenario in ["With Hazard", "No Hazard"]:
+                    df_scen_hh = household_agents_df[household_agents_df["Scenario"] == scenario]
                     for idx_sec, sector in enumerate(sectors):
                         grp = df_scen_hh[df_scen_hh["sector"] == sector].groupby("Step")[hh_col].sum()
                         if grp.empty:
                             continue
                         x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int) / args.steps_per_year
-                        ax.plot(x_vals, grp.values, color=sec_colors[idx_sec], linestyle="-" if scenario=="With Hazard" else "--", alpha=0.6, label=f"{sector} – {scenario}")
+                        ls = "-" if scenario=="With Hazard" else "--"
+                        ax.plot(x_vals, grp.values, color=sec_colors[idx_sec], linestyle=ls, alpha=0.6, label=f"{sector} – {scenario}")
             else:
                 # Other aggregated metrics (risk, etc.)
                 for scenario, grp in df_combined.groupby("Scenario"):
