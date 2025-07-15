@@ -282,7 +282,8 @@ def main():
         if metric_name == "Mean_Price":
             # Aggregate line per scenario
             for scenario, grp in df_combined.groupby("Scenario"):
-                ax.plot(grp[x_col], grp[metric_name], label=f"Mean – {scenario}")
+                ls = "-" if scenario=="With Hazard" else "--"
+                ax.plot(grp[x_col], grp[metric_name], color="k", linestyle=ls, label=f"Mean – {scenario}")
             # Sector breakdown
             sectors = sorted(firm_agents_df["sector"].dropna().unique())
             sector_colors = plt.cm.Set1(np.linspace(0, 1, len(sectors)))
@@ -293,7 +294,27 @@ def main():
                         continue
                     price_by_step = df_sec.groupby("Step")["price"].mean()
                     x_vals = price_by_step.index if not args.start_year else args.start_year + price_by_step.index.astype(int) / args.steps_per_year
-                    ax.plot(x_vals, price_by_step.values, linestyle="--", color=sector_colors[idx_sec], alpha=0.6,
+                    ls = "-" if scenario=="With Hazard" else "--"
+                    ax.plot(x_vals, price_by_step.values, linestyle=ls, color=sector_colors[idx_sec], alpha=0.6,
+                            label=f"{sector} – {scenario}")
+        elif metric_name == "Mean_Wage":
+            # Aggregate mean wage per scenario (black solid vs dashed)
+            for scenario, grp in df_combined.groupby("Scenario"):
+                ls = "-" if scenario=="With Hazard" else "--"
+                ax.plot(grp[x_col], grp[metric_name], color="k", linestyle=ls, label=f"Mean – {scenario}")
+
+            # Sector‐level wage lines from firm data
+            sectors = sorted(firm_agents_df["sector"].dropna().unique())
+            sector_colors = plt.cm.Set1(np.linspace(0, 1, len(sectors)))
+            for idx_sec, sector in enumerate(sectors):
+                for scenario in ["With Hazard", "No Hazard"]:
+                    df_sec = firm_agents_df[(firm_agents_df["sector"] == sector) & (firm_agents_df["Scenario"] == scenario)]
+                    if df_sec.empty:
+                        continue
+                    wage_by_step = df_sec.groupby("Step")["wage"].mean()
+                    x_vals = wage_by_step.index if not args.start_year else args.start_year + wage_by_step.index.astype(int) / args.steps_per_year
+                    ls = "-" if scenario=="With Hazard" else "--"
+                    ax.plot(x_vals, wage_by_step.values, linestyle=ls, color=sector_colors[idx_sec], alpha=0.6,
                             label=f"{sector} – {scenario}")
         elif metric_name == "Sector_Trophic_Level":
             for scenario in ["With Hazard", "No Hazard"]:
@@ -334,7 +355,8 @@ def main():
             else:
                 # Other aggregated metrics (risk, etc.)
                 for scenario, grp in df_combined.groupby("Scenario"):
-                    ax.plot(grp[x_col], grp[metric_name], label=scenario)
+                    ls = "-" if scenario=="With Hazard" else "--"   
+                    ax.plot(grp[x_col], grp[metric_name], color="k", linestyle=ls, label=f"Mean – {scenario}")
 
         ax.set_title(metric_name.replace("_", " "), fontsize=10)
         ylabel = units.get(metric_name, "")
