@@ -262,7 +262,7 @@ def main():
     household_agents_df = agent_df_combined[agent_df_combined["type"] == "HouseholdAgent"].copy()
 
     unique_sectors = sorted(firm_agents_df["sector"].dropna().unique())
-    sec_colors = plt.cm.Set1(np.linspace(0, 1, len(unique_sectors)))
+    sec_colors = plt.cm.tab10(np.linspace(0, 1, len(unique_sectors)))
 
     firm_metric_map = {
         "Firm_Production": "production",
@@ -283,10 +283,11 @@ def main():
             # Aggregate line per scenario
             for scenario, grp in df_combined.groupby("Scenario"):
                 ls = "-" if scenario=="With Hazard" else "--"
-                ax.plot(grp[x_col], grp[metric_name], color="k", linestyle=ls, label=f"Mean – {scenario}")
+                lc = 'black' if scenario=='With Hazard' else 'dimgray'
+                ax.plot(grp[x_col], grp[metric_name], color=lc, linestyle=ls, label=f"Mean – {scenario}")
             # Sector breakdown
             sectors = sorted(firm_agents_df["sector"].dropna().unique())
-            sector_colors = plt.cm.Set1(np.linspace(0, 1, len(sectors)))
+            sector_colors = plt.cm.tab10(np.linspace(0, 1, len(sectors)))
             for idx_sec, sector in enumerate(sectors):
                 for scenario in ["With Hazard", "No Hazard"]:
                     df_sec = firm_agents_df[(firm_agents_df["sector"] == sector) & (firm_agents_df["Scenario"] == scenario)]
@@ -301,11 +302,12 @@ def main():
             # Aggregate mean wage per scenario (black solid vs dashed)
             for scenario, grp in df_combined.groupby("Scenario"):
                 ls = "-" if scenario=="With Hazard" else "--"
-                ax.plot(grp[x_col], grp[metric_name], color="k", linestyle=ls, label=f"Mean – {scenario}")
+                lc = 'black' if scenario=='With Hazard' else 'dimgray'
+                ax.plot(grp[x_col], grp[metric_name], color=lc, linestyle=ls, label=f"Mean – {scenario}")
 
             # Sector‐level wage lines from firm data
             sectors = sorted(firm_agents_df["sector"].dropna().unique())
-            sector_colors = plt.cm.Set1(np.linspace(0, 1, len(sectors)))
+            sector_colors = plt.cm.tab10(np.linspace(0, 1, len(sectors)))
             for idx_sec, sector in enumerate(sectors):
                 for scenario in ["With Hazard", "No Hazard"]:
                     df_sec = firm_agents_df[(firm_agents_df["sector"] == sector) & (firm_agents_df["Scenario"] == scenario)]
@@ -329,19 +331,20 @@ def main():
             ax.set_ylabel("trophic level")
         elif metric_name in firm_metric_map:
             agent_col = firm_metric_map[metric_name]
-            # Add total lines for each scenario
+            # Add mean lines for each scenario
             for scenario in ["With Hazard", "No Hazard"]:
                 df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
-                total_grp = df_scen.groupby("Step")[agent_col].sum()
-                if not total_grp.empty:
-                    x_vals = total_grp.index if not args.start_year else args.start_year + total_grp.index.astype(int)/args.steps_per_year
+                mean_grp = df_scen.groupby("Step")[agent_col].mean()
+                if not mean_grp.empty:
+                    x_vals = mean_grp.index if not args.start_year else args.start_year + mean_grp.index.astype(int)/args.steps_per_year
                     ls = "-" if scenario=="With Hazard" else "--"
-                    ax.plot(x_vals, total_grp.values, color="black", linewidth=2, linestyle=ls, label=f"Total – {scenario}")
+                    lc = 'black' if scenario=='With Hazard' else 'dimgray'
+                    ax.plot(x_vals, mean_grp.values, color=lc, linewidth=2, linestyle=ls, label=f"Mean – {scenario}")
             # Sector breakdown
             for scenario in ["With Hazard", "No Hazard"]:
                 df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
                 for idx_sec, sector in enumerate(unique_sectors):
-                    grp = df_scen[df_scen["sector"] == sector].groupby("Step")[agent_col].sum()
+                    grp = df_scen[df_scen["sector"] == sector].groupby("Step")[agent_col].mean()
                     if grp.empty:
                         continue
                     x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int)/args.steps_per_year
@@ -352,19 +355,20 @@ def main():
             if metric_name in household_metric_map:
                 hh_col = household_metric_map[metric_name]
                 sectors = sorted(household_agents_df["sector"].dropna().unique())
-                # Add total lines for each scenario
+                # Add mean lines for each scenario
                 for scenario in ["With Hazard", "No Hazard"]:
                     df_scen_hh = household_agents_df[household_agents_df["Scenario"] == scenario]
-                    total_grp = df_scen_hh.groupby("Step")[hh_col].sum()
-                    if not total_grp.empty:
-                        x_vals = total_grp.index if not args.start_year else args.start_year + total_grp.index.astype(int) / args.steps_per_year
+                    mean_grp = df_scen_hh.groupby("Step")[hh_col].mean()
+                    if not mean_grp.empty:
+                        x_vals = mean_grp.index if not args.start_year else args.start_year + mean_grp.index.astype(int) / args.steps_per_year
                         ls = "-" if scenario=="With Hazard" else "--"
-                        ax.plot(x_vals, total_grp.values, color="black", linewidth=2, linestyle=ls, label=f"Total – {scenario}")
+                        lc = 'black' if scenario=='With Hazard' else 'dimgray'
+                        ax.plot(x_vals, mean_grp.values, color=lc, linewidth=2, linestyle=ls, label=f"Mean – {scenario}")
                 # Sector breakdown
                 for scenario in ["With Hazard", "No Hazard"]:
                     df_scen_hh = household_agents_df[household_agents_df["Scenario"] == scenario]
                     for idx_sec, sector in enumerate(sectors):
-                        grp = df_scen_hh[df_scen_hh["sector"] == sector].groupby("Step")[hh_col].sum()
+                        grp = df_scen_hh[df_scen_hh["sector"] == sector].groupby("Step")[hh_col].mean()
                         if grp.empty:
                             continue
                         x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int) / args.steps_per_year
@@ -374,7 +378,8 @@ def main():
                 # Other aggregated metrics (risk, etc.)
                 for scenario, grp in df_combined.groupby("Scenario"):
                     ls = "-" if scenario=="With Hazard" else "--"   
-                    ax.plot(grp[x_col], grp[metric_name], color="k", linestyle=ls, label=f"Mean – {scenario}")
+                    lc = 'black' if scenario=='With Hazard' else 'dimgray'
+                    ax.plot(grp[x_col], grp[metric_name], color=lc, linestyle=ls, label=f"Mean – {scenario}")
 
         ax.set_title(metric_name.replace("_", " "), fontsize=10)
         ylabel = units.get(metric_name, "")

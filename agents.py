@@ -159,8 +159,8 @@ class HouseholdAgent(Agent):
         ]
 
         if retail_firms:
-            # Determine how much to spend based on wealth (consume 20% of money each step)
-            consumption_budget = self.money * 0.2
+            # Determine how much to spend based on wealth (consume 50% of money each step)
+            consumption_budget = self.money * 0.5
             
             # Select the cheapest retail seller (break ties randomly)
             affordable_firms = [f for f in retail_firms if f.price <= consumption_budget]
@@ -555,7 +555,7 @@ class FirmAgent(Agent):
             self.price *= 0.99
         
         # Bound prices to prevent explosion and ensure market accessibility
-        self.price = float(max(0.01, min(self.price, avg_household_money * 1.0)))
+        self.price = float(max(0.01, min(self.price, avg_household_money * 1.2)))
 
         # Reset per-step statistics
         self.production = 0.0

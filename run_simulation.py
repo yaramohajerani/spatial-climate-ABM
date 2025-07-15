@@ -191,7 +191,7 @@ def main() -> None:  # noqa: D401
 
     # Sector palette
     unique_sectors = sorted(firm_df["sector"].dropna().unique())
-    sec_colors = plt.cm.Set1(np.linspace(0, 1, len(unique_sectors)))
+    sec_colors = plt.cm.tab10(np.linspace(0, 1, len(unique_sectors)))
 
     # Single, shared colour map for both firm & household plots
     color_by_sector = {
@@ -257,12 +257,12 @@ def main() -> None:  # noqa: D401
         else:
             agent_col = firm_metric_map.get(col, col.lower())
             # Add mean line for all firms
-            total_grp = firm_df.groupby("Step")[agent_col].sum()
-            x_vals = total_grp.index if not args.start_year else args.start_year + total_grp.index.astype(int)/args.steps_per_year
-            ax.plot(x_vals, total_grp.values, color="black", linewidth=2, label="Total")
+            mean_grp = firm_df.groupby("Step")[agent_col].mean()
+            x_vals = mean_grp.index if not args.start_year else args.start_year + mean_grp.index.astype(int)/args.steps_per_year
+            ax.plot(x_vals, mean_grp.values, color="black", linewidth=2, label="Mean")
             # Sector breakdown
             for idx_sec, sector in enumerate(unique_sectors):
-                grp = firm_df[firm_df["sector"] == sector].groupby("Step")[agent_col].sum()
+                grp = firm_df[firm_df["sector"] == sector].groupby("Step")[agent_col].mean()
                 if grp.empty:
                     continue
                 x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int)/args.steps_per_year
@@ -284,13 +284,13 @@ def main() -> None:  # noqa: D401
     def _plot_household(col, ax):
         hh_col = household_metric_map.get(col, None)
         if hh_col:
-            # Add total line for all households
-            total_grp = household_df.groupby("Step")[hh_col].sum()
-            x_vals = total_grp.index if not args.start_year else args.start_year + total_grp.index.astype(int) / args.steps_per_year
-            ax.plot(x_vals, total_grp.values, color="black", linewidth=2, label="Total")
+            # Add mean line for all households
+            mean_grp = household_df.groupby("Step")[hh_col].mean()
+            x_vals = mean_grp.index if not args.start_year else args.start_year + mean_grp.index.astype(int) / args.steps_per_year
+            ax.plot(x_vals, mean_grp.values, color="black", linewidth=2, label="Mean")
             # Sector breakdown
             for idx_sec, sector in enumerate(unique_hh_sectors):
-                grp = household_df[household_df["sector"] == sector].groupby("Step")[hh_col].sum()
+                grp = household_df[household_df["sector"] == sector].groupby("Step")[hh_col].mean()
                 if grp.empty:
                     continue
                 x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int) / args.steps_per_year
