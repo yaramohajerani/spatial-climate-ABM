@@ -199,6 +199,7 @@ class EconomyModel(Model):
                 "limiting_factor": lambda a: getattr(a, "limiting_factor", ""),
                 "price": lambda a: getattr(a, "price", np.nan),
                 "inventory": lambda a: getattr(a, "inventory_output", 0.0),
+                "input_inventory": lambda a: sum(getattr(a, "inventory_inputs", {}).values()) if hasattr(a, "inventory_inputs") else 0.0,
                 "wage": lambda a: getattr(a, "wage_offer", np.nan),
                 "sector": lambda a: getattr(a, "sector", ""),
                 "type": lambda a: type(a).__name__,
@@ -236,6 +237,22 @@ class EconomyModel(Model):
             for ag in self.agents if isinstance(ag, FirmAgent)
         }
         self._firm_levels: dict[int, float] = compute_trophic_levels(firm_adj_init)
+
+        # ------------------------------------------------------------ #
+        #  Give firms an initial stock of finished goods so downstream
+        #  sectors can begin purchasing inputs right away.  We assign a
+        #  larger buffer to low-trophic (root) firms because they have
+        #  no material suppliers and thus seed the whole production chain.
+        # ------------------------------------------------------------ #
+        for ag in self.agents:
+            if isinstance(ag, FirmAgent):
+                lvl = self._firm_levels.get(ag.unique_id, 1.0)
+                if lvl <= 1.0:
+                    ag.inventory_output = 20  # root suppliers
+                elif lvl <= 2.0:
+                    ag.inventory_output = 10  # near-root suppliers
+                else:
+                    ag.inventory_output = 5   # downstream firms
 
         for haz, _ in self.hazards.values():
             self._exposures.assign_centroids(haz)

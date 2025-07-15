@@ -372,7 +372,9 @@ class FirmAgent(Agent):
 
             # Deduct from supplier-specific budget first, then capital
             use_supplier = min(cost, supplier_budget)
-            buyer._budget_input_per_supplier[self.unique_id] -= use_supplier
+            # Safely decrement supplier‐specific budget; initialise key if missing
+            current_alloc = buyer._budget_input_per_supplier.get(self.unique_id, 0.0)
+            buyer._budget_input_per_supplier[self.unique_id] = current_alloc - use_supplier
             buyer._budget_capital -= (cost - use_supplier)  # type: ignore[attr-defined]
         
         self.money += cost
