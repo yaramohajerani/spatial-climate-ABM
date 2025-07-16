@@ -15,6 +15,21 @@ The model simulates economic agents (households and firms) on a spatial grid der
 - **Adaptive Behaviors**: Risk-based household migration and firm capital adjustments
 - **Multiple Sectors**: Agriculture, manufacturing, wholesale, retail, services, and commodity sectors
 
+### Recent Model Improvements
+
+**Enhanced Economic Realism (07/25)**:
+- **Responsive Wage Dynamics**: Wages now adjust quickly to financial constraints - firms cut wages aggressively when cash-limited, preventing artificial firm failures
+- **Scarcity-Based Pricing**: Prices rise naturally when production stops or inventory is low, creating realistic scarcity premiums
+- **Improved Budget Allocation**: Manufacturing firms prioritize labor budget when cash-constrained, ensuring they can afford workers
+- **Relaxed Price Bounds**: Removed artificial price caps (1.5x → 1000x household wealth) to allow natural economic growth over decades
+- **Market-Driven Inflation**: Prices can grow organically without artificial constraints, enabling realistic multi-decade simulations
+
+**Key Economic Behaviors**:
+- High unemployment → Rapid wage cuts → Firm survival
+- Low production → Higher prices → Better firm cash flow
+- Cash constraints → Labor budget prioritization → Continued employment
+- Market forces → Natural price/wage equilibrium → Sustainable growth
+
 ## Core Architecture
 
 ### Spatial Grid and Environment
@@ -34,8 +49,8 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 #### FirmAgent
 - **Production Technology**: Leontief production function with labor, material inputs, and capital
 - **Technical Coefficients**: 0.5 units each of labor, inputs, and capital per unit output
-- **Wage Setting**: Endogenous wage adjustment based on labor market tightness and hiring success
-- **Dynamic Pricing**: ±5% price adjustments based on inventory levels
+- **Wage Setting**: Responsive wage adjustment based on financial constraints and labor market tightness
+- **Dynamic Pricing**: Supply-demand driven pricing with scarcity premiums and affordability constraints
 - **Input Procurement**: 
   - **Retail firms**: Treat inputs as interchangeable, purchase from any supplier
   - **Non-retail firms**: Independent input requirements from each connected supplier
@@ -46,8 +61,9 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 
 #### Labor Markets
 - Households choose employers within work radius based on wage-distance utility
-- Firms adjust wages continuously based on hiring success and market tightness
-- Unemployment tracking influences wage dynamics across the economy
+- **Improved wage dynamics**: Firms cut wages aggressively when financially constrained, raise wages when supply-limited
+- **Unemployment responsiveness**: High unemployment leads to rapid wage cuts, enabling firm survival
+- **Dampening removed**: Wage cuts now respond quickly to market conditions without artificial friction
 
 #### Supply Chain Networks
 - **Random Networks**: Distance-weighted probabilistic connections between firms
@@ -57,8 +73,16 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 #### Production and Trade
 - **Leontief Technology**: Output limited by minimum of labor/coeff, inputs/coeff, capital/coeff
 - **Damage Factor**: Climate impacts reduce productive capacity with 50% annual recovery
-- **Budget Allocation**: Firms pre-allocate cash across labor, inputs, and capital based on previous bottlenecks
+- **Enhanced Budget Allocation**: 
+  - Manufacturing firms prioritize labor budget when cash-constrained
+  - Minimum labor budget ensures firms can afford workers
+  - Budget reallocation from inputs/capital to labor when necessary
 - **Inventory Management**: Finished goods inventory with sector-specific initial allocations
+- **Realistic Pricing**: 
+  - Scarcity pricing: Prices rise when production stops or inventory is low
+  - Cash-flow pricing: Constrained firms raise prices to improve margins
+  - Affordability bounds: Gentle resistance to extreme prices (1000x household wealth ceiling)
+  - Market-driven inflation: Prices can grow naturally over decades without artificial constraints
 
 ### Climate Hazard System
 
@@ -183,8 +207,9 @@ Specify firm locations and supply chains via JSON:
 ### Economic Parameters
 - **Technical Coefficients**: Labor (0.5), Input (0.5), Capital (0.5) per unit output
 - **Depreciation Rate**: 0.5% per step (≈2% annually for quarterly steps)
-- **Price Adjustment**: ±5% based on inventory levels
-- **Wage Adjustment**: Continuous based on labor market conditions
+- **Price Adjustment**: Supply-demand driven with scarcity premiums and realistic bounds (1000x household wealth ceiling)
+- **Wage Adjustment**: Responsive to financial constraints with rapid adjustment when cash-limited
+- **Budget Allocation**: Manufacturing firms prioritize labor when cash-constrained, with minimum labor budget guarantees
 
 ### Risk Parameters
 - **Household Migration**: Threshold 0.1, monitoring radius 1-50 cells

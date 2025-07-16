@@ -468,6 +468,11 @@ class FirmAgent(Agent):
             if lim in weights and weights[lim] > 0:
                 weights[lim] *= 1.3
             
+            # For manufacturing firms, ensure minimum labor budget when cash-constrained
+            if self.sector == "manufacturing" and self.money < self.wage_offer * 5:
+                # When cash-constrained, prioritize labor heavily
+                weights["labor"] *= 3.0
+            
             total_w = sum(weights.values())
             if total_w <= 0:
                 total_w = 1.0
@@ -478,6 +483,20 @@ class FirmAgent(Agent):
             reserve_labor = liquid_alloc * weights["labor"] / total_w
             reserve_input_total = liquid_alloc * weights["input_total"] / total_w
             reserve_cap = liquid_alloc * weights["capital"] / total_w
+            
+            # Ensure minimum labor budget for manufacturing
+            if self.sector == "manufacturing":
+                min_labor_budget = min(self.wage_offer * 2, liquid_alloc * 0.6)
+                if reserve_labor < min_labor_budget:
+                    # Reallocate from other budgets to ensure labor viability
+                    shortfall = min_labor_budget - reserve_labor
+                    available_to_reallocate = reserve_input_total + reserve_cap
+                    if available_to_reallocate > shortfall:
+                        # Proportionally reduce other budgets
+                        reduction_factor = shortfall / available_to_reallocate
+                        reserve_input_total *= (1 - reduction_factor)
+                        reserve_cap *= (1 - reduction_factor)
+                        reserve_labor = min_labor_budget
 
             # Set budgets
             self._budget_labor = reserve_labor
@@ -502,25 +521,33 @@ class FirmAgent(Agent):
 
         # ---------------- Damage recovery ----------------------------- #
         # ---------------- Wage adjustment ----------------------------- #
-        # Continuous wage update inspired by matching/Phillips-curve logic
+        # Improved wage adjustment based on firm's actual financial constraints
         tightness = 1.0 - getattr(self.model, "unemployment_rate_prev", 0.0)
-        # Determine direction based on type of labour constraint ----------------
+        
+        # Determine adjustment based on firm's ability to afford labor
         if self.labor_limited_last_step:
-            # If firm could not hire AND lacks cash for current wage → demand-limited
-            if self.money < self.wage_offer:
-                signal = -1.0  # wages too expensive relative to budget
+            # If firm was labor-constrained, check if it's due to budget or supply
+            if self.money < self.wage_offer * 2:  # Can't afford even 2 workers
+                # Demand-limited: cut wages aggressively
+                signal = -3.0  # Strong downward pressure when financially constrained
             else:
-                # Could afford but still lacked workers → supply-limited, raise wage
+                # Supply-limited: raise wages to attract workers
                 signal = 1.0
         else:
-            # Not labour-constrained → mild downward pressure
-            signal = -0.5
-        strength = 0.05  # Reduced responsiveness to prevent wage explosion
+            # Not labor-constrained: mild downward pressure
+            signal = -0.3
+        
+        # Increased responsiveness for wage cuts when firms can't afford labor
+        if signal < 0 and self.money < self.wage_offer:
+            strength = 0.2  # Faster adjustment when financially constrained
+        else:
+            strength = 0.05  # Normal adjustment otherwise
 
         adjustment = 1 + strength * signal * tightness
-        # Friction: wage cuts (adjustment < 1) dampened by 50 %
-        if adjustment < 1:
-            adjustment = 1 - (1 - adjustment) * 0.5
+        
+        # Remove dampening for wage cuts - let market forces work
+        # Only bound the adjustment to prevent extreme jumps
+        adjustment = max(0.5, min(adjustment, 1.5))
 
         self.wage_offer *= adjustment
         # Keep wage positive and bounded to prevent wage explosion
@@ -531,31 +558,42 @@ class FirmAgent(Agent):
         self.damage_factor = min(1.0, max(0.0, self.damage_factor))
 
         # ---------------- Dynamic pricing ----------------------------- #
-        # Improved pricing with demand feedback and bounds
-        # Consider both inventory levels and household purchasing power
+        # Improved pricing based on supply-demand dynamics
         
         # Get household purchasing power indicator
         total_household_money = sum(getattr(ag, "money", 0) for ag in self.model.agents if isinstance(ag, HouseholdAgent))
         avg_household_money = total_household_money / max(1, sum(1 for ag in self.model.agents if isinstance(ag, HouseholdAgent)))
         
-        # Calculate demand pressure based on inventory turnover
-        # If inventory is low relative to production, demand is high
+        # Calculate demand pressure based on inventory vs typical demand
+        # Use a rolling average of recent production to avoid zero-production trap
         recent_production = getattr(self, "production", 0)
-        if recent_production > 0:
-            inventory_ratio = self.inventory_output / max(1, recent_production)
-        else:
-            inventory_ratio = 1.0
-            
-        # Price adjustment based on demand pressure and affordability
-        if inventory_ratio < 0.5 and self.price < avg_household_money * 0.3:
-            # Low inventory and affordable → raise price slightly
-            self.price *= 1.01
-        elif inventory_ratio > 2.0 or self.price > avg_household_money * 0.5:
-            # High inventory or unaffordable → lower price
-            self.price *= 0.99
         
-        # Bound prices to prevent explosion and ensure market accessibility
-        self.price = float(max(0.01, min(self.price, avg_household_money * 1.2)))
+        # If we haven't produced recently but have customers trying to buy, raise prices
+        if recent_production == 0 and self.inventory_output <= 2:
+            # No production + low inventory = scarcity → raise prices
+            self.price *= 1.05
+        elif recent_production > 0:
+            # Normal supply-demand pricing
+            inventory_ratio = self.inventory_output / max(1, recent_production)
+            if inventory_ratio < 0.5 and self.price < avg_household_money * 0.3:
+                # Low inventory and affordable → raise price
+                self.price *= 1.02
+            elif inventory_ratio > 3.0 or self.price > avg_household_money * 0.5:
+                # High inventory or unaffordable → lower price
+                self.price *= 0.98
+        
+        # Special case: if we're cash-constrained, try to raise prices to improve margins
+        if self.money < self.wage_offer * 3 and self.price < avg_household_money * 2.0:
+            self.price *= 1.03  # Increase prices to improve cash flow
+        
+        # Only prevent truly extreme price explosions that would break the model
+        max_reasonable_price = avg_household_money * 1000.0  
+        self.price = float(max(0.01, min(self.price, max_reasonable_price)))
+        
+        # Additional safety: if price gets extremely high relative to affordability,
+        # add some gentle downward pressure (but still allow substantial growth)
+        if self.price > avg_household_money * 500.0:
+            self.price *= 0.999  # Very gentle correction for extreme prices
 
         # Reset per-step statistics
         self.production = 0.0
