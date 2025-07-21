@@ -117,27 +117,68 @@ def plot_network(g: nx.DiGraph, levels: Dict[int, int], outfile: Path):
 
     # -------------------------------------------------------------- #
     # Layout strategy:
-    #   • x-positions from spring_layout for aesthetic spacing.
     #   • y-positions fixed by (negative) trophic level so higher levels appear lower.
-    #   • This avoids an overly stretched horizontal diagram when many levels exist,
-    #     yet still groups firms of similar level together.
+    #   • x-positions arranged to prevent overlaps within each level using systematic spacing.
+    #   • This maintains trophic level grouping while ensuring no symbol overlaps.
     # -------------------------------------------------------------- #
 
-    # Initial spring layout (returns dict: node -> [x,y])
-    pos = nx.spring_layout(g, seed=42)
-
-    # Rescale and align Y coordinate by trophic level
+    # Group nodes by trophic level
     lvl_vals = list(levels.values()) or [0]
     max_lvl = max(lvl_vals)
-    for n in pos:
+    
+    # Group nodes by their trophic level
+    level_groups = {}
+    for n in g.nodes():
         lvl = levels.get(n, max_lvl + 1)
-        # Keep spring x, but stack y by level (higher level → lower y)
-        pos[n][1] = -float(lvl)
-        # Optional small jitter to reduce perfect overlaps when many nodes share level
-        pos[n][0] += 0.2 * (np.random.random() - 0.5)
+        if lvl not in level_groups:
+            level_groups[lvl] = []
+        level_groups[lvl].append(n)
+    
+    pos = {}
+    node_radius = 0.15  # Circle radius for overlap detection
+    circle_diameter = node_radius * 2  # Full circle diameter for buffer
+    vertical_spacing = 2.0  # Spacing between trophic levels to prevent vertical overlap
+    
+    # Determine horizontal extent based on maximum nodes in any level
+    max_nodes_per_level = max(len(nodes) for nodes in level_groups.values()) if level_groups else 1
+    horizontal_extent = max(8.0, max_nodes_per_level * circle_diameter * 3)  # Minimum 8 units wide
+    
+    # Process each trophic level
+    for lvl, nodes in level_groups.items():
+        y_pos = -float(lvl) * vertical_spacing  # Higher levels appear lower with more spacing
+        num_nodes = len(nodes)
+        
+        # Track positions used in this row only
+        row_positions = []
+        
+        # For each node, find a random non-overlapping position
+        for node in sorted(nodes):  # Sort for consistency
+            max_attempts = 100  # Prevent infinite loops
+            attempts = 0
+            
+            while attempts < max_attempts:
+                # Random x position within the full horizontal extent
+                x_pos = np.random.uniform(-horizontal_extent/2, horizontal_extent/2)
+                
+                # Check if this position overlaps with any existing position in this row
+                overlaps = any(abs(x_pos - existing_x) < circle_diameter for existing_x in row_positions)
+                
+                if not overlaps:
+                    row_positions.append(x_pos)
+                    pos[node] = [x_pos, y_pos]
+                    break
+                
+                attempts += 1
+            
+            # Fallback if we couldn't find a random position (shouldn't happen with reasonable node counts)
+            if attempts >= max_attempts:
+                # Use systematic spacing as fallback
+                fallback_x = -horizontal_extent/2 + len(row_positions) * circle_diameter * 1.5
+                row_positions.append(fallback_x)
+                pos[node] = [fallback_x, y_pos]
 
     nx.draw_networkx_edges(g, pos, alpha=0.3, arrows=True, width=0.5)
-    nx.draw_networkx_nodes(g, pos, node_color=colours, node_size=120, edgecolors="black", linewidths=0.3)
+    nx.draw_networkx_nodes(g, pos, node_color=colours, node_size=300, edgecolors="black", linewidths=0.5)
 
     # Label nodes with sector initial + id; white text for dark nodes
     if g.number_of_nodes() <= 120:
@@ -190,14 +231,16 @@ def plot_network(g: nx.DiGraph, levels: Dict[int, int], outfile: Path):
 
 
 def plot_world_map(g: nx.DiGraph, outfile: Path):
-    """Scatter firm locations on a world map coloured by sector."""
+    """Scatter firm locations on a world map coloured by sector with supply chain connections."""
 
     # Build DataFrame of nodes
     records = []
+    node_positions = {}  # Store positions for drawing arrows
     for n, data in g.nodes(data=True):
         lon = float(data.get("lon", 0))
         lat = float(data.get("lat", 0))
         records.append({"id": n, "sector": data.get("sector", ""), "lon": lon, "lat": lat})
+        node_positions[n] = (lon, lat)
 
     import pandas as pd
 
@@ -206,25 +249,70 @@ def plot_world_map(g: nx.DiGraph, outfile: Path):
     # World coastlines
     world = gpd.read_file(gpd.datasets.get_path("naturalearth_lowres"))
 
-    fig, ax = plt.subplots(figsize=(8, 4))
+    fig, ax = plt.subplots(figsize=(12, 8))  # Larger figure for better visibility
     world.plot(ax=ax, color="lightgrey", edgecolor="white", linewidth=0.3)
 
+    # Create color mapping first so we can use it for both nodes and edges
     sectors = sorted(df_nodes["sector"].unique())
     colors = plt.cm.tab10(np.linspace(0, 1, len(sectors)))
     color_map = {sec: colors[i] for i, sec in enumerate(sectors)}
+    
+    # Create node-to-color mapping for arrows
+    node_color_map = {}
+    for n, data in g.nodes(data=True):
+        sector = data.get("sector", "")
+        node_color_map[n] = color_map.get(sector, "gray")
+    
+    # Draw supply chain connections with supplier colors
+    # Create a simple graph for drawing edges individually
+    edge_graph = nx.DiGraph()
+    edge_graph.add_nodes_from(node_positions.keys())
+    
+    # Draw each edge with the supplier's color
+    for src, dst in g.edges():
+        if src in node_positions and dst in node_positions:
+            supplier_color = node_color_map.get(src, "gray")
+            
+            # Create temporary graph with just this edge
+            temp_graph = nx.DiGraph()
+            temp_graph.add_nodes_from([src, dst])
+            temp_graph.add_edge(src, dst)
+            
+            nx.draw_networkx_edges(
+                temp_graph,
+                pos=node_positions,
+                ax=ax,
+                arrows=True,
+                arrowstyle="-|>",
+                edge_color=supplier_color,
+                width=1.2,
+                arrowsize=20,
+                connectionstyle="arc3,rad=0.1",
+                alpha=0.7,
+                node_size=0,
+            )
+
+    # Plot firm locations colored by sector
 
     for sec in sectors:
         subset = df_nodes[df_nodes["sector"] == sec]
-        ax.scatter(subset["lon"], subset["lat"], color=color_map[sec], label=sec, edgecolors="black", s=40, alpha=0.9)
+        ax.scatter(subset["lon"], subset["lat"], color=color_map[sec], label=sec, 
+                  edgecolors="black", s=60, alpha=0.9, zorder=5)  # Higher zorder to appear above arrows
 
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
-    ax.set_title("Firm locations by sector")
-    ax.legend(title="Sector", fontsize=6, loc="lower left")
+    ax.set_title("Supply chain network: firm locations and connections")
+    ax.legend(title="Sector", fontsize=8, loc="lower left")
+    
+    # Add arrow legend
+    ax.text(0.02, 0.98, "→ Supply chain flow\n(supplier → buyer)", 
+           transform=ax.transAxes, fontsize=8, verticalalignment='top',
+           bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue", alpha=0.8))
+    
     plt.tight_layout()
-    plt.savefig(outfile)
+    plt.savefig(outfile, dpi=150, bbox_inches='tight')  # Higher DPI for better quality
     plt.close()
-    print(f"Saved map plot to {outfile}")
+    print(f"Saved map plot with connections to {outfile}")
 
 
 def main():
