@@ -40,30 +40,29 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 
 #### HouseholdAgent
 - **Labor Supply**: Each household supplies 1 unit of labor per step
-- **Employment Choice**: Maximizes `wage - distance_cost × distance` utility function
-- **Consumption**: Purchases goods from retail firms when affordable
+- **Employment Choice**: Maximizes `wage - distance_cost × distance` utility function within same-sector firms
+- **Consumption**: Spends 50% of money on goods, targeting 2-3 different trophic level ranges for variety
 - **Risk Behavior**: Monitors hazard within random radius (1-50 cells), relocates when max hazard > 0.1
 - **Job-Driven Migration**: Relocates closer to same-sector firms after 3 consecutive steps without work
-- **Sector Specialization**: Preferentially works for firms in the same sector
+- **Sector Specialization**: Only works for firms in the same sector, updates nearby firm list each step
 
 #### FirmAgent
 - **Production Technology**: Leontief production function with labor, material inputs, and capital
 - **Technical Coefficients**: 0.5 units each of labor, inputs, and capital per unit output
-- **Wage Setting**: Responsive wage adjustment based on financial constraints and labor market tightness
-- **Dynamic Pricing**: Supply-demand driven pricing with scarcity premiums and affordability constraints
-- **Input Procurement**: 
-  - **Retail firms**: Treat inputs as interchangeable, purchase from any supplier
-  - **Non-retail firms**: Independent input requirements from each connected supplier
-- **Capital Investment**: Purchase additional capital when capital-constrained
+- **Wage Setting**: Responsive wage adjustment - cuts wages aggressively when cash-constrained, raises when labor-limited
+- **Dynamic Pricing**: Supply-demand driven pricing with scarcity premiums when production stops or inventory low
+- **Input Procurement**: Independent input requirements from each connected supplier (all sectors)
+- **Budget Allocation**: Allocates 90% of cash across labor, inputs, and capital based on previous limiting factor
+- **Capital Investment**: Purchase additional capital when capital-constrained from cheapest available sellers
 - **Risk Adaptation**: Increase capital requirements by 20% when local hazard > 0.1, with firm-specific relaxation rates (20-50% per year)
 
 ### Economic Mechanics
 
 #### Labor Markets
-- Households choose employers within work radius based on wage-distance utility
-- **Improved wage dynamics**: Firms cut wages aggressively when financially constrained, raise wages when supply-limited
-- **Unemployment responsiveness**: High unemployment leads to rapid wage cuts, enabling firm survival
-- **Dampening removed**: Wage cuts now respond quickly to market conditions without artificial friction
+- Households choose employers within work radius based on wage-distance utility (same sector only)
+- **Responsive wage dynamics**: Firms cut wages aggressively when cash-constrained, raise when labor-limited
+- **Financial constraint detection**: Firms that can't afford 2+ workers trigger rapid wage cuts (20% adjustment)
+- **Market-driven adjustment**: Wage changes respond to unemployment rate and firm financial health
 
 #### Supply Chain Networks
 - **Random Networks**: Distance-weighted probabilistic connections between firms
@@ -72,17 +71,17 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 
 #### Production and Trade
 - **Leontief Technology**: Output limited by minimum of labor/coeff, inputs/coeff, capital/coeff
-- **Damage Factor**: Climate impacts reduce productive capacity with 50% annual recovery
-- **Enhanced Budget Allocation**: 
-  - Manufacturing firms prioritize labor budget when cash-constrained
-  - Minimum labor budget ensures firms can afford workers
-  - Budget reallocation from inputs/capital to labor when necessary
-- **Inventory Management**: Finished goods inventory with sector-specific initial allocations
-- **Realistic Pricing**: 
-  - Scarcity pricing: Prices rise when production stops or inventory is low
-  - Cash-flow pricing: Constrained firms raise prices to improve margins
-  - Affordability bounds: Gentle resistance to extreme prices (1000x household wealth ceiling)
-  - Market-driven inflation: Prices can grow naturally over decades without artificial constraints
+- **Damage Factor**: Climate impacts reduce productive capacity with 50% recovery per step
+- **Budget Allocation**: 
+  - Allocates 90% of cash across labor, inputs (per supplier), and capital
+  - Previous limiting factor gets 30% bonus weight in next step's allocation
+  - Each connected supplier gets independent input budget allocation
+- **Inventory Management**: Finished goods inventory with independent input tracking per supplier
+- **Dynamic Pricing**: 
+  - Scarcity pricing: +5% when no recent production and low inventory
+  - Supply-demand: +2% when inventory < 0.5× recent production, -2% when > 3×
+  - Cash-flow pricing: +3% when money < 3× wage offer
+  - Affordability bounds: Gentle correction at 1000× average household wealth
 
 ### Climate Hazard System
 
@@ -206,10 +205,10 @@ Specify firm locations and supply chains via JSON:
 
 ### Economic Parameters
 - **Technical Coefficients**: Labor (0.5), Input (0.5), Capital (0.5) per unit output
-- **Depreciation Rate**: 0.5% per step (≈2% annually for quarterly steps)
-- **Price Adjustment**: Supply-demand driven with scarcity premiums and realistic bounds (1000x household wealth ceiling)
-- **Wage Adjustment**: Responsive to financial constraints with rapid adjustment when cash-limited
-- **Budget Allocation**: Manufacturing firms prioritize labor when cash-constrained, with minimum labor budget guarantees
+- **Depreciation Rate**: 0.2% per step (≈0.8% annually for quarterly steps)
+- **Price Adjustment**: Supply-demand driven with scarcity premiums and upper bounds (1000× household wealth ceiling)
+- **Wage Adjustment**: Responsive to financial constraints with rapid adjustment (20%) when cash-limited
+- **Budget Allocation**: All firms allocate 90% of cash with previous limiting factor getting 30% bonus weight
 
 ### Risk Parameters
 - **Household Migration**: Threshold 0.1, monitoring radius 1-50 cells
