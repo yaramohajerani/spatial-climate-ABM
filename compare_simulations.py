@@ -389,9 +389,14 @@ def main():
         ax.legend(fontsize=7)
 
     # Fill grid ----------------------------------------------------------- #
+    subplot_labels = [chr(ord('a') + i) for i in range(rows * 2)]  # Generate a, b, c, ...
+    
     for r in range(rows):
         # Left metrics
         _plot_metric(metrics_left[r], axes_matrix[r][0])
+        # Add subplot label
+        axes_matrix[r][0].text(-0.1, 1.02, f'({subplot_labels[r * 2]})', transform=axes_matrix[r][0].transAxes, 
+                              fontsize=12, fontweight='bold', va='bottom', ha='right')
 
         # Right metrics
         if metrics_right[r] not in ("Bottleneck_Hazard", "Bottleneck_Baseline"):
@@ -401,6 +406,12 @@ def main():
             ax_bt = axes_matrix[r][1]
 
             steps = df_combined["Step"].unique()
+            
+            # Convert steps to years for x-axis if start_year is provided
+            if args.start_year:
+                x_vals = args.start_year + steps.astype(int) / args.steps_per_year
+            else:
+                x_vals = steps
 
             def _pct_arrays(df_sub):
                 arrs = {}
@@ -423,7 +434,7 @@ def main():
                 label_suffix = "(Base)"
                 alpha_val = 0.7
 
-            ax_bt.stackplot(steps, *pct_arrays,
+            ax_bt.stackplot(x_vals, *pct_arrays,
                             labels=[f"Labour {label_suffix}", f"Capital {label_suffix}", f"Input {label_suffix}"],
                             colors=["#1f77b4", "#d62728", "#2ca02c"], alpha=alpha_val)
 
@@ -432,6 +443,10 @@ def main():
             ax_bt.set_xlabel(x_col)
             ax_bt.set_ylim(0, 100)
             ax_bt.legend(fontsize=6, ncol=3)
+            
+        # Add subplot label for right column
+        axes_matrix[r][1].text(-0.1, 1.02, f'({subplot_labels[r * 2 + 1]})', transform=axes_matrix[r][1].transAxes, 
+                              fontsize=12, fontweight='bold', va='bottom', ha='right')
 
     fig.tight_layout()
     Path(args.out).with_suffix(Path(args.out).suffix).parent.mkdir(parents=True, exist_ok=True)
