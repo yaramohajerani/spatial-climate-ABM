@@ -31,7 +31,8 @@ class HouseholdAgent(Agent):
         sector: str = "manufacturing",
     ) -> None:
         super().__init__(model)
-
+        
+        # Note: pos is handled by Mesa's grid.place_agent(), not set here
         self.money: float = money
         self.labor_supply: float = labor_supply
         self.capital: float = 1.0
@@ -245,6 +246,12 @@ class FirmAgent(Agent):
     LABOR_COEFF: float = 0.5  # less than 1 → higher productivity
     INPUT_COEFF: float = 0.5
     CAPITAL_COEFF: float = 0.5  # capital units per output unit
+    
+    # Learning parameters
+    LEARNING_ENABLED: bool = True
+    MEMORY_LENGTH: int = 10  # steps to track for performance evaluation
+    MUTATION_RATE: float = 0.05  # standard deviation for strategy mutations
+    ADAPTATION_FREQUENCY: int = 5  # steps between strategy evaluations
 
     def __init__(
         self,
@@ -254,7 +261,8 @@ class FirmAgent(Agent):
         capital_stock: float = 100.0,
     ) -> None:
         super().__init__(model)
-
+        
+        # Note: pos is handled by Mesa's grid.place_agent(), not set here
         self.sector = sector
         self.capital_stock = capital_stock
 
@@ -305,6 +313,107 @@ class FirmAgent(Agent):
         self._budget_capital: float = 0.0
         self._budget_labor: float = 0.0
         self._budget_input_per_supplier: dict[int, float] = {} # New placeholder for independent input budgets
+        
+        # Learning system components
+        learning_config = getattr(model, 'learning_config', {})
+        self.learning_enabled: bool = getattr(model, 'firm_learning_enabled', self.LEARNING_ENABLED)
+        self.memory_length: int = learning_config.get('memory_length', self.MEMORY_LENGTH)
+        self.mutation_rate: float = learning_config.get('mutation_rate', self.MUTATION_RATE)  
+        self.adaptation_frequency: int = learning_config.get('adaptation_frequency', self.ADAPTATION_FREQUENCY)
+        self.performance_history: list[dict] = []  # Track recent performance metrics
+        self.strategy: dict[str, float] = self._initialize_strategy()
+        self.fitness_score: float = 0.0
+        self.steps_since_adaptation: int = 0
+        
+        # Survival tracking for evolutionary pressure
+        self.birth_step: int = getattr(model, 'current_step', 0)
+        self.survival_time: int = 0
+
+    # ---------------- Learning System Methods ----------------------------- #
+    def _initialize_strategy(self) -> dict[str, float]:
+        """Initialize evolvable strategy parameters with small random variations."""
+        return {
+            'budget_labor_weight': self.random.uniform(0.8, 1.2),      # multiplier for labor budget allocation
+            'budget_input_weight': self.random.uniform(0.8, 1.2),      # multiplier for input budget allocation  
+            'budget_capital_weight': self.random.uniform(0.8, 1.2),    # multiplier for capital budget allocation
+            'risk_sensitivity': self.random.uniform(0.5, 1.5),         # hazard response aggressiveness
+            'price_aggressiveness': self.random.uniform(0.5, 1.5),     # pricing adjustment magnitude
+            'wage_responsiveness': self.random.uniform(0.5, 1.5),      # wage adjustment responsiveness
+        }
+    
+    def _record_performance(self) -> None:
+        """Track current performance metrics for learning evaluation."""
+        current_perf = {
+            'step': getattr(self.model, 'current_step', 0),
+            'money': self.money,
+            'capital_stock': self.capital_stock,
+            'production': self.production,
+            'inventory': self.inventory_output,
+            'limiting_factor': getattr(self, 'limiting_factor', ''),
+            'wage_offer': self.wage_offer,
+            'price': self.price,
+        }
+        
+        self.performance_history.append(current_perf)
+        
+        # Keep only recent history
+        if len(self.performance_history) > self.memory_length:
+            self.performance_history = self.performance_history[-self.memory_length:]
+    
+    def _evaluate_fitness(self) -> float:
+        """Calculate fitness based on recent performance."""
+        if len(self.performance_history) < 2:
+            return 0.0
+        
+        recent = self.performance_history[-min(5, len(self.performance_history)):]
+        
+        # Components of fitness
+        money_growth = (recent[-1]['money'] - recent[0]['money']) / max(1.0, recent[0]['money'])
+        production_consistency = 1.0 - np.std([r['production'] for r in recent]) / max(1.0, np.mean([r['production'] for r in recent]))
+        survival_bonus = min(1.0, self.survival_time / 20.0)  # bonus for surviving longer
+        
+        # Penalize extreme limiting factors
+        recent_factors = [r['limiting_factor'] for r in recent]
+        factor_diversity = len(set(recent_factors)) / max(1, len(recent_factors))
+        
+        # Combined fitness score
+        fitness = (
+            0.4 * np.tanh(money_growth * 2) +      # growth but diminishing returns
+            0.3 * production_consistency +          # stable production
+            0.2 * survival_bonus +                  # longevity reward
+            0.1 * factor_diversity                  # balanced resource utilization
+        )
+        
+        return max(0.0, fitness)
+    
+    def _adapt_strategy(self) -> None:
+        """Adjust strategy based on recent performance."""
+        if not self.learning_enabled or len(self.performance_history) < 3:
+            return
+        
+        current_fitness = self._evaluate_fitness()
+        
+        # Simple hill-climbing: if fitness improved, reinforce recent changes
+        # If fitness declined, try random mutations
+        if hasattr(self, '_previous_fitness'):
+            if current_fitness > self._previous_fitness:
+                # Success: make smaller adjustments in same direction
+                mutation_strength = self.MUTATION_RATE * 0.5
+            else:
+                # Failure: try bigger random changes
+                mutation_strength = self.MUTATION_RATE * 2.0
+        else:
+            mutation_strength = self.MUTATION_RATE
+        
+        # Mutate strategy parameters using configured mutation rate
+        for key in self.strategy:
+            if self.random.random() < 0.3:  # 30% chance to mutate each parameter
+                self.strategy[key] *= (1.0 + self.random.gauss(0, mutation_strength))
+                # Keep within reasonable bounds
+                self.strategy[key] = max(0.1, min(3.0, self.strategy[key]))
+        
+        self._previous_fitness = current_fitness
+        self.fitness_score = current_fitness
 
     # ---------------- Interaction helpers ----------------------------- #
     def hire_labor(self, household: HouseholdAgent, wage: float) -> bool:
@@ -426,14 +535,15 @@ class FirmAgent(Agent):
         total_input_weight = sum(input_weights.values())
         
         weights = {
-            "labor": self.LABOR_COEFF * self.wage_offer,
-            "input_total": total_input_weight,
-            "capital": cap_weight,
+            "labor": self.LABOR_COEFF * self.wage_offer * self.strategy.get('budget_labor_weight', 1.0),
+            "input_total": total_input_weight * self.strategy.get('budget_input_weight', 1.0),
+            "capital": cap_weight * self.strategy.get('budget_capital_weight', 1.0),
         }
         
-        # Prioritise last limiting factor
+        # Prioritise last limiting factor (learned response)
         if lim in weights and weights[lim] > 0:
-            weights[lim] *= 1.3
+            priority_multiplier = 1.0 + 0.3 * self.strategy.get('budget_' + lim + '_weight', 1.0)
+            weights[lim] *= priority_multiplier
         
         total_w = sum(weights.values())
         if total_w <= 0:
@@ -485,11 +595,12 @@ class FirmAgent(Agent):
             # Not labor-constrained: mild downward pressure
             signal = -0.3
         
-        # Increased responsiveness for wage cuts when firms can't afford labor
+        # Increased responsiveness for wage cuts when firms can't afford labor (learned behavior)
+        base_strength = 0.05 * self.strategy.get('wage_responsiveness', 1.0)
         if signal < 0 and self.money < self.wage_offer:
-            strength = 0.2  # Faster adjustment when financially constrained
+            strength = base_strength * 4  # Faster adjustment when financially constrained
         else:
-            strength = 0.05  # Normal adjustment otherwise
+            strength = base_strength  # Normal adjustment otherwise
 
         adjustment = 1 + strength * signal * tightness
         
@@ -516,19 +627,22 @@ class FirmAgent(Agent):
         # Use a rolling average of recent production to avoid zero-production trap
         recent_production = getattr(self, "production", 0)
         
+        # Learned pricing aggressiveness
+        price_mult = self.strategy.get('price_aggressiveness', 1.0)
+        
         # If we haven't produced recently but have customers trying to buy, raise prices
         if recent_production == 0 and self.inventory_output <= 2:
             # No production + low inventory = scarcity → raise prices
-            self.price *= 1.05
+            self.price *= (1.0 + 0.05 * price_mult)
         elif recent_production > 0:
-            # Normal supply-demand pricing
+            # Normal supply-demand pricing with learned aggressiveness
             inventory_ratio = self.inventory_output / max(1, recent_production)
             if inventory_ratio < 0.5 and self.price < avg_household_money * 0.3:
                 # Low inventory and affordable → raise price
-                self.price *= 1.02
+                self.price *= (1.0 + 0.02 * price_mult)
             elif inventory_ratio > 3.0 or self.price > avg_household_money * 0.5:
                 # High inventory or unaffordable → lower price
-                self.price *= 0.98
+                self.price *= (1.0 - 0.02 * price_mult)
         
         # Special case: if we're cash-constrained, try to raise prices to improve margins
         if self.money < self.wage_offer * 3 and self.price < avg_household_money * 2.0:
@@ -547,15 +661,19 @@ class FirmAgent(Agent):
         self.production = 0.0
         self.consumption = 0.0
 
-        # ---------------- Hazard-driven capital adjustment ------------ #
+        # ---------------- Hazard-driven capital adjustment (learned response) ------------ #
         local_hazard = self._max_hazard_within_radius(self.risk_radius)
+        risk_sensitivity = self.strategy.get('risk_sensitivity', 1.0)
+        
         if local_hazard > 0.1:
-            # Increase capital requirement by 20 % whenever a significant event occurs
-            self.capital_coeff *= 1.2
+            # Increase capital requirement based on learned risk sensitivity
+            capital_increase = 1.0 + (0.2 * risk_sensitivity)
+            self.capital_coeff *= capital_increase
         else:
-            # Gradually relax back towards original coefficient
+            # Gradually relax back towards original coefficient (faster if less risk-sensitive)
             if self.capital_coeff > self.original_capital_coeff:
-                decay = (self.capital_coeff - self.original_capital_coeff) * self.relaxation_ratio
+                adjusted_relaxation = self.relaxation_ratio * (2.0 - risk_sensitivity)  # less sensitive = faster relaxation
+                decay = (self.capital_coeff - self.original_capital_coeff) * adjusted_relaxation
                 self.capital_coeff = max(self.original_capital_coeff, self.capital_coeff - decay)
 
         labour_units = self._labor_available()
@@ -631,6 +749,16 @@ class FirmAgent(Agent):
         self.last_hired_labor = len(self.employees)
         self.labor_limited_last_step = (self.limiting_factor == "labor")
         self.employees.clear()
+        
+        # ---------------- Learning system updates ----------------------- #
+        self.survival_time += 1
+        self._record_performance()
+        self.steps_since_adaptation += 1
+        
+        # Periodically evaluate and adapt strategy
+        if self.steps_since_adaptation >= self.adaptation_frequency:
+            self._adapt_strategy()
+            self.steps_since_adaptation = 0
 
         # ---------------- Capital depreciation ------------------------ #
         DEPR = 0.002  # 0.2 % per step (quarterly), roughly 0.8 % annually - reduced to prevent wealth drain

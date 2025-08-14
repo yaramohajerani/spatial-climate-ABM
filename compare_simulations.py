@@ -104,6 +104,9 @@ def _merge_param_file(args):  # noqa: ANN001
     # topology --------------------------------------------------------
     if not args.topology and data.get("topology"):
         args.topology = str(data["topology"])
+    
+    # learning parameters ---------------------------------------------
+    args.learning_params = data.get("learning", {})
 
 
 def run_simulation(model: EconomyModel, n_steps: int):
@@ -117,6 +120,10 @@ def main():
 
     # Merge optional config file
     _merge_param_file(args)
+    
+    # Ensure learning_params exists even if no param file
+    if not hasattr(args, "learning_params"):
+        args.learning_params = {}
 
     if not args.simulation_output and not args.rp_file:
         raise SystemExit("Either --rp-file or --simulation_output must be provided.")
@@ -137,6 +144,7 @@ def main():
             firm_topology_path=args.topology,
             start_year=args.start_year,
             steps_per_year=args.steps_per_year,
+            learning_params=args.learning_params,
         )
         df_hazard, model_haz_ref = run_simulation(model_hazard, args.steps)
         df_hazard["Scenario"] = "With Hazard"
@@ -152,6 +160,7 @@ def main():
             firm_topology_path=args.topology,
             start_year=args.start_year,
             steps_per_year=args.steps_per_year,
+            learning_params=args.learning_params,
         )
         df_base, model_base_ref = run_simulation(model_baseline, args.steps)
         df_base["Scenario"] = "No Hazard"
@@ -216,6 +225,8 @@ def main():
         "Labor_Limited_Firms": "count",
         "Capital_Limited_Firms": "count",
         "Input_Limited_Firms": "count",
+        "Average_Firm_Fitness": "Score (0–1)",
+        "Firm_Replacements": "count",
     }
 
     # ---- Metric selection (5 left, 5 right) --------------------------- #
@@ -226,6 +237,7 @@ def main():
         "Firm_Capital",
         "Mean_Price",
         "Average_Risk",
+        "Average_Firm_Fitness",
     ]
 
     metrics_right = [
@@ -233,6 +245,7 @@ def main():
         "Household_Consumption",
         "Household_Wealth",
         "Mean_Wage",
+        "Firm_Replacements",
         "Bottleneck_Hazard",
         "Bottleneck_Baseline",
     ]
@@ -269,6 +282,11 @@ def main():
         "Firm_Consumption": "consumption",
         "Firm_Wealth": "money",
         "Firm_Capital": "capital",
+    }
+    
+    # Mapping for agent-level learning metrics
+    firm_learning_metric_map = {
+        "Average_Firm_Fitness": "fitness",
     }
 
     household_metric_map = {
@@ -331,6 +349,28 @@ def main():
             ax.set_ylabel("trophic level")
         elif metric_name in firm_metric_map:
             agent_col = firm_metric_map[metric_name]
+            # Add mean lines for each scenario
+            for scenario in ["With Hazard", "No Hazard"]:
+                df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
+                mean_grp = df_scen.groupby("Step")[agent_col].mean()
+                if not mean_grp.empty:
+                    x_vals = mean_grp.index if not args.start_year else args.start_year + mean_grp.index.astype(int)/args.steps_per_year
+                    ls = "-" if scenario=="With Hazard" else "--"
+                    lc = 'black' if scenario=='With Hazard' else 'dimgray'
+                    ax.plot(x_vals, mean_grp.values, color=lc, linewidth=2, linestyle=ls, label=f"Mean – {scenario}")
+            # Sector breakdown
+            for scenario in ["With Hazard", "No Hazard"]:
+                df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
+                for idx_sec, sector in enumerate(unique_sectors):
+                    grp = df_scen[df_scen["sector"] == sector].groupby("Step")[agent_col].mean()
+                    if grp.empty:
+                        continue
+                    x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int)/args.steps_per_year
+                    ls = "-" if scenario=="With Hazard" else "--"
+                    ax.plot(x_vals, grp.values, color=sec_colors[idx_sec], linestyle=ls, alpha=0.6, label=f"{sector} – {scenario}")
+        elif metric_name in firm_learning_metric_map:
+            # Learning metrics (fitness, etc.) - agent level
+            agent_col = firm_learning_metric_map[metric_name]
             # Add mean lines for each scenario
             for scenario in ["With Hazard", "No Hazard"]:
                 df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]

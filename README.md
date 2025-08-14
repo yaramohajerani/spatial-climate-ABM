@@ -13,9 +13,17 @@ The model simulates economic agents (households and firms) on a spatial grid der
 - **Economic Markets**: Endogenous wages, dynamic pricing, labor mobility, and supply chain networks
 - **Climate Integration**: CLIMADA-based damage functions with independent hazard sampling per grid cell
 - **Adaptive Behaviors**: Risk-based household migration and firm capital adjustments
+- **Firm Learning System**: Evolutionary strategy-based learning for budget allocation, pricing, wage setting, and risk adaptation
 - **Multiple Sectors**: Agriculture, manufacturing, wholesale, retail, services, and commodity sectors
 
 ### Recent Model Improvements
+
+**Firm Learning System (08/25)**:
+- **Evolutionary Strategy Learning**: Firms evolve strategies for budget allocation, pricing, wage setting, and risk adaptation
+- **Performance-Based Selection**: Failed firms are replaced with mutated versions of successful firms
+- **Adaptive Decision Making**: 6 key parameters control firm behavior: budget weights, risk sensitivity, pricing aggressiveness, wage responsiveness
+- **Fitness Evaluation**: Multi-component scoring based on money growth, production consistency, survival time, and resource balance
+- **Population Dynamics**: Bankruptcy prevention through learned optimal behaviors, with up to 25% of firms replaced per step
 
 **Enhanced Economic Realism (07/25)**:
 - **Responsive Wage Dynamics**: Wages now adjust quickly to financial constraints - firms cut wages aggressively when cash-limited, preventing artificial firm failures
@@ -28,6 +36,7 @@ The model simulates economic agents (households and firms) on a spatial grid der
 - High unemployment → Rapid wage cuts → Firm survival
 - Low production → Higher prices → Better firm cash flow
 - Cash constraints → Labor budget prioritization → Continued employment
+- Learning pressure → Strategy evolution → Improved adaptation
 - Market forces → Natural price/wage equilibrium → Sustainable growth
 
 ## Core Architecture
@@ -49,12 +58,13 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 #### FirmAgent
 - **Production Technology**: Leontief production function with labor, material inputs, and capital
 - **Technical Coefficients**: 0.5 units each of labor, inputs, and capital per unit output
-- **Wage Setting**: Responsive wage adjustment - cuts wages aggressively when cash-constrained, raises when labor-limited
-- **Dynamic Pricing**: Supply-demand driven pricing with scarcity premiums when production stops or inventory low
+- **Learning System**: Evolutionary strategy learning with 6 adaptive parameters and fitness-based selection
+- **Wage Setting**: Learned wage responsiveness - cuts wages aggressively when cash-constrained, raises when labor-limited
+- **Dynamic Pricing**: Learned pricing aggressiveness with supply-demand driven adjustments and scarcity premiums
 - **Input Procurement**: Independent input requirements from each connected supplier (all sectors)
-- **Budget Allocation**: Allocates 90% of cash across labor, inputs, and capital based on previous limiting factor
+- **Budget Allocation**: Learned budget weights across labor, inputs, and capital based on previous limiting factor and strategy evolution
 - **Capital Investment**: Purchase additional capital when capital-constrained from cheapest available sellers
-- **Risk Adaptation**: Increase capital requirements by 20% when local hazard > 0.1, with firm-specific relaxation rates (20-50% per year)
+- **Risk Adaptation**: Learned risk sensitivity - increase capital requirements when local hazard > 0.1, with firm-specific relaxation rates
 
 ### Economic Mechanics
 
@@ -69,15 +79,30 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 - **Custom Topology**: JSON-specified firm locations and directed supply relationships
 - **Trophic Levels**: Computed network hierarchy determines production sequencing and initial inventory allocation
 
+#### Firm Learning System
+- **Learning Architecture**: Evolutionary strategy with performance tracking and fitness-based selection
+- **Strategy Parameters**: 
+  - Budget allocation weights (labor, inputs, capital): 0.8-1.2× base allocation
+  - Risk sensitivity: 0.5-1.5× hazard response aggressiveness  
+  - Price aggressiveness: 0.5-1.5× pricing adjustment magnitude
+  - Wage responsiveness: 0.5-1.5× wage adjustment speed
+- **Performance Tracking**: 10-step memory of money, production, capital, and limiting factors
+- **Fitness Evaluation**: Weighted combination of money growth (40%), production consistency (30%), survival bonus (20%), resource balance (10%)
+- **Strategy Adaptation**: Hill-climbing with mutation every 5 steps - reinforce successful changes, randomize after failures
+- **Population Dynamics**: Failed firms (money < 1.0 or 50% wealth decline) replaced by mutated offspring of successful firms
+- **Evolutionary Pressure**: Up to 25% of firms replaced per step after step 5, with fitness-weighted parent selection
+
 #### Production and Trade
 - **Leontief Technology**: Output limited by minimum of labor/coeff, inputs/coeff, capital/coeff
 - **Damage Factor**: Climate impacts reduce productive capacity with 50% recovery per step
 - **Budget Allocation**: 
   - Allocates 90% of cash across labor, inputs (per supplier), and capital
-  - Previous limiting factor gets 30% bonus weight in next step's allocation
+  - Learned budget weights modify base allocation (0.8-1.2× multipliers)
+  - Previous limiting factor gets bonus weight scaled by learned responsiveness
   - Each connected supplier gets independent input budget allocation
 - **Inventory Management**: Finished goods inventory with independent input tracking per supplier
 - **Dynamic Pricing**: 
+  - Learned price aggressiveness scales all adjustments (0.5-1.5× multiplier)
   - Scarcity pricing: +5% when no recent production and low inventory
   - Supply-demand: +2% when inventory < 0.5× recent production, -2% when > 3×
   - Cash-flow pricing: +3% when money < 3× wage offer
@@ -131,7 +156,15 @@ Create a JSON parameter file for complex simulations:
   "seed": 42,
   "start_year": 2020,
   "steps_per_year": 4,
-  "topology": "sample_firm_topology.json"
+  "topology": "sample_firm_topology.json",
+  "learning": {
+    "enabled": true,
+    "memory_length": 10,
+    "mutation_rate": 0.05,
+    "adaptation_frequency": 5,
+    "min_money_survival": 1.0,
+    "replacement_frequency": 10
+  }
 }
 ```
 
@@ -182,15 +215,15 @@ Specify firm locations and supply chains via JSON:
 ## Output Files
 
 ### Standard Outputs
-- **simulation_results.csv**: Model-level time series (production, wealth, wages, prices, risk)
-- **simulation_agents.csv**: Agent-level panel data (money, capital, production, sector, type)
+- **simulation_results.csv**: Model-level time series (production, wealth, wages, prices, risk, average fitness, firm replacements)
+- **simulation_agents.csv**: Agent-level panel data (money, capital, production, sector, type, fitness, survival_time)
 - **applied_events.csv**: Log of hazard events (step, event_name, event_id)
-- **simulation_timeseries.png**: Multi-panel plots of key metrics
+- **simulation_timeseries.png**: Multi-panel plots of key metrics including learning system dynamics
 - **dashboard_timeseries.png**: Composite plots from interactive dashboard
 
 ### Comparison Analysis
-- **comparison_plot.png**: Side-by-side hazard vs baseline scenarios
-- **comparison_plot_agents.csv**: Agent-level data for both scenarios
+- **comparison_plot.png**: Side-by-side hazard vs baseline scenarios including firm fitness and replacement dynamics
+- **comparison_plot_agents.csv**: Agent-level data for both scenarios with learning metrics
 
 ## Model Parameters
 
@@ -212,8 +245,16 @@ Specify firm locations and supply chains via JSON:
 
 ### Risk Parameters
 - **Household Migration**: Threshold 0.1, monitoring radius 1-50 cells
-- **Firm Adaptation**: Capital requirement increase 20%, relaxation 20-50% per year
+- **Firm Adaptation**: Capital requirement increase 20%, relaxation 20-50% per year (modulated by learned risk sensitivity)
 - **Relocation Cost**: 10% of wealth and capital lost during migration
+
+### Learning Parameters
+- **Learning System**: Enabled/disabled via `learning.enabled` (default: true)
+- **Memory Length**: Steps of performance history tracked (default: 10)
+- **Mutation Rate**: Standard deviation for strategy mutations (default: 0.05)
+- **Adaptation Frequency**: Steps between strategy evaluations (default: 5)  
+- **Survival Threshold**: Minimum money level before firm failure (default: 1.0)
+- **Replacement Frequency**: Steps between evolutionary replacement cycles (default: 10)
 
 ### Climate Parameters
 - **Recovery Rate**: 50% of damage factor recovered per step

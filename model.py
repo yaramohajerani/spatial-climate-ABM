@@ -41,6 +41,7 @@ class EconomyModel(Model):
         steps_per_year: int = 4,
         firm_topology_path: str | None = None,
         apply_hazard_impacts: bool = True,
+        learning_params: dict | None = None,
     ) -> None:  # noqa: D401
         super().__init__(seed=seed)
 
@@ -52,6 +53,12 @@ class EconomyModel(Model):
         # If False, hazards are still sampled to preserve random draws but
         # impacts (capital loss, damage, relocation triggers) are disabled.
         self.apply_hazard_impacts: bool = apply_hazard_impacts
+        
+        # Learning system parameters
+        self.learning_config = learning_params or {}
+        self.firm_learning_enabled: bool = self.learning_config.get('enabled', True)
+        self.min_money_survival: float = self.learning_config.get('min_money_survival', 1.0)
+        self.replacement_frequency: int = self.learning_config.get('replacement_frequency', 10)
 
         # Calendar mapping -------------------------------------------------- #
         self.start_year: int = start_year
@@ -191,6 +198,8 @@ class EconomyModel(Model):
                 "Input_Limited_Firms": lambda m: sum(
                     1 for ag in m.agents if isinstance(ag, FirmAgent) and getattr(ag, "limiting_factor", "") == "input"
                 ),
+                "Average_Firm_Fitness": lambda m: np.mean([ag.fitness_score for ag in m.agents if isinstance(ag, FirmAgent)]),
+                "Firm_Replacements": lambda m: getattr(m, 'total_firm_replacements', 0),
             },
             agent_reporters={
                 "money": lambda a: getattr(a, "money", np.nan),
@@ -205,6 +214,8 @@ class EconomyModel(Model):
                 "wage": lambda a: getattr(a, "wage_offer", np.nan),
                 "sector": lambda a: getattr(a, "sector", ""),
                 "type": lambda a: type(a).__name__,
+                "fitness": lambda a: getattr(a, "fitness_score", np.nan),
+                "survival_time": lambda a: getattr(a, "survival_time", 0),
             },
         )
 
@@ -267,6 +278,11 @@ class EconomyModel(Model):
 
         # Labour market tracker: unemployment rate from previous step (0-1)
         self.unemployment_rate_prev: float = 0.0
+        
+        # Learning system tracking
+        self.steps_since_replacement: int = 0
+        self.total_firm_replacements: int = 0
+        self._debug_recent_replacements: list = []  # Track replaced agent IDs for debugging
 
     # --------------------------------------------------------------------- #
     #                             INITIALISERS                               #
@@ -281,12 +297,9 @@ class EconomyModel(Model):
         """
 
         try:
-            world = gpd.read_file(gpd.datasets.get_path("naturalearth_lowres"))
+            world = gpd.read_file("./data/ne_110m_admin_0_countries")
             # Exclude Antarctica so agents are not spawned on that continent
-            if "name" in world.columns:
-                world = world[world["name"] != "Antarctica"]
-            elif "continent" in world.columns:
-                world = world[world["continent"] != "Antarctica"]
+            world = world[world["CONTINENT"] != "Antarctica"]
         except Exception:  # pragma: no cover – dataset missing / offline env
             # If the Natural Earth dataset is unavailable fall back to using all
             # cells to avoid crashing, but log a warning so the user is aware.
@@ -579,8 +592,108 @@ class EconomyModel(Model):
         if firm_wages:
             self.mean_wage = float(np.mean(firm_wages))
 
+        # ---------------- Evolutionary pressure (learning system) ---- #
+        self.steps_since_replacement += 1
+        if self.firm_learning_enabled and self.steps_since_replacement >= self.replacement_frequency:
+            self._apply_evolutionary_pressure()
+            self.steps_since_replacement = 0
+        
         # Collect outputs after wage update so next step sees new wage
         self.datacollector.collect(self)
+
+    # --------------------------------------------------------------------- #
+    #                         LEARNING SYSTEM METHODS                        #
+    # --------------------------------------------------------------------- #
+    def _apply_evolutionary_pressure(self) -> None:
+        """Replace failed firms with mutated versions of successful ones."""
+        firms = [ag for ag in self.agents if isinstance(ag, FirmAgent)]
+        if len(firms) < 2:
+            return  # need at least 2 firms for evolution
+        
+        # Skip early in simulation when firms don't have enough history
+        if self.current_step < 5:
+            return
+        
+        # Identify failed firms (very low money or negative growth)
+        failed_firms = []
+        for firm in firms:
+            if firm.money < self.min_money_survival:
+                failed_firms.append(firm)
+            elif len(firm.performance_history) >= 5:
+                # Check for persistent decline
+                recent_money = [p['money'] for p in firm.performance_history[-5:]]
+                if len(recent_money) >= 2 and recent_money[-1] < recent_money[0] * 0.5:
+                    failed_firms.append(firm)
+        
+        if not failed_firms:
+            return  # no firms to replace
+        
+        # Limit replacements per step to prevent excessive processing
+        max_replacements = max(1, len(firms) // 4)  # replace at most 25% of firms per step
+        failed_firms = failed_firms[:max_replacements]
+        
+        # Identify successful firms (high fitness scores)
+        successful_firms = [f for f in firms if f not in failed_firms and f.fitness_score > 0.3]
+        if not successful_firms:
+            successful_firms = [f for f in firms if f not in failed_firms]  # fallback to non-failed
+        
+        if not successful_firms:
+            return  # pathological case
+        
+        # Replace failed firms with mutated versions of successful ones
+        for failed_firm in failed_firms:
+            # Choose parent based on fitness (weighted selection)
+            if len(successful_firms) == 1:
+                parent = successful_firms[0]
+            else:
+                weights = [f.fitness_score + 0.1 for f in successful_firms]  # add small baseline
+                parent = self.random.choices(successful_firms, weights=weights, k=1)[0]
+            
+            # Store the position before any modifications
+            failed_pos = failed_firm.pos
+            
+            # Create new firm with inherited strategy (don't place on grid yet)
+            new_firm = FirmAgent(
+                model=self,
+                pos=failed_pos,  # Mesa will ignore this, but keeping for consistency
+                sector=failed_firm.sector,
+                capital_stock=100.0  # reset capital
+            )
+            
+            # Inherit parent's strategy with mutations
+            new_firm.strategy = parent.strategy.copy()
+            for key in new_firm.strategy:
+                if self.random.random() < 0.5:  # 50% chance to mutate each parameter
+                    mutation = self.random.gauss(0, 0.1)  # 10% std deviation
+                    new_firm.strategy[key] *= (1.0 + mutation)
+                    new_firm.strategy[key] = max(0.1, min(3.0, new_firm.strategy[key]))
+            
+            # Inherit connections from failed firm
+            new_firm.connected_firms = failed_firm.connected_firms.copy()
+            
+            # Update all agent references BEFORE removing failed_firm from grid
+            # This ensures failed_firm still has a valid position during updates
+            all_agents = list(self.agents)  # create a copy
+            for ag in all_agents:
+                if isinstance(ag, HouseholdAgent) and failed_firm in ag.nearby_firms:
+                    ag.nearby_firms.remove(failed_firm)
+                    ag.nearby_firms.append(new_firm)
+                elif isinstance(ag, FirmAgent) and failed_firm in ag.connected_firms:
+                    ag.connected_firms.remove(failed_firm)
+                    ag.connected_firms.append(new_firm)
+            
+            # Track replacement for debugging
+            self._debug_recent_replacements.append(failed_firm.unique_id)
+            if len(self._debug_recent_replacements) > 20:
+                self._debug_recent_replacements = self._debug_recent_replacements[-20:]
+            
+            # Now safely remove from grid AND model, then place new agent
+            self.grid.remove_agent(failed_firm)
+            self.agents.remove(failed_firm)  # CRITICAL: Also remove from model's agent list
+            self.grid.place_agent(new_firm, failed_pos)
+            
+            self.total_firm_replacements += 1
+            print(f"[EVOLUTION] Step {self.current_step}: Replaced failed firm {failed_firm.unique_id} with mutated offspring {new_firm.unique_id} (total: {self.total_firm_replacements})")
 
     # --------------------------------------------------------------------- #
     #                            EXPORT HELPERS                              #
@@ -675,6 +788,15 @@ class EconomyModel(Model):
 
         # Apply combined loss to agents
         for ag in self.agents:
+            if ag.pos is None:
+                # Debug info: check if this agent was recently replaced
+                agent_info = f"Agent {ag.unique_id} (type: {type(ag).__name__})"
+                recent_replacements = getattr(self, '_debug_recent_replacements', [])
+                was_replaced = ag.unique_id in recent_replacements
+                raise ValueError(f"{agent_info} has None position. "
+                               f"Recently replaced: {was_replaced}. "
+                               f"Recent replacements: {recent_replacements[-5:]}. "
+                               f"This likely indicates a bug in agent creation or placement.")
             x, y = ag.pos
             idx = y * len(self.lon_vals) + x
             loss_frac = combined_loss[idx]

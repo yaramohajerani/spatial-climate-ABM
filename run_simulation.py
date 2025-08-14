@@ -80,6 +80,9 @@ def main() -> None:  # noqa: D401
         # 4. Topology path --------------------------------------------------
         if not args.topology and param_data.get("topology"):
             args.topology = str(param_data["topology"])
+        
+        # 5. Learning parameters --------------------------------------------
+        args.learning_params = param_data.get("learning", {})
 
     # Ensure we have at least one RP spec after merging param file -----------
     if not args.rp_file:
@@ -125,6 +128,10 @@ def main() -> None:  # noqa: D401
     # Ensure steps_per_year attribute exists even if no param file
     if not hasattr(args, "steps_per_year"):
         args.steps_per_year = 4
+    
+    # Ensure learning_params exists even if no param file
+    if not hasattr(args, "learning_params"):
+        args.learning_params = {}
 
     # Headless mode: run the simulation directly
     model = EconomyModel(
@@ -136,6 +143,7 @@ def main() -> None:  # noqa: D401
         firm_topology_path=args.topology,
         start_year=args.start_year,
         steps_per_year=args.steps_per_year,
+        learning_params=args.learning_params,
     )
 
     for _ in range(args.steps):
