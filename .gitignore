@@ -8,6 +8,7 @@ __pycache__/
 
 # system files
 .DS_Store
+CLAUDE.md
 
 # data
 data/
