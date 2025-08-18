@@ -59,6 +59,10 @@ class EconomyModel(Model):
         self.firm_learning_enabled: bool = self.learning_config.get('enabled', True)
         self.min_money_survival: float = self.learning_config.get('min_money_survival', 1.0)
         self.replacement_frequency: int = self.learning_config.get('replacement_frequency', 10)
+        # Realistic wealth management
+        self.realistic_liquidation: bool = self.learning_config.get('realistic_liquidation', True)
+        self.liquidation_rate: float = self.learning_config.get('liquidation_rate', 0.8)
+        self.base_startup_capital: float = self.learning_config.get('base_startup_capital', 30.0)
 
         # Calendar mapping -------------------------------------------------- #
         self.start_year: int = start_year
@@ -663,14 +667,60 @@ class EconomyModel(Model):
             
             # Store the position before any modifications
             failed_pos = failed_firm.pos
+            failed_money = failed_firm.money
+            failed_capital = failed_firm.capital_stock
             
-            # Create new firm with inherited strategy (don't place on grid yet)
+            if self.realistic_liquidation:
+                # ============ REALISTIC LIQUIDATION PROCESS ============
+                total_liquidation = (failed_money + failed_capital) * self.liquidation_rate
+                
+                # Distribute liquidation proceeds
+                if total_liquidation > 0:
+                    # 60% to creditors (households and suppliers), 40% to successful firms
+                    creditor_share = total_liquidation * 0.6
+                    market_share = total_liquidation * 0.4
+                    
+                    # Pay creditors (households get wage debt, suppliers get trade debt)
+                    nearby_households = [ag for ag in self.agents if isinstance(ag, HouseholdAgent) 
+                                       and failed_firm in getattr(ag, 'nearby_firms', [])]
+                    if nearby_households:
+                        creditor_payment_per_hh = creditor_share * 0.7 / len(nearby_households)
+                        for hh in nearby_households:
+                            hh.money += creditor_payment_per_hh
+                    
+                    # Pay supplier firms
+                    if failed_firm.connected_firms:
+                        supplier_payment = creditor_share * 0.3 / len(failed_firm.connected_firms)
+                        for supplier in failed_firm.connected_firms:
+                            supplier.money += supplier_payment
+                    
+                    # Distribute market opportunities to successful firms
+                    if successful_firms:
+                        market_payment = market_share / len(successful_firms)
+                        for firm in successful_firms:
+                            firm.money += market_payment
+                
+                # Calculate startup capital (conservative but viable)
+                startup_from_liquidation = max(0, total_liquidation * 0.3)  # 30% of liquidated value
+                new_capital = self.base_startup_capital + startup_from_liquidation
+                new_money = new_capital * 0.8  # Most as working capital
+                new_capital_stock = new_capital * 0.2  # Some as fixed assets
+            else:
+                # ============ LEGACY BEHAVIOR (for comparison) ============
+                total_liquidation = 0
+                new_money = 100.0
+                new_capital_stock = 100.0
+            
+            # Create new firm with inherited strategy
             new_firm = FirmAgent(
                 model=self,
                 pos=failed_pos,  # Mesa will ignore this, but keeping for consistency
                 sector=failed_firm.sector,
-                capital_stock=100.0  # reset capital
+                capital_stock=new_capital_stock
             )
+            
+            # Set the money after creation (since money is not a constructor parameter)
+            new_firm.money = new_money
             
             # Inherit parent's strategy with mutations
             new_firm.strategy = parent.strategy.copy()
@@ -705,7 +755,11 @@ class EconomyModel(Model):
             self.grid.place_agent(new_firm, failed_pos)
             
             self.total_firm_replacements += 1
-            print(f"[EVOLUTION] Step {self.current_step}: Replaced failed firm {failed_firm.unique_id} with mutated offspring {new_firm.unique_id} (total: {self.total_firm_replacements})")
+            if self.realistic_liquidation:
+                print(f"[EVOLUTION] Step {self.current_step}: Liquidated firm {failed_firm.unique_id} (${failed_money + failed_capital:.1f} → ${total_liquidation:.1f}), "
+                      f"new firm {new_firm.unique_id} starts with ${new_money + new_capital_stock:.1f} (total replacements: {self.total_firm_replacements})")
+            else:
+                print(f"[EVOLUTION] Step {self.current_step}: Replaced failed firm {failed_firm.unique_id} with mutated offspring {new_firm.unique_id} (total: {self.total_firm_replacements})")
 
     # --------------------------------------------------------------------- #
     #                            EXPORT HELPERS                              #
