@@ -784,7 +784,9 @@ class EconomyModel(Model):
         if self.start_year and "Step" in agents_df.columns:
             agents_df["Year"] = self.start_year + agents_df["Step"].astype(int) / self.steps_per_year
 
-        agents_path = Path(out_path).with_name("simulation_agents.csv")
+        # Generate agent filename based on the main filename
+        out_path_obj = Path(out_path).with_suffix("")  # Remove extension if present
+        agents_path = out_path_obj.with_name(f"{out_path_obj.stem}_agents.csv")
         agents_path.write_text(agents_df.to_csv(index=False))
 
         # also save event log
