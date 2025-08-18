@@ -59,6 +59,10 @@ class EconomyModel(Model):
         self.firm_learning_enabled: bool = self.learning_config.get('enabled', True)
         self.min_money_survival: float = self.learning_config.get('min_money_survival', 1.0)
         self.replacement_frequency: int = self.learning_config.get('replacement_frequency', 10)
+        # Realistic wealth management
+        self.realistic_liquidation: bool = self.learning_config.get('realistic_liquidation', True)
+        self.liquidation_rate: float = self.learning_config.get('liquidation_rate', 0.8)
+        self.base_startup_capital: float = self.learning_config.get('base_startup_capital', 30.0)
 
         # Calendar mapping -------------------------------------------------- #
         self.start_year: int = start_year
@@ -97,13 +101,13 @@ class EconomyModel(Model):
         # Store mapping of event index -> (start, end) per hazard type
         self._hazard_event_ranges: dict[str, List[Tuple[int, int]]] = dict(grouped_ranges)
 
-        self.hazards: dict[str, Tuple[Hazard, ImpactFunc]] = {}
+        self.hazards: dict[str, Hazard] = {}
 
         first_lon, first_lat = None, None
         for htype, grp in grouped_files.items():
             haz, lon_vals, lat_vals = hazard_from_geotiffs(grp, haz_type=htype)
-            vul = self._build_vulnerability(htype)
-            self.hazards[htype] = (haz, vul)
+            # Store only hazard data, vulnerability will be applied per agent
+            self.hazards[htype] = haz
 
             if first_lon is None:
                 first_lon, first_lat = lon_vals, lat_vals
@@ -267,7 +271,7 @@ class EconomyModel(Model):
                 else:
                     ag.inventory_output = 5   # downstream firms
 
-        for haz, _ in self.hazards.values():
+        for haz in self.hazards.values():
             self._exposures.assign_centroids(haz)
 
         # --- Step counter --- #
@@ -514,8 +518,8 @@ class EconomyModel(Model):
         return exp
 
     @staticmethod
-    def _build_vulnerability(haz_type: str = "FL") -> ImpactFunc:
-        """Return a single ImpactFunc appropriate for the hazard type.
+    def _build_vulnerability(haz_type: str = "FL", sector: str = "residential") -> ImpactFunc:
+        """Return a single ImpactFunc appropriate for the hazard type and sector.
 
         The caller can still wrap the result in an ``ImpactFuncSet`` if they
         need CLIMADA's higher-level interfaces, but for the pixel-wise damage
@@ -525,12 +529,24 @@ class EconomyModel(Model):
         • ``FL`` (flood): JRC global depth–damage curve via ``climada_petals``.
           If the Petals dependency is unavailable we fall back to a simple
           linear 0-1 relationship between intensity and mean damage ratio.
+        
+        Sector mapping for JRC curves:
+        • agriculture, commodities -> agriculture
+        • manufacturing -> industrial  
+        • others -> residential (default)
         """
+        # Map model sectors to JRC asset types
+        jrc_asset_type = "residential"  # default
+        if sector in ["agriculture", "commodities"]:
+            jrc_asset_type = "agriculture"
+        elif sector == "manufacturing":
+            jrc_asset_type = "industrial"
+        
         try:
             if haz_type == "FL":
                 from climada_petals.entity.impact_funcs.river_flood import ImpfRiverFlood  # type: ignore
 
-                impf = ImpfRiverFlood.from_jrc_region_sector("Global", "residential")
+                impf = ImpfRiverFlood.from_jrc_region_sector("Global", jrc_asset_type)
                 impf.id = 1
                 return impf
         except Exception:  # noqa: BLE001
@@ -651,14 +667,60 @@ class EconomyModel(Model):
             
             # Store the position before any modifications
             failed_pos = failed_firm.pos
+            failed_money = failed_firm.money
+            failed_capital = failed_firm.capital_stock
             
-            # Create new firm with inherited strategy (don't place on grid yet)
+            if self.realistic_liquidation:
+                # ============ REALISTIC LIQUIDATION PROCESS ============
+                total_liquidation = (failed_money + failed_capital) * self.liquidation_rate
+                
+                # Distribute liquidation proceeds
+                if total_liquidation > 0:
+                    # 60% to creditors (households and suppliers), 40% to successful firms
+                    creditor_share = total_liquidation * 0.6
+                    market_share = total_liquidation * 0.4
+                    
+                    # Pay creditors (households get wage debt, suppliers get trade debt)
+                    nearby_households = [ag for ag in self.agents if isinstance(ag, HouseholdAgent) 
+                                       and failed_firm in getattr(ag, 'nearby_firms', [])]
+                    if nearby_households:
+                        creditor_payment_per_hh = creditor_share * 0.7 / len(nearby_households)
+                        for hh in nearby_households:
+                            hh.money += creditor_payment_per_hh
+                    
+                    # Pay supplier firms
+                    if failed_firm.connected_firms:
+                        supplier_payment = creditor_share * 0.3 / len(failed_firm.connected_firms)
+                        for supplier in failed_firm.connected_firms:
+                            supplier.money += supplier_payment
+                    
+                    # Distribute market opportunities to successful firms
+                    if successful_firms:
+                        market_payment = market_share / len(successful_firms)
+                        for firm in successful_firms:
+                            firm.money += market_payment
+                
+                # Calculate startup capital (conservative but viable)
+                startup_from_liquidation = max(0, total_liquidation * 0.3)  # 30% of liquidated value
+                new_capital = self.base_startup_capital + startup_from_liquidation
+                new_money = new_capital * 0.8  # Most as working capital
+                new_capital_stock = new_capital * 0.2  # Some as fixed assets
+            else:
+                # ============ LEGACY BEHAVIOR (for comparison) ============
+                total_liquidation = 0
+                new_money = 100.0
+                new_capital_stock = 100.0
+            
+            # Create new firm with inherited strategy
             new_firm = FirmAgent(
                 model=self,
                 pos=failed_pos,  # Mesa will ignore this, but keeping for consistency
                 sector=failed_firm.sector,
-                capital_stock=100.0  # reset capital
+                capital_stock=new_capital_stock
             )
+            
+            # Set the money after creation (since money is not a constructor parameter)
+            new_firm.money = new_money
             
             # Inherit parent's strategy with mutations
             new_firm.strategy = parent.strategy.copy()
@@ -693,7 +755,11 @@ class EconomyModel(Model):
             self.grid.place_agent(new_firm, failed_pos)
             
             self.total_firm_replacements += 1
-            print(f"[EVOLUTION] Step {self.current_step}: Replaced failed firm {failed_firm.unique_id} with mutated offspring {new_firm.unique_id} (total: {self.total_firm_replacements})")
+            if self.realistic_liquidation:
+                print(f"[EVOLUTION] Step {self.current_step}: Liquidated firm {failed_firm.unique_id} (${failed_money + failed_capital:.1f} → ${total_liquidation:.1f}), "
+                      f"new firm {new_firm.unique_id} starts with ${new_money + new_capital_stock:.1f} (total replacements: {self.total_firm_replacements})")
+            else:
+                print(f"[EVOLUTION] Step {self.current_step}: Replaced failed firm {failed_firm.unique_id} with mutated offspring {new_firm.unique_id} (total: {self.total_firm_replacements})")
 
     # --------------------------------------------------------------------- #
     #                            EXPORT HELPERS                              #
@@ -745,7 +811,10 @@ class EconomyModel(Model):
         max_depth = np.zeros(n_cells, dtype=float)
         combined_loss = np.zeros(n_cells, dtype=float)  # 0=no loss
 
-        for htype, (haz, impf) in self.hazards.items():
+        # Store intensity maps per hazard type for agent-level vulnerability application
+        hazard_intensities = {}
+        
+        for htype, haz in self.hazards.items():
             # Build per-hazard intensity map this year
             intens = np.zeros(n_cells, dtype=float)
             ranges = self._hazard_event_ranges.get(htype, [])
@@ -769,24 +838,21 @@ class EconomyModel(Model):
 
             # Update global max depth for viz
             max_depth = np.maximum(max_depth, intens)
-
-            # Compute loss fraction via vulnerability curve
-            mdr = np.clip(impf.calc_mdr(intens), 0.0, 1.0)
-
-            # Combine multiplicatively: 1 - prod(1 - loss)
-            combined_loss = 1 - (1 - combined_loss) * (1 - mdr)
+            
+            # Store intensity for agent-level processing
+            hazard_intensities[htype] = intens
 
         # If impacts disabled, zero‐out losses and intensities so agents see
         # a risk‐free environment while preserving RNG sequence.
         if not self.apply_hazard_impacts:
-            combined_loss[:] = 0  # noqa: E203 – NumPy slicing
             max_depth[:] = 0
+            hazard_intensities = {htype: np.zeros(n_cells) for htype in hazard_intensities}
 
         # Write hazard_map for visualisation (max depth across hazards)
         for idx, coord in enumerate(self.valid_coordinates):
             self.hazard_map[coord] = float(max_depth[idx])
 
-        # Apply combined loss to agents
+        # Apply agent-specific vulnerability and damage
         for ag in self.agents:
             if ag.pos is None:
                 # Debug info: check if this agent was recently replaced
@@ -797,21 +863,45 @@ class EconomyModel(Model):
                                f"Recently replaced: {was_replaced}. "
                                f"Recent replacements: {recent_replacements[-5:]}. "
                                f"This likely indicates a bug in agent creation or placement.")
+            
             x, y = ag.pos
             idx = y * len(self.lon_vals) + x
-            loss_frac = combined_loss[idx]
-            if loss_frac == 0:
-                continue
+            
+            # Determine agent sector for vulnerability mapping
             if isinstance(ag, FirmAgent):
-                ag.capital_stock *= 1 - loss_frac
+                agent_sector = ag.sector
+            else:  # HouseholdAgent
+                agent_sector = getattr(ag, 'sector', 'residential')
+            
+            # Calculate combined loss across all hazard types for this agent
+            combined_loss_agent = 0.0
+            for htype, intens in hazard_intensities.items():
+                if intens[idx] == 0:
+                    continue
+                    
+                # Get sector-specific vulnerability function
+                impf = self._build_vulnerability(htype, agent_sector)
+                
+                # Calculate damage ratio for this hazard type
+                mdr = np.clip(impf.calc_mdr(np.array([intens[idx]]))[0], 0.0, 1.0)
+                
+                # Combine multiplicatively: 1 - prod(1 - loss)
+                combined_loss_agent = 1 - (1 - combined_loss_agent) * (1 - mdr)
+            
+            if combined_loss_agent == 0:
+                continue
+                
+            # Apply damage to agent
+            if isinstance(ag, FirmAgent):
+                ag.capital_stock *= 1 - combined_loss_agent
                 # Reduce productive capacity this year
-                ag.damage_factor *= 1 - loss_frac
+                ag.damage_factor *= 1 - combined_loss_agent
                 # Damage inventories
-                ag.inventory_output = int(ag.inventory_output * (1 - loss_frac))
+                ag.inventory_output = int(ag.inventory_output * (1 - combined_loss_agent))
                 for k in list(ag.inventory_inputs.keys()):
-                    ag.inventory_inputs[k] = int(ag.inventory_inputs[k] * (1 - loss_frac))
+                    ag.inventory_inputs[k] = int(ag.inventory_inputs[k] * (1 - combined_loss_agent))
             else:
-                ag.capital *= 1 - loss_frac
+                ag.capital *= 1 - combined_loss_agent
 
         flooded_cells = (max_depth > 0).sum()
         print(f"[INFO] Step {self.current_step}: flooded cells = {flooded_cells}/{n_cells}")
