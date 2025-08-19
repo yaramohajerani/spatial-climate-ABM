@@ -28,11 +28,6 @@ def parse_args():
         default="recreated_plot.png",
         help="Output plot filename"
     )
-    parser.add_argument(
-        "--start-year",
-        type=int,
-        help="Base year for x-axis (if not provided, will use Step column)"
-    )
     return parser.parse_args()
 
 
@@ -111,8 +106,8 @@ def main():
         firm_agents_df = pd.DataFrame()
         household_agents_df = pd.DataFrame()
     
-    # Determine x-axis column
-    if args.start_year and "Year" in df_combined.columns:
+    # Determine x-axis column - prefer Year column if available
+    if "Year" in df_combined.columns:
         x_col = "Year"
     elif "Step" in df_combined.columns:
         x_col = "Step"
@@ -128,40 +123,41 @@ def main():
     # Create color/style mapping: colors for hazard vs baseline, line styles for learning vs no learning
     scenario_style_map = {}
     for scenario in unique_scenarios:
-        # Colors: red for hazard, blue for baseline
         if "hazard" in scenario.lower():
-            color = "red"
+            linestyle = "-"
         else:
-            color = "blue"
-        
-        # Line styles: solid for learning, dotted for no learning
+            linestyle = ":" 
+
         if "no learning" in scenario.lower():
-            linestyle = ":"  # dotted for no learning
+            color = "tab:orange"
         else:
-            linestyle = "-"  # solid for learning
+            color = "black"
             
         scenario_style_map[scenario] = {"color": color, "linestyle": linestyle}
     
-    # Define sector color palettes with very distinct variations
-    sector_colors_hazard = ["#B22222", "#FF4500", "#FFD700", "#FF69B4", "#8B0000"]  # Very distinct red/orange/yellow/pink for hazard
-    sector_colors_baseline = ["#000080", "#00CED1", "#32CD32", "#9400D3", "#4682B4"]  # Very distinct blue/cyan/green/purple for baseline
+    # Define sector color palettes
+    sector_colors_learning = ['darkturquoise', 'cornflowerblue']
+    sector_colors_nolearning = ['rosybrown', 'lightcoral']
     
-    def get_sector_style(scenario, sector_idx, style_map):
+    def get_sector_style(scenario, sector_idx):
         """Get color and style for a sector line based on scenario and sector index."""
-        # Get base style from scenario
-        base_style = style_map[scenario]
-        
-        # Choose color palette based on scenario type
-        if "hazard" in scenario.lower():
-            color = sector_colors_hazard[sector_idx % len(sector_colors_hazard)]
+        # Choose color palette based on learning vs no learning
+        if "no learning" in scenario.lower():
+            color = sector_colors_nolearning[sector_idx % len(sector_colors_nolearning)]
         else:
-            color = sector_colors_baseline[sector_idx % len(sector_colors_baseline)]
+            color = sector_colors_learning[sector_idx % len(sector_colors_learning)]
+        
+        # Choose line style based on hazard vs baseline
+        if "hazard" in scenario.lower():
+            linestyle = "-"
+        else:
+            linestyle = ":"
         
         return {
             "color": color,
-            "linestyle": base_style["linestyle"], 
+            "linestyle": linestyle, 
             "alpha": 0.8,
-            "linewidth": 0.5,
+            "linewidth": 0.7,
             "zorder": 1
         }
     
@@ -229,12 +225,16 @@ def main():
                         if sector_data.empty:
                             continue
                         
-                        grp = sector_data.groupby("Step")[agent_col].mean()
+                        # Use Year column if available, otherwise Step
+                        if "Year" in sector_data.columns:
+                            grp = sector_data.groupby("Year")[agent_col].mean()
+                        else:
+                            grp = sector_data.groupby("Step")[agent_col].mean()
                         if grp.empty:
                             continue
                             
                         x_vals = grp.index
-                        sector_style = get_sector_style(scenario, idx_sec, scenario_style_map)
+                        sector_style = get_sector_style(scenario, idx_sec)
                         
                         ax.plot(x_vals, grp.values, 
                                label=f"{sector} - {scenario}", **sector_style)
@@ -253,7 +253,11 @@ def main():
                 if df_scen.empty:
                     continue
                     
-                mean_grp = df_scen.groupby("Step")[agent_col].mean()
+                # Use Year column if available, otherwise Step
+                if "Year" in df_scen.columns:
+                    mean_grp = df_scen.groupby("Year")[agent_col].mean()
+                else:
+                    mean_grp = df_scen.groupby("Step")[agent_col].mean()
                 if mean_grp.empty:
                     continue
                     
@@ -276,12 +280,17 @@ def main():
                     style = scenario_style_map[scenario]
                     
                     for idx_sec, sector in enumerate(sectors):
-                        grp = df_scen[df_scen["sector"] == sector].groupby("Step")[agent_col].mean()
+                        sector_data = df_scen[df_scen["sector"] == sector]
+                        # Use Year column if available, otherwise Step
+                        if "Year" in sector_data.columns:
+                            grp = sector_data.groupby("Year")[agent_col].mean()
+                        else:
+                            grp = sector_data.groupby("Step")[agent_col].mean()
                         if grp.empty:
                             continue
                             
                         x_vals = grp.index
-                        sector_style = get_sector_style(scenario, idx_sec, scenario_style_map)
+                        sector_style = get_sector_style(scenario, idx_sec)
                         
                         ax.plot(x_vals, grp.values, 
                                label=f"{sector} - {scenario}", **sector_style)
@@ -300,7 +309,11 @@ def main():
                 if df_scen.empty:
                     continue
                     
-                mean_grp = df_scen.groupby("Step")[agent_col].mean()
+                # Use Year column if available, otherwise Step
+                if "Year" in df_scen.columns:
+                    mean_grp = df_scen.groupby("Year")[agent_col].mean()
+                else:
+                    mean_grp = df_scen.groupby("Step")[agent_col].mean()
                 if mean_grp.empty:
                     continue
                     
@@ -323,12 +336,17 @@ def main():
                     style = scenario_style_map[scenario]
                     
                     for idx_sec, sector in enumerate(sectors):
-                        grp = df_scen[df_scen["sector"] == sector].groupby("Step")[agent_col].mean()
+                        sector_data = df_scen[df_scen["sector"] == sector]
+                        # Use Year column if available, otherwise Step
+                        if "Year" in sector_data.columns:
+                            grp = sector_data.groupby("Year")[agent_col].mean()
+                        else:
+                            grp = sector_data.groupby("Step")[agent_col].mean()
                         if grp.empty:
                             continue
                             
                         x_vals = grp.index
-                        sector_style = get_sector_style(scenario, idx_sec, scenario_style_map)
+                        sector_style = get_sector_style(scenario, idx_sec)
                         
                         ax.plot(x_vals, grp.values, 
                                label=f"{sector} - {scenario}", **sector_style)
@@ -361,14 +379,20 @@ def main():
                 return
             
             # Calculate bottleneck percentages
-            steps = df_sub["Step"].unique()
-            x_vals = steps
+            # Use Year column if available, otherwise Step
+            if "Year" in df_sub.columns:
+                time_col = "Year"
+                time_vals = df_sub["Year"].unique()
+            else:
+                time_col = "Step"
+                time_vals = df_sub["Step"].unique()
+            x_vals = time_vals
             
             # Create percentage arrays
             arrs = {}
             for bt in ["labor", "capital", "input"]:
-                cnt = df_sub[df_sub["limiting_factor"] == bt].groupby("Step").size()
-                cnt = cnt.reindex(steps, fill_value=0)
+                cnt = df_sub[df_sub["limiting_factor"] == bt].groupby(time_col).size()
+                cnt = cnt.reindex(time_vals, fill_value=0)
                 arrs[bt] = cnt
             
             tot = sum(arrs.values())
@@ -408,11 +432,11 @@ def main():
                     if "Baseline" in scenario and "No Learning" in scenario:
                         short_labels.append("Baseline-NL")
                     elif "Baseline" in scenario and "Learning" in scenario:
-                        short_labels.append("Baseline-L")
+                        short_labels.append("Baseline")
                     elif "Hazard" in scenario and "No Learning" in scenario:
                         short_labels.append("Hazard-NL")
                     elif "Hazard" in scenario and "Learning" in scenario:
-                        short_labels.append("Hazard-L")
+                        short_labels.append("Hazard")
                     else:
                         short_labels.append(scenario)
                 else:
@@ -434,11 +458,11 @@ def main():
                         if "Baseline" in scenario and "No Learning" in scenario:
                             scenario_abbrev = "B-NL"  # Baseline No Learning
                         elif "Baseline" in scenario and "Learning" in scenario:
-                            scenario_abbrev = "B-L"   # Baseline Learning
+                            scenario_abbrev = "B"   # Baseline Learning
                         elif "Hazard" in scenario and "No Learning" in scenario:
                             scenario_abbrev = "H-NL"  # Hazard No Learning
                         elif "Hazard" in scenario and "Learning" in scenario:
-                            scenario_abbrev = "H-L"   # Hazard Learning
+                            scenario_abbrev = "H"   # Hazard Learning
                         else:
                             scenario_abbrev = scenario[:3]
                         
