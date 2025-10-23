@@ -29,6 +29,8 @@ def _parse():
         type=str,
         help="Path to a JSON file containing parameter overrides. Keys can include rp_files (list), viz (bool), seed (int), topology (str).",
     )
+    p.add_argument("--no-hazards", action="store_true", help="Run baseline scenario without hazard impacts")
+    p.add_argument("--no-learning", action="store_true", help="Disable evolutionary learning in firms")
     return p.parse_args()
 
 def main() -> None:  # noqa: D401
@@ -133,6 +135,27 @@ def main() -> None:  # noqa: D401
     if not hasattr(args, "learning_params"):
         args.learning_params = {}
 
+    # Configure scenario settings
+    apply_hazards = not args.no_hazards
+    if args.no_learning:
+        learning_config = {**args.learning_params, "enabled": False}
+    else:
+        learning_config = args.learning_params
+
+    # Generate scenario label for output files
+    scenario_parts = []
+    if apply_hazards:
+        scenario_parts.append("hazard")
+    else:
+        scenario_parts.append("baseline")
+    
+    if args.no_learning:
+        scenario_parts.append("nolearning")
+    else:
+        scenario_parts.append("learning")
+    
+    scenario_label = "_".join(scenario_parts)
+
     # Headless mode: run the simulation directly
     model = EconomyModel(
         num_households=100,
@@ -140,16 +163,51 @@ def main() -> None:  # noqa: D401
         shock_step=5,
         hazard_events=events,
         seed=args.seed,
+        apply_hazard_impacts=apply_hazards,
         firm_topology_path=args.topology,
         start_year=args.start_year,
         steps_per_year=args.steps_per_year,
-        learning_params=args.learning_params,
+        learning_params=learning_config,
     )
 
     for _ in range(args.steps):
         model.step()
 
-    model.save_results("simulation_results")
+    # Add scenario information to the dataframes before saving
+    df = model.results_to_dataframe()
+    
+    # Create scenario label for the data
+    if apply_hazards:
+        scenario_display = "Hazard"
+    else:
+        scenario_display = "Baseline"
+    
+    if args.no_learning:
+        scenario_display += " + No Learning"
+    else:
+        scenario_display += " + Learning"
+    
+    df["Scenario"] = scenario_display
+    df["Step"] = df.index
+    
+    # Also add scenario to agent data
+    agent_df = model.datacollector.get_agent_vars_dataframe().reset_index()
+    agent_df.rename(columns={"level_0": "Step", "level_1": "AgentID"}, inplace=True, errors="ignore")
+    agent_df["Scenario"] = scenario_display
+    
+    # Save results with scenario label
+    output_filename = f"simulation_{scenario_label}"
+    
+    # Save main results
+    main_csv_path = f"{output_filename}.csv"
+    df.to_csv(main_csv_path, index=False)
+    
+    # Save agent results
+    agent_csv_path = f"{output_filename}_agents.csv"
+    agent_df.to_csv(agent_csv_path, index=False)
+    
+    print(f"Simulation complete for scenario: {scenario_label}")
+    print(f"Results saved as {main_csv_path} and {agent_csv_path}")
 
     # ------------------------- Plotting ---------------------------- #
     import matplotlib.pyplot as plt
@@ -378,7 +436,8 @@ def main() -> None:  # noqa: D401
             _plot_household(metric_right, ax_right)
 
     fig.tight_layout()
-    fig.savefig("simulation_timeseries.png", dpi=150)
+    timeseries_filename = f"simulation_{scenario_label}_timeseries.png"
+    fig.savefig(timeseries_filename, dpi=150)
 
     # ------------------- Sector-level bottleneck plot ------------------- #
     n_sec = len(unique_sectors)
@@ -417,12 +476,13 @@ def main() -> None:  # noqa: D401
 
         axes_bt[-1].set_xlabel(x_col)
         fig_bt.tight_layout()
-        fig_bt.savefig("sector_bottlenecks.png", dpi=150)
+        bottleneck_filename = f"simulation_{scenario_label}_sector_bottlenecks.png"
+        fig_bt.savefig(bottleneck_filename, dpi=150)
         plt.close(fig_bt)
 
     plt.close(fig)
 
-    print("Simulation complete. Results stored in simulation_results.csv and simulation_timeseries.png")
+    print(f"Plots saved as {timeseries_filename} and {bottleneck_filename if n_sec > 0 else 'no sector plots'}")
 
 
 if __name__ == "__main__":
