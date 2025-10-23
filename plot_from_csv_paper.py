@@ -169,7 +169,7 @@ def main():
     ]
     
     # Create 3x3 subplot grid
-    fig, axes = plt.subplots(3, 3, figsize=(13, 12))
+    fig, axes = plt.subplots(3, 3, figsize=(13, 6.5))
     
     # Units for y-axis labels
     units = {
@@ -509,7 +509,7 @@ def main():
     plt.tight_layout()
     
     # Adjust layout to make room for bottom legend
-    plt.subplots_adjust(bottom=0.05)
+    plt.subplots_adjust(bottom=0.095)
     
     # Save plot
     out_path = Path(args.out)
