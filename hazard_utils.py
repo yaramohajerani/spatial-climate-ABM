@@ -65,11 +65,6 @@ def hazard_from_geotiffs(events: Iterable[Tuple[int, str]], haz_type: str = "FL"
         event_ids.append(len(event_ids) + 1)
         event_names.append(f"RP{rp}")
 
-    # Normalise all rasters to 0–1 so they plug directly into the agent
-    global_max = max(arr.max() for arr in data_arrays)
-    if global_max == 0:
-        raise ValueError("All rasters contain only zeros – cannot normalise.")
-
     # Build centroid coordinates from the *first* raster (they are all identical)
     height, width = data_arrays[0].shape
     rows, cols = np.indices((height, width))
@@ -78,7 +73,7 @@ def hazard_from_geotiffs(events: Iterable[Tuple[int, str]], haz_type: str = "FL"
     lat = np.array(ys).flatten()
 
     # Prepare intensity matrix [n_events, n_centroids]
-    dense = np.vstack([(arr / global_max).flatten() for arr in data_arrays])
+    dense = np.vstack([arr.flatten() for arr in data_arrays])
     intensity = csr_matrix(dense)
 
     # Frequencies = 1 / return period (events per year)

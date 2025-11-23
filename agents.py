@@ -117,9 +117,6 @@ class HouseholdAgent(Agent):
     def step(self) -> None:  # noqa: D401, N802
         """Provide labour and consume goods each tick."""
 
-        # Refresh employer list (in case we moved or firms relocated)
-        self._update_nearby_firms()
-
         # Reset per-step statistics
         self.production = 0.0
         self.labor_sold = 0.0
@@ -129,22 +126,19 @@ class HouseholdAgent(Agent):
         if self._max_hazard_within_radius(self.risk_radius) > 0.1:
             self._relocate()
 
-        if not self.nearby_firms:
-            return  # isolated household – nothing to do
-
-        # 1. Choose employer based on wage–distance utility --------------- #
-        if self.nearby_firms:
-            # Compute utility = offered wage – distance_cost * manhattan_distance
+        # 1. Choose employer based on wage–distance utility (remote work allowed) --------------- #
+        # Consider all firms of the same sector; distance is still a disutility but no hard radius.
+        all_firms = [ag for ag in self.model.agents if isinstance(ag, FirmAgent) and ag.sector == self.sector]
+        if all_firms:
             scored: list[tuple[float, "FirmAgent"]] = []
             x0, y0 = self.pos
-            for firm in self.nearby_firms:
+            for firm in all_firms:
                 dx = abs(x0 - firm.pos[0])
                 dy = abs(y0 - firm.pos[1])
                 dist = dx + dy
                 utility = firm.wage_offer - self.distance_cost * dist
                 scored.append((utility, firm))
 
-            # Sort by utility descending so households try best option first
             scored.sort(key=lambda t: t[0], reverse=True)
 
             for _, firm in scored:
@@ -152,7 +146,7 @@ class HouseholdAgent(Agent):
                     self.labor_sold += 1
                     break
 
-        # 2. Buy goods based on wealth and needs -------------------------- #
+        # 2. Buy goods based on wealth and needs (no proximity restriction) -------------------------- #
         # Households need variety from different trophic levels
         consumption_budget = self.money * 0.5
         
@@ -160,11 +154,11 @@ class HouseholdAgent(Agent):
             # Calculate trophic levels for all firms and find max
             firm_trophic_levels = {}
             max_trophic = 1.0
-            for f in self.model.agents:
-                if isinstance(f, FirmAgent):
-                    trophic_level = 1.0 + len(f.connected_firms) * 0.3
-                    firm_trophic_levels[f.unique_id] = trophic_level
-                    max_trophic = max(max_trophic, trophic_level)
+            firms_all = [f for f in self.model.agents if isinstance(f, FirmAgent)]
+            for f in firms_all:
+                trophic_level = 1.0 + len(f.connected_firms) * 0.3
+                firm_trophic_levels[f.unique_id] = trophic_level
+                max_trophic = max(max_trophic, trophic_level)
             
             # Randomly select 2-3 trophic level ranges for needed goods
             num_ranges = self.random.randint(2, 3)
@@ -178,8 +172,8 @@ class HouseholdAgent(Agent):
             for min_trophic, max_trophic_range in needed_ranges:
                 # Find firms with outputs in this trophic range that have inventory
                 available_firms = []
-                for f in self.model.agents:
-                    if isinstance(f, FirmAgent) and f.inventory_output > 0:
+                for f in firms_all:
+                    if f.inventory_output > 0:
                         trophic_level = firm_trophic_levels[f.unique_id]
                         if min_trophic <= trophic_level <= max_trophic_range:
                             available_firms.append(f)
@@ -295,9 +289,19 @@ class FirmAgent(Agent):
         # Statistics
         self.production: float = 0.0  # units produced this step
         self.consumption: float = 0.0  # units of inputs consumed this step
+        self.sales_total: float = 0.0  # units sold (households + firms) this step
 
         # Cumulative damage to productive capacity (1 = undamaged)
         self.damage_factor: float = 1.0
+
+        # Sales tracking for demand-based pricing
+        self.sales_last_step: float = 0.0
+        self.revenue_last_step: float = 0.0
+        self.sales_this_step: float = 0.0
+        self.revenue_this_step: float = 0.0
+        self.no_sales_streak: int = 0
+        self.hh_sales_last_step: float = 0.0
+        self.hh_sales_this_step: float = 0.0
 
         # ---------------- Risk behaviour parameters ------------------- #
         # Radius monitored for hazard events (random per firm)
@@ -463,6 +467,11 @@ class FirmAgent(Agent):
         household.money -= total_cost
         self.money += total_cost
         self.inventory_output -= qty
+        # Track sales for demand-based pricing
+        self.sales_this_step += qty
+        self.revenue_this_step += total_cost
+        self.hh_sales_this_step += qty
+        self.sales_total += qty
         return qty
 
     def sell_goods_to_firm(self, buyer: "FirmAgent", quantity: int = 1) -> int:
@@ -498,6 +507,10 @@ class FirmAgent(Agent):
         self.inventory_output -= qty
         # Register under this supplier's id inside buyer
         buyer.inventory_inputs[self.unique_id] += qty
+        # Track sales for demand-based pricing
+        self.sales_this_step += qty
+        self.revenue_this_step += cost
+        self.sales_total += qty
         return qty
 
     # ---------------- Budgeting helper ---------------------------------- #
@@ -515,8 +528,14 @@ class FirmAgent(Agent):
 
         lim = getattr(self, "limiting_factor", "")
 
-        # Allocate capital budget only if capital was the previous bottleneck
-        cap_weight = self.capital_coeff * self.price if lim == "capital" else 0.0
+        # Allocate capital budget if capital was limiting OR a shock just hit
+        cap_weight = 0.0
+        if lim == "capital":
+            cap_weight = self.capital_coeff * self.price
+        else:
+            # Seed some capital budget after damage or depleted stock
+            if (self.capital_stock < self.original_capital_coeff * 5) or (self.damage_factor < 0.99) or (self.capital_coeff > self.original_capital_coeff * 1.05):
+                cap_weight = self.capital_coeff * self.price * 0.3
 
         # All sectors: treat each input type as independent
         # Each connected firm represents a different input type
@@ -629,11 +648,20 @@ class FirmAgent(Agent):
         
         # Learned pricing aggressiveness
         price_mult = self.strategy.get('price_aggressiveness', 1.0)
+        affordable_cap = max(0.01, avg_household_money * 0.5)
         
-        # If we haven't produced recently but have customers trying to buy, raise prices
-        if recent_production == 0 and self.inventory_output <= 2:
+        if self.hh_sales_last_step <= 0 and self.inventory_output > 0:
+            # No household sales → aggressively cut prices until households buy
+            cut_factor = 0.6 if self.inventory_output > 5 else 0.75
+            self.price *= cut_factor
+            self.price = min(self.price, affordable_cap)
+            # Skip further upward adjustments this step
+        elif recent_production == 0 and self.inventory_output <= 2:
             # No production + low inventory = scarcity → raise prices
             self.price *= (1.0 + 0.05 * price_mult)
+        elif recent_production == 0 and self.inventory_output > 5:
+            # No production but plenty of stock → ease prices to clear inventory
+            self.price *= (1.0 - 0.02 * price_mult)
         elif recent_production > 0:
             # Normal supply-demand pricing with learned aggressiveness
             inventory_ratio = self.inventory_output / max(1, recent_production)
@@ -645,12 +673,14 @@ class FirmAgent(Agent):
                 self.price *= (1.0 - 0.02 * price_mult)
         
         # Special case: if we're cash-constrained, try to raise prices to improve margins
-        if self.money < self.wage_offer * 3 and self.price < avg_household_money * 2.0:
+        if self.money < self.wage_offer * 3 and self.price < avg_household_money * 2.0 and self.hh_sales_last_step > 0:
             self.price *= 1.03  # Increase prices to improve cash flow
         
         # Only prevent truly extreme price explosions that would break the model
         max_reasonable_price = avg_household_money * 1000.0  
         self.price = float(max(0.01, min(self.price, max_reasonable_price)))
+        if self.hh_sales_last_step <= 0 and self.inventory_output > 0:
+            self.price = min(self.price, affordable_cap)
         
         # Additional safety: if price gets extremely high relative to affordability,
         # add some gentle downward pressure (but still allow substantial growth)
@@ -682,17 +712,20 @@ class FirmAgent(Agent):
         # 1. Ensure each required input type has enough stock to match labour
         # ----------------------------------------------------------------
         
-        target_output_from_labour = labour_units / self.LABOR_COEFF
+        # Estimate feasible output given capital and damage to avoid over-ordering inputs
+        cap_limit = self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf")
+        target_output = min(labour_units / self.LABOR_COEFF, cap_limit) * self.damage_factor
+        target_output = max(0.0, target_output)
         
         # Each input good from connected firms is independent
         # Need INPUT_COEFF units from EACH supplier for maximum production
         for supplier in self.connected_firms:
-            target_per_supplier = int(np.ceil(target_output_from_labour * self.INPUT_COEFF))
+            target_per_supplier = int(np.ceil(target_output * self.INPUT_COEFF))
             current_from_supplier = self.inventory_inputs.get(supplier.unique_id, 0)
             required_from_supplier = max(0, target_per_supplier - current_from_supplier)
             
             if required_from_supplier > 0:
-                bought = supplier.sell_goods_to_firm(self, required_from_supplier)
+                supplier.sell_goods_to_firm(self, required_from_supplier)
 
         # ----------------------------------------------------------------
         # 2. Compute possible output per Leontief: min(labour, material, capital)
@@ -792,6 +825,19 @@ class FirmAgent(Agent):
                         if bought:
                             self.capital_stock += bought
                             remaining_budget -= bought * seller.price
+
+        # Persist sales metrics for next step's pricing decisions
+        if self.sales_this_step <= 0:
+            self.no_sales_streak += 1
+        else:
+            self.no_sales_streak = 0
+        self.sales_last_step = self.sales_this_step
+        self.revenue_last_step = self.revenue_this_step
+        self.hh_sales_last_step = self.hh_sales_this_step
+        self.sales_this_step = 0.0
+        self.revenue_this_step = 0.0
+        self.hh_sales_this_step = 0.0
+        self.sales_total = 0.0
 
     # ---------------- Internal helpers -------------------------------- #
     def _labor_available(self) -> int:

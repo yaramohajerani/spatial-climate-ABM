@@ -1,6 +1,7 @@
 """Run prototype climate-economy ABM for 10 timesteps and persist results."""
 
 import argparse
+from datetime import datetime
 # Import model and agent classes
 from model import EconomyModel
 from agents import FirmAgent
@@ -155,6 +156,8 @@ def main() -> None:  # noqa: D401
         scenario_parts.append("learning")
     
     scenario_label = "_".join(scenario_parts)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    scenario_label_ts = f"{scenario_label}_{timestamp}"
 
     # Headless mode: run the simulation directly
     model = EconomyModel(
@@ -195,8 +198,8 @@ def main() -> None:  # noqa: D401
     agent_df.rename(columns={"level_0": "Step", "level_1": "AgentID"}, inplace=True, errors="ignore")
     agent_df["Scenario"] = scenario_display
     
-    # Save results with scenario label
-    output_filename = f"simulation_{scenario_label}"
+    # Save results with scenario label + timestamp
+    output_filename = f"simulation_{scenario_label_ts}"
     
     # Save main results
     main_csv_path = f"{output_filename}.csv"
@@ -436,7 +439,7 @@ def main() -> None:  # noqa: D401
             _plot_household(metric_right, ax_right)
 
     fig.tight_layout()
-    timeseries_filename = f"simulation_{scenario_label}_timeseries.png"
+    timeseries_filename = f"simulation_{scenario_label_ts}_timeseries.png"
     fig.savefig(timeseries_filename, dpi=150)
 
     # ------------------- Sector-level bottleneck plot ------------------- #
@@ -476,7 +479,7 @@ def main() -> None:  # noqa: D401
 
         axes_bt[-1].set_xlabel(x_col)
         fig_bt.tight_layout()
-        bottleneck_filename = f"simulation_{scenario_label}_sector_bottlenecks.png"
+        bottleneck_filename = f"simulation_{scenario_label_ts}_sector_bottlenecks.png"
         fig_bt.savefig(bottleneck_filename, dpi=150)
         plt.close(fig_bt)
 

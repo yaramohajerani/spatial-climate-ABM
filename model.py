@@ -14,6 +14,7 @@ from mesa.space import MultiGrid
 
 from agents import FirmAgent, HouseholdAgent
 from hazard_utils import hazard_from_geotiffs
+from trophic_utils import compute_trophic_levels
 
 from climada.hazard import Hazard
 from climada.entity import Exposures, ImpactFunc
@@ -204,6 +205,7 @@ class EconomyModel(Model):
                 ),
                 "Average_Firm_Fitness": lambda m: np.mean([ag.fitness_score for ag in m.agents if isinstance(ag, FirmAgent)]),
                 "Firm_Replacements": lambda m: getattr(m, 'total_firm_replacements', 0),
+                "Total_Sales": lambda m: sum(getattr(ag, "sales_total", 0.0) for ag in m.agents if isinstance(ag, FirmAgent)),
             },
             agent_reporters={
                 "money": lambda a: getattr(a, "money", np.nan),
@@ -220,6 +222,7 @@ class EconomyModel(Model):
                 "type": lambda a: type(a).__name__,
                 "fitness": lambda a: getattr(a, "fitness_score", np.nan),
                 "survival_time": lambda a: getattr(a, "survival_time", 0),
+                "sales_total": lambda a: getattr(a, "sales_total", np.nan),
             },
         )
 
@@ -247,8 +250,6 @@ class EconomyModel(Model):
         self._exposures = self._build_exposures()
 
         # ------------------ Pre-compute trophic levels ------------------- #
-        from trophic_utils import compute_trophic_levels
-
         firm_adj_init = {
             ag.unique_id: [s.unique_id for s in ag.connected_firms]
             for ag in self.agents if isinstance(ag, FirmAgent)
@@ -656,6 +657,8 @@ class EconomyModel(Model):
         if not successful_firms:
             return  # pathological case
         
+        new_firms: list[FirmAgent] = []
+
         # Replace failed firms with mutated versions of successful ones
         for failed_firm in failed_firms:
             # Choose parent based on fitness (weighted selection)
@@ -753,6 +756,7 @@ class EconomyModel(Model):
             self.grid.remove_agent(failed_firm)
             self.agents.remove(failed_firm)  # CRITICAL: Also remove from model's agent list
             self.grid.place_agent(new_firm, failed_pos)
+            new_firms.append(new_firm)
             
             self.total_firm_replacements += 1
             if self.realistic_liquidation:
@@ -760,6 +764,22 @@ class EconomyModel(Model):
                       f"new firm {new_firm.unique_id} starts with ${new_money + new_capital_stock:.1f} (total replacements: {self.total_firm_replacements})")
             else:
                 print(f"[EVOLUTION] Step {self.current_step}: Replaced failed firm {failed_firm.unique_id} with mutated offspring {new_firm.unique_id} (total: {self.total_firm_replacements})")
+
+        # Refresh trophic levels and seed inventory for replacements to keep supply chains running
+        if new_firms:
+            firm_adj = {
+                f.unique_id: [s.unique_id for s in f.connected_firms]
+                for f in self.agents if isinstance(f, FirmAgent)
+            }
+            self._firm_levels = compute_trophic_levels(firm_adj)
+            for nf in new_firms:
+                lvl = self._firm_levels.get(nf.unique_id, 1.0)
+                if lvl <= 1.0:
+                    nf.inventory_output = max(nf.inventory_output, 20)
+                elif lvl <= 2.0:
+                    nf.inventory_output = max(nf.inventory_output, 10)
+                else:
+                    nf.inventory_output = max(nf.inventory_output, 5)
 
     # --------------------------------------------------------------------- #
     #                            EXPORT HELPERS                              #
@@ -817,31 +837,34 @@ class EconomyModel(Model):
         hazard_intensities = {}
         
         for htype, haz in self.hazards.items():
-            # Build per-hazard intensity map this year
+            # Build per-hazard intensity map this year by selecting at most one event
             intens = np.zeros(n_cells, dtype=float)
             ranges = self._hazard_event_ranges.get(htype, [])
+
+            active_events: list[tuple[int, float]] = []
             for i in range(haz.intensity.shape[0]):
-                # Skip events that are outside their active step window
                 if i < len(ranges):
                     start, end = ranges[i]
                     if not (start <= self.current_step <= end):
                         continue
-                # Annual frequency → per‐step probability (quarterly steps)
                 p_annual = haz.frequency[i]
-                p_hit = p_annual / self.steps_per_year  # approx small-λ
-                if p_hit <= 0:
-                    continue
-                hit_mask = np.random.random(n_cells) < p_hit
-                if not hit_mask.any():
-                    continue
-                row = haz.intensity[i]
-                depths = row.toarray().ravel() if hasattr(row, "toarray") else np.asarray(row).ravel()
-                intens[hit_mask] = np.maximum(intens[hit_mask], depths[hit_mask])
+                p_hit = p_annual / self.steps_per_year  # per-step probability
+                if p_hit > 0:
+                    active_events.append((i, p_hit))
+
+            if active_events:
+                for idx_ev, p_hit in active_events:
+                    row = haz.intensity[idx_ev]
+                    depths = row.toarray().ravel() if hasattr(row, "toarray") else np.asarray(row).ravel()
+                    # Cell-wise Bernoulli with per-step probability p_hit; combine with max
+                    hit_mask = np.random.random(n_cells) < p_hit
+                    if hit_mask.any():
+                        intens[hit_mask] = np.maximum(intens[hit_mask], depths[hit_mask])
 
             # Update global max depth for viz
             max_depth = np.maximum(max_depth, intens)
             
-            # Store intensity for agent-level processing
+            # Store intensity for agent-level processing (absolute depths)
             hazard_intensities[htype] = intens
 
         # If impacts disabled, zero‐out losses and intensities so agents see

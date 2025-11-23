@@ -49,11 +49,10 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 
 #### HouseholdAgent
 - **Labor Supply**: Each household supplies 1 unit of labor per step
-- **Employment Choice**: Maximizes `wage - distance_cost × distance` utility function within same-sector firms
-- **Consumption**: Spends 50% of money on goods, targeting 2-3 different trophic level ranges for variety
+- **Employment Choice**: Maximizes `wage - distance_cost × distance` utility across all firms in the same sector (remote work allowed; distance is just a disutility, not a hard cutoff)
+- **Consumption**: Spends 50% of money on goods, targeting 2-3 different trophic level ranges for variety; can buy from any firm with inventory (no proximity restriction)
 - **Risk Behavior**: Monitors hazard within random radius (1-50 cells), relocates when max hazard > 0.1
-- **Job-Driven Migration**: Relocates closer to same-sector firms after 3 consecutive steps without work
-- **Sector Specialization**: Only works for firms in the same sector, updates nearby firm list each step
+- **Sector Specialization**: Only works for firms in the same sector (but distance is soft)
 
 #### FirmAgent
 - **Production Technology**: Leontief production function with labor, material inputs, and capital
@@ -69,7 +68,7 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 ### Economic Mechanics
 
 #### Labor Markets
-- Households choose employers within work radius based on wage-distance utility (same sector only)
+- Households choose employers from all firms in their sector based on wage-distance utility (distance is a disutility, not a hard cutoff)
 - **Responsive wage dynamics**: Firms cut wages aggressively when cash-constrained, raise when labor-limited
 - **Financial constraint detection**: Firms that can't afford 2+ workers trigger rapid wage cuts (20% adjustment)
 - **Market-driven adjustment**: Wage changes respond to unemployment rate and firm financial health
@@ -96,17 +95,18 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 - **Leontief Technology**: Output limited by minimum of labor/coeff, inputs/coeff, capital/coeff
 - **Damage Factor**: Climate impacts reduce productive capacity with 50% recovery per step
 - **Budget Allocation**: 
-  - Allocates 90% of cash across labor, inputs (per supplier), and capital
+  - Allocates 90% of cash across labor, inputs (per supplier), and capital (learning adjusts weights over time)
   - Learned budget weights modify base allocation (0.8-1.2× multipliers)
   - Previous limiting factor gets bonus weight scaled by learned responsiveness
   - Each connected supplier gets independent input budget allocation
 - **Inventory Management**: Finished goods inventory with independent input tracking per supplier
 - **Dynamic Pricing**: 
-  - Learned price aggressiveness scales all adjustments (0.5-1.5× multiplier)
+  - Learned price aggressiveness scales adjustments (0.5-1.5× multiplier)
+  - If households bought nothing and inventory exists, prices are cut sharply and clamped to an affordability cap (~50% of avg household money)
   - Scarcity pricing: +5% when no recent production and low inventory
   - Supply-demand: +2% when inventory < 0.5× recent production, -2% when > 3×
-  - Cash-flow pricing: +3% when money < 3× wage offer
-  - Affordability bounds: Gentle correction at 1000× average household wealth
+  - Cash-flow pricing only raises prices when households are actually buying
+  - Affordability bounds prevent runaway pricing relative to household wealth
 
 ### Climate Hazard System
 
@@ -129,60 +129,17 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 
 ## Usage
 
-### Installation
+### Running Simulations
+
+Use a JSON parameter file (recommended) or pass `--rp-file` directly:
 
 ```bash
-# Create virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-### Basic Usage
-
-#### Parameter Files (Recommended)
-Create a JSON parameter file for complex simulations:
-
-```json
-{
-  "rp_files": [
-    "10:1:20:FL:data/processed/flood_2030_rp10.tif",
-    "10:21:40:FL:data/processed/flood_2050_rp10.tif",
-    "100:1:20:FL:data/processed/flood_2030_rp100.tif"
-  ],
-  "steps": 70,
-  "seed": 42,
-  "start_year": 2020,
-  "steps_per_year": 4,
-  "topology": "sample_firm_topology.json",
-  "learning": {
-    "enabled": true,
-    "memory_length": 10,
-    "mutation_rate": 0.05,
-    "adaptation_frequency": 5,
-    "min_money_survival": 1.0,
-    "replacement_frequency": 10
-  }
-}
-```
-
-#### Running Simulations
-
-```bash
-# Headless simulation
 python run_simulation.py --param-file parameters.json
-
-# Interactive dashboard
-python run_simulation.py --param-file parameters.json --viz
-
-# Direct command line (single hazard)
-python run_simulation.py --rp-file "10:1:20:FL:flood_rp10.tif" --steps 50 --seed 42
-
-# Compare baseline vs hazard scenarios
-python compare_simulations.py --param-file parameters.json --out comparison.png
+# or, single hazard:
+python run_simulation.py --rp-file "10:1:20:FL:data/processed/flood_rp10.tif" --steps 50 --seed 42
 ```
+
+Parameters in the JSON file mirror the CLI flags; see `quick_test_parameters.json` for an example.
 
 ### Data Preprocessing
 
