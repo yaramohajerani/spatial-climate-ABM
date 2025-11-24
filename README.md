@@ -95,14 +95,14 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 - **Leontief Technology**: Output limited by minimum of labor/coeff, inputs/coeff, capital/coeff
 - **Damage Factor**: Climate impacts reduce productive capacity with 50% recovery per step
 - **Budget Allocation**: 
-  - Allocates 90% of cash across labor, inputs (per supplier), and capital (learning adjusts weights over time)
+  - Allocates 90% of cash across labor, inputs (per supplier), and capital with a minimum labor reserve (3× wage) layered on top of learned weights
   - Learned budget weights modify base allocation (0.8-1.2× multipliers)
   - Previous limiting factor gets bonus weight scaled by learned responsiveness
   - Each connected supplier gets independent input budget allocation
 - **Inventory Management**: Finished goods inventory with independent input tracking per supplier
 - **Dynamic Pricing**: 
   - Learned price aggressiveness scales adjustments (0.5-1.5× multiplier)
-  - If households bought nothing and inventory exists, prices are cut sharply and clamped to an affordability cap (~50% of avg household money)
+  - If households bought nothing and inventory exists, prices are cut sharply (escalating with repeated no-sales) and clamped to an affordability cap (~25% of avg household money)
   - Scarcity pricing: +5% when no recent production and low inventory
   - Supply-demand: +2% when inventory < 0.5× recent production, -2% when > 3×
   - Cash-flow pricing only raises prices when households are actually buying

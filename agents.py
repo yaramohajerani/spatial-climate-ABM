@@ -572,6 +572,8 @@ class FirmAgent(Agent):
         liquid = max(0, self.money)  # Ensure non-negative
         liquid_alloc = liquid * 0.9
         reserve_labor = liquid_alloc * weights["labor"] / total_w
+        # Guarantee enough for multiple hires so labour is not starved by budgeting
+        reserve_labor = max(reserve_labor, self.wage_offer * 3)
         reserve_input_total = liquid_alloc * weights["input_total"] / total_w
         reserve_cap = liquid_alloc * weights["capital"] / total_w
 
@@ -648,11 +650,13 @@ class FirmAgent(Agent):
         
         # Learned pricing aggressiveness
         price_mult = self.strategy.get('price_aggressiveness', 1.0)
-        affordable_cap = max(0.01, avg_household_money * 0.5)
+        affordable_cap = max(0.01, avg_household_money * 0.25)
         
         if self.hh_sales_last_step <= 0 and self.inventory_output > 0:
             # No household sales → aggressively cut prices until households buy
             cut_factor = 0.6 if self.inventory_output > 5 else 0.75
+            if self.no_sales_streak >= 1:
+                cut_factor *= 0.8  # escalate cuts after multiple dry steps
             self.price *= cut_factor
             self.price = min(self.price, affordable_cap)
             # Skip further upward adjustments this step
