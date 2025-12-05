@@ -142,6 +142,7 @@ def main() -> None:  # noqa: D401
         learning_config = {**args.learning_params, "enabled": False}
     else:
         learning_config = args.learning_params
+    learning_enabled = bool(learning_config.get("enabled", True))
 
     # Generate scenario label for output files
     scenario_parts = []
@@ -150,10 +151,10 @@ def main() -> None:  # noqa: D401
     else:
         scenario_parts.append("baseline")
     
-    if args.no_learning:
-        scenario_parts.append("nolearning")
-    else:
+    if learning_enabled:
         scenario_parts.append("learning")
+    else:
+        scenario_parts.append("nolearning")
     
     scenario_label = "_".join(scenario_parts)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -185,10 +186,7 @@ def main() -> None:  # noqa: D401
     else:
         scenario_display = "Baseline"
     
-    if args.no_learning:
-        scenario_display += " + No Learning"
-    else:
-        scenario_display += " + Learning"
+    scenario_display += " + No Learning" if not learning_enabled else " + Learning"
     
     df["Scenario"] = scenario_display
     df["Step"] = df.index
