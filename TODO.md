@@ -23,3 +23,8 @@
 - [ ] Add support for netCDF input files
 - [ ] Add support for more hazards including wildfires, tropical cyclons, drought
 - [ ] Add support for chronic risks
+- [x] Keep hazard severity by event and sample only one return-period event per step (avoid stacking multiple RPs and losing relative intensity).
+- [x] Align input purchasing with the actual bottleneck (capital/damage), not just hired labour.
+- [x] Let prices fall when no production but large inventories to avoid permanent rationing.
+- [x] Seed capital budgeting immediately after capital/damage shocks instead of waiting a full step.
+- [x] Seed inventory buffers for replacement firms and refresh trophic levels so downstream buyers do not stall.

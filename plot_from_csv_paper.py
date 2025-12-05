@@ -24,6 +24,11 @@ def parse_args():
         help="Path to the agents CSV file (optional, will auto-detect if not provided)"
     )
     parser.add_argument(
+        "--no-sector",
+        action="store_true",
+        help="Hide sector-level time series from agent data",
+    )
+    parser.add_argument(
         "--out", 
         default="recreated_plot.png",
         help="Output plot filename"
@@ -33,6 +38,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    show_sector_series = not args.no_sector
     
     # Load and combine multiple CSV files
     dataframes = []
@@ -119,39 +125,64 @@ def main():
     # Get unique scenarios
     unique_scenarios = sorted(df_combined["Scenario"].unique())
     print(f"Found scenarios: {unique_scenarios}")
+
+    # Map Step to Year per scenario so agent data can use actual years
+    step_to_year_map = {}
+    if "Year" in df_combined.columns and "Step" in df_combined.columns:
+        for scenario in unique_scenarios:
+            scen_df = df_combined[df_combined["Scenario"] == scenario]
+            mapping = (
+                scen_df.dropna(subset=["Step", "Year"])
+                .drop_duplicates(subset="Step")
+                .set_index("Step")["Year"]
+                .to_dict()
+            )
+            if mapping:
+                step_to_year_map[scenario] = mapping
+
+        if not step_to_year_map:
+            fallback_map = (
+                df_combined.dropna(subset=["Step", "Year"])
+                .drop_duplicates(subset="Step")
+                .set_index("Step")["Year"]
+                .to_dict()
+            )
+            if fallback_map:
+                step_to_year_map["__all__"] = fallback_map
+
+    def add_year_from_step(df, scenario):
+        """Attach Year values to agent data using mapping from aggregate results."""
+        if "Year" in df.columns or "Step" not in df.columns or df.empty:
+            return df
+        year_map = step_to_year_map.get(scenario) or step_to_year_map.get("__all__")
+        if not year_map:
+            return df
+        df_copy = df.copy()
+        df_copy["Year"] = df_copy["Step"].map(year_map)
+        return df_copy
     
     # Create color/style mapping: colors for hazard vs baseline, line styles for learning vs no learning
     scenario_style_map = {}
     for scenario in unique_scenarios:
-        if "hazard" in scenario.lower():
-            linestyle = "-"
-        else:
-            linestyle = ":" 
-
-        if "no learning" in scenario.lower():
-            color = "tab:orange"
-        else:
-            color = "black"
+        color = "tab:orange" if "hazard" in scenario.lower() else "tab:blue"
+        linestyle = ":" if "no learning" in scenario.lower() else "-"
             
         scenario_style_map[scenario] = {"color": color, "linestyle": linestyle}
     
-    # Define sector color palettes
-    sector_colors_learning = ['darkturquoise', 'cornflowerblue']
-    sector_colors_nolearning = ['rosybrown', 'lightcoral']
+    # Define sector color palettes keyed by baseline vs hazard for consistency with main lines
+    sector_colors_baseline = ["#6baed6", "#3182bd"]
+    sector_colors_hazard = ["#ffb347", "#ff7f0e"]
     
     def get_sector_style(scenario, sector_idx):
         """Get color and style for a sector line based on scenario and sector index."""
-        # Choose color palette based on learning vs no learning
-        if "no learning" in scenario.lower():
-            color = sector_colors_nolearning[sector_idx % len(sector_colors_nolearning)]
-        else:
-            color = sector_colors_learning[sector_idx % len(sector_colors_learning)]
-        
-        # Choose line style based on hazard vs baseline
+        # Choose color palette based on hazard vs baseline
         if "hazard" in scenario.lower():
-            linestyle = "-"
+            color = sector_colors_hazard[sector_idx % len(sector_colors_hazard)]
         else:
-            linestyle = ":"
+            color = sector_colors_baseline[sector_idx % len(sector_colors_baseline)]
+        
+        # Choose line style based on learning vs no learning
+        linestyle = ":" if "no learning" in scenario.lower() else "-"
         
         return {
             "color": color,
@@ -209,7 +240,7 @@ def main():
                            label=f"Mean - {scenario}", linewidth=2, zorder=3)
             
             # Add sector lines from agent data for wages and prices
-            if not firm_agents_df.empty and metric_name in ["Mean_Price", "Mean_Wage"]:
+            if show_sector_series and not firm_agents_df.empty and metric_name in ["Mean_Price", "Mean_Wage"]:
                 agent_col = "price" if metric_name == "Mean_Price" else "wage"
                 sectors = sorted(firm_agents_df["sector"].dropna().unique())
                 
@@ -219,6 +250,7 @@ def main():
                     else:
                         df_scen = firm_agents_df  # Use all data if no scenario column
                     
+                    df_scen = add_year_from_step(df_scen, scenario)
                     style = scenario_style_map[scenario]
                     
                     for idx_sec, sector in enumerate(sectors):
@@ -228,7 +260,9 @@ def main():
                         
                         # Use Year column if available, otherwise Step
                         if "Year" in sector_data.columns:
-                            grp = sector_data.groupby("Year")[agent_col].mean()
+                            grp = sector_data.dropna(subset=["Year"]).groupby("Year")[agent_col].mean()
+                            if grp.empty and "Step" in sector_data.columns:
+                                grp = sector_data.groupby("Step")[agent_col].mean()
                         else:
                             grp = sector_data.groupby("Step")[agent_col].mean()
                         if grp.empty:
@@ -253,10 +287,14 @@ def main():
                 
                 if df_scen.empty:
                     continue
+                
+                df_scen = add_year_from_step(df_scen, scenario)
                     
                 # Use Year column if available, otherwise Step
                 if "Year" in df_scen.columns:
-                    mean_grp = df_scen.groupby("Year")[agent_col].mean()
+                    mean_grp = df_scen.dropna(subset=["Year"]).groupby("Year")[agent_col].mean()
+                    if mean_grp.empty and "Step" in df_scen.columns:
+                        mean_grp = df_scen.groupby("Step")[agent_col].mean()
                 else:
                     mean_grp = df_scen.groupby("Step")[agent_col].mean()
                 if mean_grp.empty:
@@ -269,7 +307,7 @@ def main():
                        label=f"Mean - {scenario}", zorder=3)
             
             # Add sector lines
-            if not firm_agents_df.empty:
+            if show_sector_series and not firm_agents_df.empty:
                 sectors = sorted(firm_agents_df["sector"].dropna().unique())
                 
                 for scenario in unique_scenarios:
@@ -278,13 +316,16 @@ def main():
                     else:
                         df_scen = firm_agents_df  # Use all data if no scenario column
                     
+                    df_scen = add_year_from_step(df_scen, scenario)
                     style = scenario_style_map[scenario]
                     
                     for idx_sec, sector in enumerate(sectors):
                         sector_data = df_scen[df_scen["sector"] == sector]
                         # Use Year column if available, otherwise Step
                         if "Year" in sector_data.columns:
-                            grp = sector_data.groupby("Year")[agent_col].mean()
+                            grp = sector_data.dropna(subset=["Year"]).groupby("Year")[agent_col].mean()
+                            if grp.empty and "Step" in sector_data.columns:
+                                grp = sector_data.groupby("Step")[agent_col].mean()
                         else:
                             grp = sector_data.groupby("Step")[agent_col].mean()
                         if grp.empty:
@@ -309,10 +350,14 @@ def main():
                 
                 if df_scen.empty:
                     continue
+                
+                df_scen = add_year_from_step(df_scen, scenario)
                     
                 # Use Year column if available, otherwise Step
                 if "Year" in df_scen.columns:
-                    mean_grp = df_scen.groupby("Year")[agent_col].mean()
+                    mean_grp = df_scen.dropna(subset=["Year"]).groupby("Year")[agent_col].mean()
+                    if mean_grp.empty and "Step" in df_scen.columns:
+                        mean_grp = df_scen.groupby("Step")[agent_col].mean()
                 else:
                     mean_grp = df_scen.groupby("Step")[agent_col].mean()
                 if mean_grp.empty:
@@ -325,7 +370,7 @@ def main():
                        label=f"Mean - {scenario}", zorder=3)
             
             # Add sector lines if household data has sectors
-            if not household_agents_df.empty and "sector" in household_agents_df.columns:
+            if show_sector_series and not household_agents_df.empty and "sector" in household_agents_df.columns:
                 sectors = sorted(household_agents_df["sector"].dropna().unique())
                 
                 for scenario in unique_scenarios:
@@ -334,13 +379,16 @@ def main():
                     else:
                         df_scen = household_agents_df  # Use all data if no scenario column
                     
+                    df_scen = add_year_from_step(df_scen, scenario)
                     style = scenario_style_map[scenario]
                     
                     for idx_sec, sector in enumerate(sectors):
                         sector_data = df_scen[df_scen["sector"] == sector]
                         # Use Year column if available, otherwise Step
                         if "Year" in sector_data.columns:
-                            grp = sector_data.groupby("Year")[agent_col].mean()
+                            grp = sector_data.dropna(subset=["Year"]).groupby("Year")[agent_col].mean()
+                            if grp.empty and "Step" in sector_data.columns:
+                                grp = sector_data.groupby("Step")[agent_col].mean()
                         else:
                             grp = sector_data.groupby("Step")[agent_col].mean()
                         if grp.empty:
@@ -373,6 +421,8 @@ def main():
                 df_sub = firm_agents_df[firm_agents_df["Scenario"] == scenario]
             else:
                 df_sub = firm_agents_df  # Use all data if no scenario column
+
+            df_sub = add_year_from_step(df_sub, scenario)
             
             if df_sub.empty:
                 ax.text(0.5, 0.5, f"No data for\n{scenario}", 
@@ -383,10 +433,10 @@ def main():
             # Use Year column if available, otherwise Step
             if "Year" in df_sub.columns:
                 time_col = "Year"
-                time_vals = df_sub["Year"].unique()
+                time_vals = sorted(df_sub["Year"].dropna().unique())
             else:
                 time_col = "Step"
-                time_vals = df_sub["Step"].unique()
+                time_vals = sorted(df_sub["Step"].unique())
             x_vals = time_vals
             
             # Create percentage arrays

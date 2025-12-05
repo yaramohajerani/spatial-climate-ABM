@@ -1,6 +1,6 @@
 {
   "rp_files": [
-   "10:1:180:FL:data/processed/inunriver_historical_000000000WATCH_1980_rp00010_scaled-0.05.tif"
+    "10:1:180:FL:data/processed/inunriver_historical_000000000WATCH_1980_rp00010_scaled-0.05.tif"
   ],
   "steps": 180,
   "seed": 42,
@@ -11,11 +11,11 @@
     "enabled": true,
     "memory_length": 10,
     "mutation_rate": 0.05,
-    "adaptation_frequency": 5,
+    "adaptation_frequency": 3,
     "min_money_survival": 1.0,
     "replacement_frequency": 10,
-    "realistic_liquidation": false,    
-    "liquidation_rate": 0.8,  
-    "base_startup_capital": 30.0 
+    "realistic_liquidation": false,
+    "liquidation_rate": 0.8,
+    "base_startup_capital": 30.0
   }
-} 
+}
