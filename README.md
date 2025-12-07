@@ -16,26 +16,20 @@ The model simulates economic agents (households and firms) on a spatial grid der
 - **Firm Learning System**: Evolutionary strategy-based learning for budget allocation, pricing, wage setting, and risk adaptation
 - **Multiple Sectors**: Agriculture, manufacturing, wholesale, retail, services, and commodity sectors
 
-### Recent Model Improvements
+### Model Highlights (current behavior)
 
-**Firm Learning System (08/25)**:
-- **Evolutionary Strategy Learning**: Firms evolve strategies for budget allocation, pricing, wage setting, and risk adaptation
-- **Performance-Based Selection**: Failed firms are replaced with mutated versions of successful firms
-- **Adaptive Decision Making**: 6 key parameters control firm behavior: budget weights, risk sensitivity, pricing aggressiveness, wage responsiveness
-- **Fitness Evaluation**: Multi-component scoring based on money growth, production consistency, survival time, and resource balance
-- **Population Dynamics**: Bankruptcy prevention through learned optimal behaviors, with up to 25% of firms replaced per step
-
-**Enhanced Economic Realism (07/25)**:
-- **Responsive Wage Dynamics**: Wages now adjust quickly to financial constraints - firms cut wages aggressively when cash-limited, preventing artificial firm failures
-- **Scarcity-Based Pricing**: Prices rise naturally when production stops or inventory is low, creating realistic scarcity premiums
-- **Improved Budget Allocation**: Manufacturing firms prioritize labor budget when cash-constrained, ensuring they can afford workers
-- **Relaxed Price Bounds**: Removed artificial price caps (1.5x → 1000x household wealth) to allow natural economic growth over decades
-- **Market-Driven Inflation**: Prices can grow organically without artificial constraints, enabling realistic multi-decade simulations
+- **Distance-soft labor and goods markets**: Households consider all firms in their sector; distance is a disutility but there is no hard radius for hiring or shopping.
+- **Responsive Wage Dynamics**: Labour-limited firms raise wages when they have cash, but cut aggressively when they cannot afford even a couple of workers; non-labour-limited firms ease wages down when unemployment is high.
+- **Demand-aware Pricing**: Any sales (to households or other firms) count as demand; only zero sales trigger aggressive price cuts. Scarcity raises prices when production stops or inventory is low.
+- **Relaxed Price Bounds**: Artificial caps were removed (now up to 1000× household wealth) so prices can grow organically over multi-decade runs.
+- **Learning System**: Evolutionary strategy learning steers budget allocation, pricing, wage setting, and risk adaptation, with fitness-based replacement of weak firms.
 
 **Key Economic Behaviors**:
-- High unemployment → Rapid wage cuts → Firm survival
+- High unemployment → Mild wage easing → Cost control
+- Labour bottleneck + sufficient cash → Upward wage pressure to attract workers; cash-tight labour bottleneck → wage cuts to survive
+- Low/zero sales → Price cuts; any sales (firm or household) maintain price stance
 - Low production → Higher prices → Better firm cash flow
-- Cash constraints → Labor budget prioritization → Continued employment
+- Cash constraints → Labor budget floor (≥3× current wage offer in `prepare_budget()`) → Avoids zero hiring
 - Learning pressure → Strategy evolution → Improved adaptation
 - Market forces → Natural price/wage equilibrium → Sustainable growth
 
@@ -49,7 +43,7 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 
 #### HouseholdAgent
 - **Labor Supply**: Each household supplies 1 unit of labor per step
-- **Employment Choice**: Maximizes `wage - distance_cost × distance` utility across all firms in the same sector (remote work allowed; distance is just a disutility, not a hard cutoff)
+- **Employment Choice**: Maximizes `wage - distance_cost × distance` utility across all firms in the same sector. Distance is a soft disutility; there is no hard radius for hiring (remote work allowed).
 - **Consumption**: Spends 50% of money on goods, targeting 2-3 different trophic level ranges for variety; can buy from any firm with inventory (no proximity restriction)
 - **Risk Behavior**: Monitors hazard within random radius (1-50 cells), relocates when max hazard > 0.1
 - **Sector Specialization**: Only works for firms in the same sector (but distance is soft)
@@ -58,7 +52,7 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 - **Production Technology**: Leontief production function with labor, material inputs, and capital
 - **Technical Coefficients**: 0.5 units each of labor, inputs, and capital per unit output
 - **Learning System**: Evolutionary strategy learning with 6 adaptive parameters and fitness-based selection
-- **Wage Setting**: Learned wage responsiveness - cuts wages aggressively when cash-constrained, raises when labor-limited
+- **Wage Setting**: Learned wage responsiveness - raises wages when labour-limited and solvent, cuts when labour-limited and cash-constrained, eases down when not labour-limited
 - **Dynamic Pricing**: Learned pricing aggressiveness with supply-demand driven adjustments and scarcity premiums
 - **Input Procurement**: Independent input requirements from each connected supplier (all sectors)
 - **Budget Allocation**: Learned budget weights across labor, inputs, and capital based on previous limiting factor and strategy evolution
@@ -69,8 +63,8 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 
 #### Labor Markets
 - Households choose employers from all firms in their sector based on wage-distance utility (distance is a disutility, not a hard cutoff)
-- **Responsive wage dynamics**: Firms cut wages aggressively when cash-constrained, raise when labor-limited
-- **Financial constraint detection**: Firms that can't afford 2+ workers trigger rapid wage cuts (20% adjustment)
+- **Responsive wage dynamics**: Labour-limited and solvent → wage increases; labour-limited and cash-tight → wage cuts; otherwise mild downward pressure based on unemployment
+- **Financial constraint detection**: Faster downward adjustments only apply when not labour-limited and cash is insufficient
 - **Market-driven adjustment**: Wage changes respond to unemployment rate and firm financial health
 
 #### Supply Chain Networks
@@ -102,7 +96,7 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 - **Inventory Management**: Finished goods inventory with independent input tracking per supplier
 - **Dynamic Pricing**: 
   - Learned price aggressiveness scales adjustments (0.5-1.5× multiplier)
-  - If households bought nothing and inventory exists, prices are cut sharply (escalating with repeated no-sales) and clamped to an affordability cap (~25% of avg household money)
+  - If there are zero sales from anyone and inventory exists, prices are cut sharply (escalating with repeated no-sales) and clamped to an affordability cap (~25% of avg household money)
   - Scarcity pricing: +5% when no recent production and low inventory
   - Supply-demand: +2% when inventory < 0.5× recent production, -2% when > 3×
   - Cash-flow pricing only raises prices when households are actually buying
@@ -190,7 +184,7 @@ Specify firm locations and supply chains via JSON:
 - `seed`: Random seed for reproducibility
 
 ### Spatial Parameters
-- `work_radius`: Employment/shopping radius in grid cells (auto-computed from 1° geographic)
+- `work_radius`: Soft radius used for initial household placement; employment/shopping decisions are distance-weighted but not distance-limited.
 - Grid dimensions automatically derived from hazard raster extent
 
 ### Economic Parameters

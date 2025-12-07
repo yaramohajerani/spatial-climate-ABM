@@ -300,8 +300,6 @@ class FirmAgent(Agent):
         self.sales_this_step: float = 0.0
         self.revenue_this_step: float = 0.0
         self.no_sales_streak: int = 0
-        self.hh_sales_last_step: float = 0.0
-        self.hh_sales_this_step: float = 0.0
 
         # ---------------- Risk behaviour parameters ------------------- #
         # Radius monitored for hazard events (random per firm)
@@ -470,7 +468,6 @@ class FirmAgent(Agent):
         # Track sales for demand-based pricing
         self.sales_this_step += qty
         self.revenue_this_step += total_cost
-        self.hh_sales_this_step += qty
         self.sales_total += qty
         return qty
 
@@ -652,8 +649,9 @@ class FirmAgent(Agent):
         price_mult = self.strategy.get('price_aggressiveness', 1.0)
         affordable_cap = max(0.01, avg_household_money * 0.25)
         
-        if self.hh_sales_last_step <= 0 and self.inventory_output > 0:
-            # No household sales → aggressively cut prices until households buy
+        # Treat any sales (household or firm) as valid demand; only cut if literally no sales
+        if self.sales_last_step <= 0 and self.inventory_output > 0:
+            # No sales at all → aggressively cut prices until demand appears
             cut_factor = 0.6 if self.inventory_output > 5 else 0.75
             if self.no_sales_streak >= 1:
                 cut_factor *= 0.8  # escalate cuts after multiple dry steps
@@ -677,13 +675,13 @@ class FirmAgent(Agent):
                 self.price *= (1.0 - 0.02 * price_mult)
         
         # Special case: if we're cash-constrained, try to raise prices to improve margins
-        if self.money < self.wage_offer * 3 and self.price < avg_household_money * 2.0 and self.hh_sales_last_step > 0:
+        if self.money < self.wage_offer * 3 and self.price < avg_household_money * 2.0 and self.sales_last_step > 0:
             self.price *= 1.03  # Increase prices to improve cash flow
         
         # Only prevent truly extreme price explosions that would break the model
         max_reasonable_price = avg_household_money * 1000.0  
         self.price = float(max(0.01, min(self.price, max_reasonable_price)))
-        if self.hh_sales_last_step <= 0 and self.inventory_output > 0:
+        if self.sales_last_step <= 0 and self.inventory_output > 0:
             self.price = min(self.price, affordable_cap)
         
         # Additional safety: if price gets extremely high relative to affordability,
@@ -837,10 +835,8 @@ class FirmAgent(Agent):
             self.no_sales_streak = 0
         self.sales_last_step = self.sales_this_step
         self.revenue_last_step = self.revenue_this_step
-        self.hh_sales_last_step = self.hh_sales_this_step
         self.sales_this_step = 0.0
         self.revenue_this_step = 0.0
-        self.hh_sales_this_step = 0.0
         self.sales_total = 0.0
 
     # ---------------- Internal helpers -------------------------------- #
