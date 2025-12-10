@@ -171,7 +171,6 @@ def main() -> None:  # noqa: D401
     model = EconomyModel(
         num_households=100,
         num_firms=20,
-        shock_step=5,
         hazard_events=events,
         seed=args.seed,
         apply_hazard_impacts=apply_hazards,

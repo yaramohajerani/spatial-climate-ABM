@@ -149,14 +149,6 @@ _BASE_PARAMS: Dict[str, Any] = {
         "max": 100,
         "step": 5,
     },
-    "shock_step": {
-        "type": "SliderInt",
-        "label": "Year of shock",
-        "value": 5,
-        "min": 1,
-        "max": 20,
-        "step": 1,
-    },
 }
 
 # ----------------- Combined hazard + agents map component ---------------- #

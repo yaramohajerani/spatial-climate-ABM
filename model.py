@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Tuple, Iterable, Union
+from typing import Dict, List, Tuple, Iterable
 
 import numpy as np
 import pandas as pd
@@ -50,10 +50,8 @@ class EconomyModel(Model):
         height: int | None = None,
         num_households: int = 100,
         num_firms: int = 20,
-        shock_step: int = 5,
         # Iterable of (return_period, start_step, end_step, hazard_type, path) tuples
         hazard_events: Iterable[Tuple[int, int, int, str, str]] | None = None,
-        hazard_type: str = "FL",  # CLIMADA hazard tag for flood
         seed: int | None = None,
         start_year: int = 0,
         steps_per_year: int = 4,
@@ -78,10 +76,6 @@ class EconomyModel(Model):
         self.firm_learning_enabled: bool = self.learning_config.get('enabled', True)
         self.min_money_survival: float = self.learning_config.get('min_money_survival', 1.0)
         self.replacement_frequency: int = self.learning_config.get('replacement_frequency', 10)
-        # Realistic wealth management
-        self.realistic_liquidation: bool = self.learning_config.get('realistic_liquidation', True)
-        self.liquidation_rate: float = self.learning_config.get('liquidation_rate', 0.8)
-        self.base_startup_capital: float = self.learning_config.get('base_startup_capital', 30.0)
 
         # Household consumption ratios by sector (configurable)
         # Default: 30% commodity, 70% manufacturing - ensures demand for full supply chain
@@ -190,10 +184,6 @@ class EconomyModel(Model):
         # Initialize per-cell hazard depth map (populated on-demand for agent cells only)
         # This is a sparse dict, not pre-populated for all cells
         self.hazard_map: Dict[Coords, float] = {}
-
-        # --- Hazard configuration --- #
-        self.shock_step = shock_step  # timestep to introduce hazard
-        self.hazard_type = hazard_type
 
         # Base wage used by firms when hiring labour
         self.mean_wage = 1.0
@@ -679,50 +669,10 @@ class EconomyModel(Model):
             
             # Store the position before any modifications
             failed_pos = failed_firm.pos
-            failed_money = failed_firm.money
-            failed_capital = failed_firm.capital_stock
-            
-            if self.realistic_liquidation:
-                # ============ REALISTIC LIQUIDATION PROCESS ============
-                total_liquidation = (failed_money + failed_capital) * self.liquidation_rate
-                
-                # Distribute liquidation proceeds
-                if total_liquidation > 0:
-                    # 60% to creditors (households and suppliers), 40% to successful firms
-                    creditor_share = total_liquidation * 0.6
-                    market_share = total_liquidation * 0.4
-                    
-                    # Pay creditors (households get wage debt, suppliers get trade debt)
-                    # Use cached household list for efficiency
-                    nearby_households = [hh for hh in self._households
-                                       if failed_firm in getattr(hh, 'nearby_firms', [])]
-                    if nearby_households:
-                        creditor_payment_per_hh = creditor_share * 0.7 / len(nearby_households)
-                        for hh in nearby_households:
-                            hh.money += creditor_payment_per_hh
-                    
-                    # Pay supplier firms
-                    if failed_firm.connected_firms:
-                        supplier_payment = creditor_share * 0.3 / len(failed_firm.connected_firms)
-                        for supplier in failed_firm.connected_firms:
-                            supplier.money += supplier_payment
-                    
-                    # Distribute market opportunities to successful firms
-                    if successful_firms:
-                        market_payment = market_share / len(successful_firms)
-                        for firm in successful_firms:
-                            firm.money += market_payment
-                
-                # Calculate startup capital (conservative but viable)
-                startup_from_liquidation = max(0, total_liquidation * 0.3)  # 30% of liquidated value
-                new_capital = self.base_startup_capital + startup_from_liquidation
-                new_money = new_capital * 0.8  # Most as working capital
-                new_capital_stock = new_capital * 0.2  # Some as fixed assets
-            else:
-                # ============ LEGACY BEHAVIOR (for comparison) ============
-                total_liquidation = 0
-                new_money = 100.0
-                new_capital_stock = 100.0
+
+            # New firm starts with fixed capital
+            new_money = 100.0
+            new_capital_stock = 100.0
             
             # Create new firm with inherited strategy
             new_firm = FirmAgent(
@@ -771,11 +721,7 @@ class EconomyModel(Model):
             new_firms.append(new_firm)
             
             self.total_firm_replacements += 1
-            if self.realistic_liquidation:
-                print(f"[EVOLUTION] Step {self.current_step}: Liquidated firm {failed_firm.unique_id} (${failed_money + failed_capital:.1f} → ${total_liquidation:.1f}), "
-                      f"new firm {new_firm.unique_id} starts with ${new_money + new_capital_stock:.1f} (total replacements: {self.total_firm_replacements})")
-            else:
-                print(f"[EVOLUTION] Step {self.current_step}: Replaced failed firm {failed_firm.unique_id} with mutated offspring {new_firm.unique_id} (total: {self.total_firm_replacements})")
+            print(f"[EVOLUTION] Step {self.current_step}: Replaced failed firm {failed_firm.unique_id} with offspring {new_firm.unique_id} (total: {self.total_firm_replacements})")
 
         # Refresh trophic levels and seed inventory for replacements to keep supply chains running
         if new_firms:
