@@ -555,7 +555,7 @@ def main():
                 else:
                     line.set_linewidth(3)  # Thicker for main scenario lines
     
-    plt.suptitle("Baseline vs. RCP8.5 Agent Trajectories", fontsize=14, fontweight='bold')
+    plt.suptitle("Baseline vs. RCP4.5 Agent Trajectories", fontsize=14, fontweight='bold')
     plt.tight_layout()
     
     # Adjust layout to make room for bottom legend
