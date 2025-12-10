@@ -18,7 +18,7 @@ The model simulates economic agents (households and firms) on a spatial grid der
 
 ### Model Highlights (current behavior)
 
-- **Distance-soft labor and goods markets**: Households consider all firms in their sector; distance is a disutility but there is no hard radius for hiring or shopping.
+- **Distance-soft labor and goods markets**: Households consider all firms (cross-sector employment allowed); distance is a disutility but there is no hard radius for hiring or shopping.
 - **Responsive Wage Dynamics**: Labour-limited firms raise wages when they have cash, but cut aggressively when they cannot afford even a couple of workers; non-labour-limited firms ease wages down when unemployment is high.
 - **Demand-aware Pricing**: Any sales (to households or other firms) count as demand; only zero sales trigger aggressive price cuts. Scarcity raises prices when production stops or inventory is low.
 - **Relaxed Price Bounds**: Artificial caps were removed (now up to 1000× household wealth) so prices can grow organically over multi-decade runs.
@@ -43,10 +43,10 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 
 #### HouseholdAgent
 - **Labor Supply**: Each household supplies 1 unit of labor per step
-- **Employment Choice**: Maximizes `wage - distance_cost × distance` utility across all firms in the same sector. Distance is a soft disutility; there is no hard radius for hiring (remote work allowed).
-- **Consumption**: Spends 50% of money on goods, targeting 2-3 different trophic level ranges for variety; can buy from any firm with inventory (no proximity restriction)
+- **Employment Choice**: Maximizes `wage - distance_cost × distance` utility across all firms (cross-sector employment allowed). Distance is a soft disutility; there is no hard radius for hiring (remote work allowed).
+- **Consumption**: Allocates budget across sectors based on configurable ratios (default: 30% commodity, 70% manufacturing); can buy from any firm with inventory (no proximity restriction)
 - **Risk Behavior**: Monitors hazard within random radius (1-50 cells), relocates when max hazard > 0.1
-- **Sector Specialization**: Only works for firms in the same sector (but distance is soft)
+- **Sector Association**: Households have a sector for statistical tracking, but can work for any firm
 
 #### FirmAgent
 - **Production Technology**: Leontief production function with labor, material inputs, and capital
@@ -54,7 +54,7 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 - **Learning System**: Evolutionary strategy learning with 6 adaptive parameters and fitness-based selection
 - **Wage Setting**: Learned wage responsiveness - raises wages when labour-limited and solvent, cuts when labour-limited and cash-constrained, eases down when not labour-limited
 - **Dynamic Pricing**: Learned pricing aggressiveness with supply-demand driven adjustments and scarcity premiums
-- **Input Procurement**: Independent input requirements from each connected supplier (all sectors)
+- **Input Procurement**: Inputs from connected suppliers are substitutable (sum-based, not min-based); can produce as long as total inputs meet requirements
 - **Budget Allocation**: Learned budget weights across labor, inputs, and capital based on previous limiting factor and strategy evolution
 - **Capital Investment**: Purchase additional capital when capital-constrained from cheapest available sellers
 - **Risk Adaptation**: Learned risk sensitivity - increase capital requirements when local hazard > 0.1, with firm-specific relaxation rates
@@ -62,10 +62,11 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 ### Economic Mechanics
 
 #### Labor Markets
-- Households choose employers from all firms in their sector based on wage-distance utility (distance is a disutility, not a hard cutoff)
+- Households choose employers from all firms based on wage-distance utility (cross-sector employment allowed; distance is a disutility, not a hard cutoff)
 - **Responsive wage dynamics**: Labour-limited and solvent → wage increases; labour-limited and cash-tight → wage cuts; otherwise mild downward pressure based on unemployment
 - **Financial constraint detection**: Faster downward adjustments only apply when not labour-limited and cash is insufficient
 - **Market-driven adjustment**: Wage changes respond to unemployment rate and firm financial health
+- **Labor mobility**: Workers flow to highest-paying firms regardless of sector, preventing sector-specific death spirals
 
 #### Supply Chain Networks
 - **Random Networks**: Distance-weighted probabilistic connections between firms
@@ -86,7 +87,7 @@ The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimens
 - **Evolutionary Pressure**: Up to 25% of firms replaced per step after step 5, with fitness-weighted parent selection
 
 #### Production and Trade
-- **Leontief Technology**: Output limited by minimum of labor/coeff, inputs/coeff, capital/coeff
+- **Leontief Technology**: Output limited by minimum of labor/coeff, inputs/coeff, capital/coeff; inputs from multiple suppliers are summed (substitutable)
 - **Damage Factor**: Climate impacts reduce productive capacity with 50% recovery per step
 - **Budget Allocation**: 
   - Allocates 90% of cash across labor, inputs (per supplier), and capital with a minimum labor reserve (3× wage) layered on top of learned weights
@@ -193,6 +194,7 @@ Specify firm locations and supply chains via JSON:
 - **Price Adjustment**: Supply-demand driven with scarcity premiums and upper bounds (1000× household wealth ceiling)
 - **Wage Adjustment**: Responsive to financial constraints with rapid adjustment (20%) when cash-limited
 - **Budget Allocation**: All firms allocate 90% of cash with previous limiting factor getting 30% bonus weight
+- **Consumption Ratios**: Configurable household spending by sector (default: 30% commodity, 70% manufacturing)
 
 ### Risk Parameters
 - **Household Migration**: Threshold 0.1, monitoring radius 1-50 cells
