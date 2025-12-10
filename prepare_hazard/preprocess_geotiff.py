@@ -124,7 +124,7 @@ def _process_one(path: Path, out_dir: Path, crop_bounds: BBox | None, scale_fact
                 src_crs=src.crs,
                 dst_transform=new_transform,
                 dst_crs=src.crs,
-                resampling=Resampling.average,
+                resampling=Resampling.max,
             )
             data = dest
             transform = new_transform

@@ -1,0 +1,628 @@
+{
+  "firms": [
+    {
+      "id": 1,
+      "sector": "commodity",
+      "lon": 109.583,
+      "lat": 30.917,
+      "capital": 5.0
+    },
+    {
+      "id": 2,
+      "sector": "commodity",
+      "lon": 109.417,
+      "lat": 30.917,
+      "capital": 5.0
+    },
+    {
+      "id": 3,
+      "sector": "commodity",
+      "lon": 111.583,
+      "lat": 28.917,
+      "capital": 5.0
+    },
+    {
+      "id": 4,
+      "sector": "commodity",
+      "lon": 83.917,
+      "lat": 21.417,
+      "capital": 5.0
+    },
+    {
+      "id": 5,
+      "sector": "commodity",
+      "lon": 83.917,
+      "lat": 21.25,
+      "capital": 5.0
+    },
+    {
+      "id": 6,
+      "sector": "commodity",
+      "lon": 83.917,
+      "lat": 21.083,
+      "capital": 5.0
+    },
+    {
+      "id": 7,
+      "sector": "commodity",
+      "lon": 93.75,
+      "lat": 26.75,
+      "capital": 5.0
+    },
+    {
+      "id": 8,
+      "sector": "commodity",
+      "lon": 93.583,
+      "lat": 26.75,
+      "capital": 5.0
+    },
+    {
+      "id": 9,
+      "sector": "commodity",
+      "lon": 93.417,
+      "lat": 26.75,
+      "capital": 5.0
+    },
+    {
+      "id": 10,
+      "sector": "commodity",
+      "lon": 105.75,
+      "lat": 15.25,
+      "capital": 5.0
+    },
+    {
+      "id": 11,
+      "sector": "commodity",
+      "lon": 105.75,
+      "lat": 15.083,
+      "capital": 5.0
+    },
+    {
+      "id": 12,
+      "sector": "commodity",
+      "lon": 105.583,
+      "lat": 15.75,
+      "capital": 5.0
+    },
+    {
+      "id": 13,
+      "sector": "commodity",
+      "lon": 97.083,
+      "lat": 24.917,
+      "capital": 5.0
+    },
+    {
+      "id": 14,
+      "sector": "commodity",
+      "lon": 97.25,
+      "lat": 24.917,
+      "capital": 5.0
+    },
+    {
+      "id": 15,
+      "sector": "commodity",
+      "lon": 95.917,
+      "lat": 25.917,
+      "capital": 5.0
+    },
+    {
+      "id": 16,
+      "sector": "commodity",
+      "lon": 95.083,
+      "lat": 21.917,
+      "capital": 5.0
+    },
+    {
+      "id": 17,
+      "sector": "commodity",
+      "lon": 95.25,
+      "lat": 19.75,
+      "capital": 5.0
+    },
+    {
+      "id": 18,
+      "sector": "commodity",
+      "lon": 73.75,
+      "lat": 23.083,
+      "capital": 5.0
+    },
+    {
+      "id": 19,
+      "sector": "commodity",
+      "lon": 73.583,
+      "lat": 23.083,
+      "capital": 5.0
+    },
+    {
+      "id": 20,
+      "sector": "commodity",
+      "lon": 73.417,
+      "lat": 23.083,
+      "capital": 5.0
+    },
+    {
+      "id": 21,
+      "sector": "manufacturing",
+      "lon": 44.75,
+      "lat": 35.917,
+      "capital": 3.0
+    },
+    {
+      "id": 22,
+      "sector": "manufacturing",
+      "lon": 44.583,
+      "lat": 35.917,
+      "capital": 3.0
+    },
+    {
+      "id": 23,
+      "sector": "manufacturing",
+      "lon": -92.417,
+      "lat": 36.25,
+      "capital": 3.0
+    },
+    {
+      "id": 24,
+      "sector": "manufacturing",
+      "lon": -92.25,
+      "lat": 36.25,
+      "capital": 3.0
+    },
+    {
+      "id": 25,
+      "sector": "manufacturing",
+      "lon": -92.25,
+      "lat": 36.083,
+      "capital": 3.0
+    },
+    {
+      "id": 26,
+      "sector": "manufacturing",
+      "lon": -54.75,
+      "lat": -26.083,
+      "capital": 3.0
+    },
+    {
+      "id": 27,
+      "sector": "manufacturing",
+      "lon": -54.75,
+      "lat": -25.917,
+      "capital": 3.0
+    },
+    {
+      "id": 28,
+      "sector": "manufacturing",
+      "lon": -54.583,
+      "lat": -25.917,
+      "capital": 3.0
+    },
+    {
+      "id": 29,
+      "sector": "manufacturing",
+      "lon": 15.083,
+      "lat": -4.583,
+      "capital": 3.0
+    },
+    {
+      "id": 30,
+      "sector": "manufacturing",
+      "lon": 15.083,
+      "lat": -4.417,
+      "capital": 3.0
+    },
+    {
+      "id": 31,
+      "sector": "manufacturing",
+      "lon": 15.25,
+      "lat": -4.417,
+      "capital": 3.0
+    },
+    {
+      "id": 32,
+      "sector": "manufacturing",
+      "lon": -72.083,
+      "lat": 1.917,
+      "capital": 3.0
+    },
+    {
+      "id": 33,
+      "sector": "manufacturing",
+      "lon": -67.417,
+      "lat": -8.083,
+      "capital": 3.0
+    },
+    {
+      "id": 34,
+      "sector": "manufacturing",
+      "lon": -69.917,
+      "lat": 1.083,
+      "capital": 3.0
+    },
+    {
+      "id": 35,
+      "sector": "manufacturing",
+      "lon": 2.417,
+      "lat": 8.417,
+      "capital": 3.0
+    },
+    {
+      "id": 36,
+      "sector": "manufacturing",
+      "lon": 2.417,
+      "lat": 8.25,
+      "capital": 3.0
+    },
+    {
+      "id": 37,
+      "sector": "manufacturing",
+      "lon": 50.083,
+      "lat": 53.417,
+      "capital": 3.0
+    },
+    {
+      "id": 38,
+      "sector": "manufacturing",
+      "lon": 49.917,
+      "lat": 53.417,
+      "capital": 3.0
+    },
+    {
+      "id": 39,
+      "sector": "manufacturing",
+      "lon": 16.25,
+      "lat": 48.417,
+      "capital": 3.0
+    },
+    {
+      "id": 40,
+      "sector": "manufacturing",
+      "lon": 16.083,
+      "lat": 48.417,
+      "capital": 3.0
+    },
+    {
+      "id": 41,
+      "sector": "manufacturing",
+      "lon": 8.25,
+      "lat": 47.583,
+      "capital": 3.0
+    },
+    {
+      "id": 42,
+      "sector": "manufacturing",
+      "lon": -66.583,
+      "lat": 46.25,
+      "capital": 3.0
+    },
+    {
+      "id": 43,
+      "sector": "manufacturing",
+      "lon": -66.583,
+      "lat": 46.083,
+      "capital": 3.0
+    },
+    {
+      "id": 44,
+      "sector": "manufacturing",
+      "lon": -54.583,
+      "lat": -25.75,
+      "capital": 3.0
+    },
+    {
+      "id": 45,
+      "sector": "manufacturing",
+      "lon": -54.583,
+      "lat": -25.583,
+      "capital": 3.0
+    },
+    {
+      "id": 46,
+      "sector": "manufacturing",
+      "lon": -54.583,
+      "lat": -25.417,
+      "capital": 3.0
+    },
+    {
+      "id": 47,
+      "sector": "manufacturing",
+      "lon": 49.75,
+      "lat": 53.417,
+      "capital": 3.0
+    },
+    {
+      "id": 48,
+      "sector": "manufacturing",
+      "lon": 49.583,
+      "lat": 53.417,
+      "capital": 3.0
+    },
+    {
+      "id": 49,
+      "sector": "manufacturing",
+      "lon": 49.417,
+      "lat": 53.417,
+      "capital": 3.0
+    },
+    {
+      "id": 50,
+      "sector": "manufacturing",
+      "lon": -92.083,
+      "lat": 36.083,
+      "capital": 3.0
+    }
+  ],
+  "edges": [
+    {
+      "src": 1,
+      "dst": 21
+    },
+    {
+      "src": 1,
+      "dst": 41
+    },
+    {
+      "src": 2,
+      "dst": 22
+    },
+    {
+      "src": 2,
+      "dst": 37
+    },
+    {
+      "src": 2,
+      "dst": 42
+    },
+    {
+      "src": 3,
+      "dst": 23
+    },
+    {
+      "src": 3,
+      "dst": 43
+    },
+    {
+      "src": 4,
+      "dst": 24
+    },
+    {
+      "src": 4,
+      "dst": 44
+    },
+    {
+      "src": 5,
+      "dst": 25
+    },
+    {
+      "src": 5,
+      "dst": 45
+    },
+    {
+      "src": 6,
+      "dst": 21
+    },
+    {
+      "src": 6,
+      "dst": 26
+    },
+    {
+      "src": 6,
+      "dst": 41
+    },
+    {
+      "src": 6,
+      "dst": 46
+    },
+    {
+      "src": 7,
+      "dst": 27
+    },
+    {
+      "src": 7,
+      "dst": 47
+    },
+    {
+      "src": 8,
+      "dst": 28
+    },
+    {
+      "src": 8,
+      "dst": 48
+    },
+    {
+      "src": 9,
+      "dst": 29
+    },
+    {
+      "src": 9,
+      "dst": 49
+    },
+    {
+      "src": 10,
+      "dst": 25
+    },
+    {
+      "src": 10,
+      "dst": 30
+    },
+    {
+      "src": 10,
+      "dst": 45
+    },
+    {
+      "src": 10,
+      "dst": 50
+    },
+    {
+      "src": 11,
+      "dst": 31
+    },
+    {
+      "src": 12,
+      "dst": 32
+    },
+    {
+      "src": 13,
+      "dst": 33
+    },
+    {
+      "src": 14,
+      "dst": 29
+    },
+    {
+      "src": 14,
+      "dst": 34
+    },
+    {
+      "src": 14,
+      "dst": 49
+    },
+    {
+      "src": 15,
+      "dst": 35
+    },
+    {
+      "src": 16,
+      "dst": 36
+    },
+    {
+      "src": 17,
+      "dst": 37
+    },
+    {
+      "src": 18,
+      "dst": 33
+    },
+    {
+      "src": 18,
+      "dst": 38
+    },
+    {
+      "src": 19,
+      "dst": 39
+    },
+    {
+      "src": 20,
+      "dst": 40
+    },
+    {
+      "src": 21,
+      "dst": 22
+    },
+    {
+      "src": 22,
+      "dst": 23
+    },
+    {
+      "src": 23,
+      "dst": 24
+    },
+    {
+      "src": 24,
+      "dst": 25
+    },
+    {
+      "src": 25,
+      "dst": 26
+    },
+    {
+      "src": 26,
+      "dst": 27
+    },
+    {
+      "src": 27,
+      "dst": 28
+    },
+    {
+      "src": 28,
+      "dst": 29
+    },
+    {
+      "src": 29,
+      "dst": 30
+    },
+    {
+      "src": 30,
+      "dst": 31
+    },
+    {
+      "src": 31,
+      "dst": 32
+    },
+    {
+      "src": 32,
+      "dst": 33
+    },
+    {
+      "src": 33,
+      "dst": 34
+    },
+    {
+      "src": 34,
+      "dst": 35
+    },
+    {
+      "src": 35,
+      "dst": 36
+    },
+    {
+      "src": 36,
+      "dst": 37
+    },
+    {
+      "src": 37,
+      "dst": 38
+    },
+    {
+      "src": 38,
+      "dst": 39
+    },
+    {
+      "src": 39,
+      "dst": 40
+    },
+    {
+      "src": 40,
+      "dst": 41
+    },
+    {
+      "src": 41,
+      "dst": 42
+    },
+    {
+      "src": 42,
+      "dst": 43
+    },
+    {
+      "src": 43,
+      "dst": 44
+    },
+    {
+      "src": 44,
+      "dst": 45
+    },
+    {
+      "src": 45,
+      "dst": 46
+    },
+    {
+      "src": 46,
+      "dst": 47
+    },
+    {
+      "src": 47,
+      "dst": 48
+    },
+    {
+      "src": 48,
+      "dst": 49
+    },
+    {
+      "src": 49,
+      "dst": 50
+    },
+    {
+      "src": 50,
+      "dst": 21
+    }
+  ]
+}

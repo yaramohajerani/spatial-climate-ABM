@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Tuple, Iterable
 
@@ -13,13 +14,29 @@ from mesa.datacollection import DataCollector
 from mesa.space import MultiGrid
 
 from agents import FirmAgent, HouseholdAgent
-from hazard_utils import hazard_from_geotiffs
+from hazard_utils import lazy_hazard_from_geotiffs, LazyHazard
 from trophic_utils import compute_trophic_levels
 
-from climada.hazard import Hazard
-from climada.entity import Exposures, ImpactFunc
+from damage_functions import get_damage_functions, get_region_from_coords
 
 Coords = Tuple[int, int]
+
+
+class StepCache:
+    """Cache for values computed once per step to avoid redundant iterations."""
+
+    __slots__ = ('total_household_money', 'avg_household_money', 'num_households',
+                 'total_labor_sold', 'valid')
+
+    def __init__(self):
+        self.valid = False
+        self.total_household_money = 0.0
+        self.avg_household_money = 0.0
+        self.num_households = 0
+        self.total_labor_sold = 0.0
+
+    def invalidate(self):
+        self.valid = False
 
 
 class EconomyModel(Model):
@@ -33,16 +50,15 @@ class EconomyModel(Model):
         height: int | None = None,
         num_households: int = 100,
         num_firms: int = 20,
-        shock_step: int = 5,
         # Iterable of (return_period, start_step, end_step, hazard_type, path) tuples
         hazard_events: Iterable[Tuple[int, int, int, str, str]] | None = None,
-        hazard_type: str = "FL",  # CLIMADA hazard tag for flood
         seed: int | None = None,
         start_year: int = 0,
         steps_per_year: int = 4,
         firm_topology_path: str | None = None,
         apply_hazard_impacts: bool = True,
         learning_params: dict | None = None,
+        consumption_ratios: dict | None = None,
     ) -> None:  # noqa: D401
         super().__init__(seed=seed)
 
@@ -60,10 +76,23 @@ class EconomyModel(Model):
         self.firm_learning_enabled: bool = self.learning_config.get('enabled', True)
         self.min_money_survival: float = self.learning_config.get('min_money_survival', 1.0)
         self.replacement_frequency: int = self.learning_config.get('replacement_frequency', 10)
-        # Realistic wealth management
-        self.realistic_liquidation: bool = self.learning_config.get('realistic_liquidation', True)
-        self.liquidation_rate: float = self.learning_config.get('liquidation_rate', 0.8)
-        self.base_startup_capital: float = self.learning_config.get('base_startup_capital', 30.0)
+
+        # Household consumption ratios by sector (configurable)
+        # Default: 30% commodity, 70% manufacturing - ensures demand for full supply chain
+        self.consumption_ratios: dict = consumption_ratios or {
+            'commodity': 0.3,
+            'manufacturing': 0.7,
+        }
+
+        # -------------------- Performance optimization caches -------------------- #
+        # Cached agent lists by type (updated when agents added/removed)
+        self._households: List[HouseholdAgent] = []
+        self._firms: List[FirmAgent] = []
+        # Cached agents by sector
+        self._firms_by_sector: Dict[str, List[FirmAgent]] = defaultdict(list)
+        self._households_by_sector: Dict[str, List[HouseholdAgent]] = defaultdict(list)
+        # Step-level cache for aggregates (invalidated each step)
+        self._step_cache = StepCache()
 
         # Calendar mapping -------------------------------------------------- #
         self.start_year: int = start_year
@@ -89,8 +118,6 @@ class EconomyModel(Model):
         if hazard_events is None:
             raise ValueError("hazard_events must be provided.")
 
-        from collections import defaultdict
-
         # Group by hazard type while preserving order to keep mapping consistent
         grouped_files: dict[str, list[Tuple[int, str]]] = defaultdict(list)
         grouped_ranges: dict[str, list[Tuple[int, int]]] = defaultdict(list)
@@ -102,19 +129,27 @@ class EconomyModel(Model):
         # Store mapping of event index -> (start, end) per hazard type
         self._hazard_event_ranges: dict[str, List[Tuple[int, int]]] = dict(grouped_ranges)
 
-        self.hazards: dict[str, Hazard] = {}
+        # Use lazy hazard loading for memory efficiency (samples on-demand)
+        # This reduces memory from ~4GB to <1MB for global hazard datasets
+        self.hazards: dict[str, LazyHazard] = {}
 
-        first_lon, first_lat = None, None
+        first_haz = None
         for htype, grp in grouped_files.items():
-            haz, lon_vals, lat_vals = hazard_from_geotiffs(grp, haz_type=htype)
-            # Store only hazard data, vulnerability will be applied per agent
+            haz, _, _ = lazy_hazard_from_geotiffs(grp, haz_type=htype)
+            # Store lazy hazard that samples on-demand
             self.hazards[htype] = haz
+            if first_haz is None:
+                first_haz = haz
 
-            if first_lon is None:
-                first_lon, first_lat = lon_vals, lat_vals
+        # Use a COARSE agent grid (1-degree resolution = 360x180 cells)
+        # This is decoupled from the hazard raster resolution.
+        # When sampling hazards, we convert grid positions to lon/lat
+        # and sample at those coordinates from the full-resolution raster.
+        agent_grid_resolution = 1.0  # degrees per cell
 
-        self.lon_vals = first_lon  # type: ignore[assignment]
-        self.lat_vals = first_lat
+        # Build coarse lon/lat arrays for agent placement
+        self.lon_vals = np.arange(-180 + agent_grid_resolution/2, 180, agent_grid_resolution)
+        self.lat_vals = np.arange(-90 + agent_grid_resolution/2, 90, agent_grid_resolution)
 
         # ---------------- Derived spatial metrics ------------------- #
         # Translate a desired 1° geographic radius into grid cells so that
@@ -146,14 +181,9 @@ class EconomyModel(Model):
             (x, y) for y in range(height) for x in range(width)
         ]
 
-        # Initialize per-cell hazard depth map with zero intensity values
-        self.hazard_map: Dict[Coords, float] = {
-            coord: 0.0 for coord in self.valid_coordinates
-        }
-
-        # --- Hazard configuration --- #
-        self.shock_step = shock_step  # timestep to introduce hazard
-        self.hazard_type = hazard_type
+        # Initialize per-cell hazard depth map (populated on-demand for agent cells only)
+        # This is a sparse dict, not pre-populated for all cells
+        self.hazard_map: Dict[Coords, float] = {}
 
         # Base wage used by firms when hiring labour
         self.mean_wage = 1.0
@@ -162,50 +192,27 @@ class EconomyModel(Model):
         self.migrants_this_step: int = 0
 
         # DataCollector – track aggregate production each step for inspection
+        # Note: Uses cached agent lists (m._firms, m._households) for efficiency
         self.datacollector = DataCollector(
             model_reporters={
-                "Firm_Production": lambda m: sum(
-                    ag.production for ag in m.agents if isinstance(ag, FirmAgent)
-                ),
-                "Firm_Consumption": lambda m: sum(
-                    ag.consumption for ag in m.agents if isinstance(ag, FirmAgent)
-                ),
-                "Firm_Wealth": lambda m: sum(
-                    ag.money for ag in m.agents if isinstance(ag, FirmAgent)
-                ),
-                "Firm_Capital": lambda m: sum(
-                    ag.capital_stock for ag in m.agents if isinstance(ag, FirmAgent)
-                ),
-                "Firm_Inventory": lambda m: sum(
-                    ag.inventory_output for ag in m.agents if isinstance(ag, FirmAgent)
-                ),
-                "Household_Wealth": lambda m: sum(
-                    ag.money for ag in m.agents if isinstance(ag, HouseholdAgent)
-                ),
-                "Household_Capital": lambda m: sum(
-                    ag.capital for ag in m.agents if isinstance(ag, HouseholdAgent)
-                ),
-                "Household_Labor_Sold": lambda m: sum(
-                    ag.labor_sold for ag in m.agents if isinstance(ag, HouseholdAgent)
-                ),
-                "Household_Consumption": lambda m: sum(
-                    ag.consumption for ag in m.agents if isinstance(ag, HouseholdAgent)
-                ),
+                "Firm_Production": lambda m: sum(f.production for f in m._firms),
+                "Firm_Consumption": lambda m: sum(f.consumption for f in m._firms),
+                "Firm_Wealth": lambda m: sum(f.money for f in m._firms),
+                "Firm_Capital": lambda m: sum(f.capital_stock for f in m._firms),
+                "Firm_Inventory": lambda m: sum(f.inventory_output for f in m._firms),
+                "Household_Wealth": lambda m: sum(h.money for h in m._households),
+                "Household_Capital": lambda m: sum(h.capital for h in m._households),
+                "Household_Labor_Sold": lambda m: sum(h.labor_sold for h in m._households),
+                "Household_Consumption": lambda m: sum(h.consumption for h in m._households),
                 "Average_Risk": lambda m: np.mean(list(m.hazard_map.values())),
                 "Mean_Wage": lambda m: m.mean_wage,
-                "Mean_Price": lambda m: np.mean([ag.price for ag in m.agents if isinstance(ag, FirmAgent)]),
-                "Labor_Limited_Firms": lambda m: sum(
-                    1 for ag in m.agents if isinstance(ag, FirmAgent) and getattr(ag, "limiting_factor", "") == "labor"
-                ),
-                "Capital_Limited_Firms": lambda m: sum(
-                    1 for ag in m.agents if isinstance(ag, FirmAgent) and getattr(ag, "limiting_factor", "") == "capital"
-                ),
-                "Input_Limited_Firms": lambda m: sum(
-                    1 for ag in m.agents if isinstance(ag, FirmAgent) and getattr(ag, "limiting_factor", "") == "input"
-                ),
-                "Average_Firm_Fitness": lambda m: np.mean([ag.fitness_score for ag in m.agents if isinstance(ag, FirmAgent)]),
+                "Mean_Price": lambda m: np.mean([f.price for f in m._firms]) if m._firms else 0.0,
+                "Labor_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "labor"),
+                "Capital_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "capital"),
+                "Input_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "input"),
+                "Average_Firm_Fitness": lambda m: np.mean([f.fitness_score for f in m._firms]) if m._firms else 0.0,
                 "Firm_Replacements": lambda m: getattr(m, 'total_firm_replacements', 0),
-                "Total_Sales": lambda m: sum(getattr(ag, "sales_total", 0.0) for ag in m.agents if isinstance(ag, FirmAgent)),
+                "Total_Sales": lambda m: sum(f.sales_total for f in m._firms),
             },
             agent_reporters={
                 "money": lambda a: getattr(a, "money", np.nan),
@@ -246,8 +253,11 @@ class EconomyModel(Model):
             # Only households remain to be wired up.
             self._connect_households_to_firms()
 
-        # Build exposures and assign centroids for each hazard
-        self._exposures = self._build_exposures()
+        # Populate agent caches after all agents created
+        self._rebuild_agent_caches()
+
+        # NOTE: With LazyHazard, we no longer need CLIMADA exposures/centroids.
+        # Hazard sampling is done directly from GeoTIFF files at agent locations.
 
         # ------------------ Pre-compute trophic levels ------------------- #
         firm_adj_init = {
@@ -272,9 +282,6 @@ class EconomyModel(Model):
                 else:
                     ag.inventory_output = 5   # downstream firms
 
-        for haz in self.hazards.values():
-            self._exposures.assign_centroids(haz)
-
         # --- Step counter --- #
         self.current_step: int = 0
 
@@ -288,6 +295,70 @@ class EconomyModel(Model):
         self.steps_since_replacement: int = 0
         self.total_firm_replacements: int = 0
         self._debug_recent_replacements: list = []  # Track replaced agent IDs for debugging
+
+    # --------------------------------------------------------------------- #
+    #                        CACHE MANAGEMENT                               #
+    # --------------------------------------------------------------------- #
+    def _rebuild_agent_caches(self) -> None:
+        """Rebuild all agent caches from scratch. Call after bulk agent changes."""
+        self._households.clear()
+        self._firms.clear()
+        self._firms_by_sector.clear()
+        self._households_by_sector.clear()
+
+        for ag in self.agents:
+            if isinstance(ag, HouseholdAgent):
+                self._households.append(ag)
+                self._households_by_sector[ag.sector].append(ag)
+            elif isinstance(ag, FirmAgent):
+                self._firms.append(ag)
+                self._firms_by_sector[ag.sector].append(ag)
+
+    def _register_agent(self, agent) -> None:
+        """Register a single agent in the caches."""
+        if isinstance(agent, HouseholdAgent):
+            self._households.append(agent)
+            self._households_by_sector[agent.sector].append(agent)
+        elif isinstance(agent, FirmAgent):
+            self._firms.append(agent)
+            self._firms_by_sector[agent.sector].append(agent)
+
+    def _unregister_agent(self, agent) -> None:
+        """Remove a single agent from the caches."""
+        if isinstance(agent, HouseholdAgent):
+            if agent in self._households:
+                self._households.remove(agent)
+            if agent in self._households_by_sector.get(agent.sector, []):
+                self._households_by_sector[agent.sector].remove(agent)
+        elif isinstance(agent, FirmAgent):
+            if agent in self._firms:
+                self._firms.remove(agent)
+            if agent in self._firms_by_sector.get(agent.sector, []):
+                self._firms_by_sector[agent.sector].remove(agent)
+
+    def _update_step_cache(self) -> None:
+        """Compute step-level aggregates once per step."""
+        if self._step_cache.valid:
+            return
+        total = 0.0
+        for hh in self._households:
+            total += hh.money
+        n = len(self._households)
+        self._step_cache.total_household_money = total
+        self._step_cache.num_households = n
+        self._step_cache.avg_household_money = total / n if n > 0 else 0.0
+        self._step_cache.total_labor_sold = sum(hh.labor_sold for hh in self._households)
+        self._step_cache.valid = True
+
+    def get_total_household_money(self) -> float:
+        """Get cached total household money."""
+        self._update_step_cache()
+        return self._step_cache.total_household_money
+
+    def get_avg_household_money(self) -> float:
+        """Get cached average household money."""
+        self._update_step_cache()
+        return self._step_cache.avg_household_money
 
     # --------------------------------------------------------------------- #
     #                             INITIALISERS                               #
@@ -487,85 +558,15 @@ class EconomyModel(Model):
         """Return hazard risk (0-1) for a given cell."""
         return self.hazard_map.get(pos, 0.0)
 
-    # ------------------------------------------------------------------ #
-    #                     IMPACT / EXPOSURE HELPERS                     #
-    # ------------------------------------------------------------------ #
-
-    def _build_exposures(self) -> Exposures:
-        """Construct a CLIMADA Exposures object from all agents."""
-        records = []
-        for ag in self.agents:
-            x, y = ag.pos
-            lon = float(self.lon_vals[x])
-            lat = float(self.lat_vals[y])
-            # Use capital stock for firms, capital for households as exposure value
-            if isinstance(ag, FirmAgent):
-                val = ag.capital_stock
-            else:
-                val = ag.capital
-            records.append({
-                "latitude": lat,
-                "longitude": lon,
-                "value": val,
-                "impf_": 1,  # generic impact function id column recognised by CLIMADA
-            })
-
-        exp = Exposures(pd.DataFrame.from_records(records))
-        # Geometry is now set during init in CLIMADA ≥5, but for backward
-        # compatibility ensure lat/lon columns are translated into geometry.
-        if not hasattr(exp, "geometry") or exp.geometry.is_empty.any():  # pragma: no cover
-            exp.set_lat_lon()
-
-        return exp
-
-    @staticmethod
-    def _build_vulnerability(haz_type: str = "FL", sector: str = "residential") -> ImpactFunc:
-        """Return a single ImpactFunc appropriate for the hazard type and sector.
-
-        The caller can still wrap the result in an ``ImpactFuncSet`` if they
-        need CLIMADA's higher-level interfaces, but for the pixel-wise damage
-        calculation performed inside this model we only ever use one curve.
-
-        Supported hazard types:
-        • ``FL`` (flood): JRC global depth–damage curve via ``climada_petals``.
-          If the Petals dependency is unavailable we fall back to a simple
-          linear 0-1 relationship between intensity and mean damage ratio.
-        
-        Sector mapping for JRC curves:
-        • agriculture, commodities -> agriculture
-        • manufacturing -> industrial  
-        • others -> residential (default)
-        """
-        # Map model sectors to JRC asset types
-        jrc_asset_type = "residential"  # default
-        if sector in ["agriculture", "commodities"]:
-            jrc_asset_type = "agriculture"
-        elif sector == "manufacturing":
-            jrc_asset_type = "industrial"
-        
-        try:
-            if haz_type == "FL":
-                from climada_petals.entity.impact_funcs.river_flood import ImpfRiverFlood  # type: ignore
-
-                impf = ImpfRiverFlood.from_jrc_region_sector("Global", jrc_asset_type)
-                impf.id = 1
-                return impf
-        except Exception:  # noqa: BLE001
-            pass  # fall back to linear
-
-        impf = ImpactFunc(haz_type=haz_type, id=1, name="Linear")
-        impf.intensity = np.array([0.0, 1.0])
-        impf.mdd = np.array([0.0, 1.0])
-        impf.paa = np.array([1.0, 1.0])
-        impf.unit = "m"
-        return impf
-
     # --------------------------------------------------------------------- #
     #                               MESA STEP                               #
     # --------------------------------------------------------------------- #
     def step(self) -> None:  # noqa: D401, N802
         """Advance model by one timestep (representing one year)."""
         self.current_step += 1
+
+        # Invalidate step cache at start of each step
+        self._step_cache.invalidate()
 
         # Each year: sample hazard independently for every cell based on RP
         self._sample_pixelwise_hazard()
@@ -574,7 +575,7 @@ class EconomyModel(Model):
         self.migrants_this_step = 0
 
         # ---------------- Budget planning phase --------------------- #
-        for firm in (ag for ag in self.agents if isinstance(ag, FirmAgent)):
+        for firm in self._firms:
             firm.prepare_budget()
 
         # Agent actions – households then firms ---------------------- #
@@ -583,31 +584,30 @@ class EconomyModel(Model):
         # without inputs due to timing randomness.
 
         # 1. Households – labour supply & consumption decisions
-        households = [ag for ag in self.agents if isinstance(ag, HouseholdAgent)]
+        households = self._households.copy()  # copy to allow shuffle without affecting cache
         self.random.shuffle(households)
         for hh in households:
             hh.step()
 
         # 2. Firms – hire labour accumulated in phase 1, purchase inputs,
         #    produce goods, and adjust prices/wages.
-        firms = [ag for ag in self.agents if isinstance(ag, FirmAgent)]
+        firms = self._firms.copy()
         # Sort by trophic level so upstream suppliers act before downstream buyers
         firms.sort(key=lambda f: (self._firm_levels.get(f.unique_id, 1.0), self.random.random()))
         for firm in firms:
             firm.step()
 
         # ---------------- Labour market metrics ----------------------- #
-        total_households = sum(1 for ag in self.agents if isinstance(ag, HouseholdAgent))
-        total_labor_sold = sum(getattr(ag, "labor_sold", 0.0) for ag in self.agents if isinstance(ag, HouseholdAgent))
+        total_households = len(self._households)
+        total_labor_sold = sum(hh.labor_sold for hh in self._households)
         if total_households > 0:
             self.unemployment_rate_prev = max(0.0, 1.0 - (total_labor_sold / total_households))
         else:
             self.unemployment_rate_prev = 0.0
 
         # ---------------- Record average wage for data collection ----- #
-        firm_wages = [ag.wage_offer for ag in self.agents if isinstance(ag, FirmAgent)]
-        if firm_wages:
-            self.mean_wage = float(np.mean(firm_wages))
+        if self._firms:
+            self.mean_wage = float(np.mean([f.wage_offer for f in self._firms]))
 
         # ---------------- Evolutionary pressure (learning system) ---- #
         self.steps_since_replacement += 1
@@ -623,17 +623,16 @@ class EconomyModel(Model):
     # --------------------------------------------------------------------- #
     def _apply_evolutionary_pressure(self) -> None:
         """Replace failed firms with mutated versions of successful ones."""
-        firms = [ag for ag in self.agents if isinstance(ag, FirmAgent)]
-        if len(firms) < 2:
+        if len(self._firms) < 2:
             return  # need at least 2 firms for evolution
-        
+
         # Skip early in simulation when firms don't have enough history
         if self.current_step < 5:
             return
-        
+
         # Identify failed firms (very low money or negative growth)
         failed_firms = []
-        for firm in firms:
+        for firm in self._firms:
             if firm.money < self.min_money_survival:
                 failed_firms.append(firm)
             elif len(firm.performance_history) >= 5:
@@ -644,15 +643,15 @@ class EconomyModel(Model):
         
         if not failed_firms:
             return  # no firms to replace
-        
+
         # Limit replacements per step to prevent excessive processing
-        max_replacements = max(1, len(firms) // 4)  # replace at most 25% of firms per step
+        max_replacements = max(1, len(self._firms) // 4)  # replace at most 25% of firms per step
         failed_firms = failed_firms[:max_replacements]
-        
+
         # Identify successful firms (high fitness scores)
-        successful_firms = [f for f in firms if f not in failed_firms and f.fitness_score > 0.3]
+        successful_firms = [f for f in self._firms if f not in failed_firms and f.fitness_score > 0.3]
         if not successful_firms:
-            successful_firms = [f for f in firms if f not in failed_firms]  # fallback to non-failed
+            successful_firms = [f for f in self._firms if f not in failed_firms]  # fallback to non-failed
         
         if not successful_firms:
             return  # pathological case
@@ -670,49 +669,10 @@ class EconomyModel(Model):
             
             # Store the position before any modifications
             failed_pos = failed_firm.pos
-            failed_money = failed_firm.money
-            failed_capital = failed_firm.capital_stock
-            
-            if self.realistic_liquidation:
-                # ============ REALISTIC LIQUIDATION PROCESS ============
-                total_liquidation = (failed_money + failed_capital) * self.liquidation_rate
-                
-                # Distribute liquidation proceeds
-                if total_liquidation > 0:
-                    # 60% to creditors (households and suppliers), 40% to successful firms
-                    creditor_share = total_liquidation * 0.6
-                    market_share = total_liquidation * 0.4
-                    
-                    # Pay creditors (households get wage debt, suppliers get trade debt)
-                    nearby_households = [ag for ag in self.agents if isinstance(ag, HouseholdAgent) 
-                                       and failed_firm in getattr(ag, 'nearby_firms', [])]
-                    if nearby_households:
-                        creditor_payment_per_hh = creditor_share * 0.7 / len(nearby_households)
-                        for hh in nearby_households:
-                            hh.money += creditor_payment_per_hh
-                    
-                    # Pay supplier firms
-                    if failed_firm.connected_firms:
-                        supplier_payment = creditor_share * 0.3 / len(failed_firm.connected_firms)
-                        for supplier in failed_firm.connected_firms:
-                            supplier.money += supplier_payment
-                    
-                    # Distribute market opportunities to successful firms
-                    if successful_firms:
-                        market_payment = market_share / len(successful_firms)
-                        for firm in successful_firms:
-                            firm.money += market_payment
-                
-                # Calculate startup capital (conservative but viable)
-                startup_from_liquidation = max(0, total_liquidation * 0.3)  # 30% of liquidated value
-                new_capital = self.base_startup_capital + startup_from_liquidation
-                new_money = new_capital * 0.8  # Most as working capital
-                new_capital_stock = new_capital * 0.2  # Some as fixed assets
-            else:
-                # ============ LEGACY BEHAVIOR (for comparison) ============
-                total_liquidation = 0
-                new_money = 100.0
-                new_capital_stock = 100.0
+
+            # New firm starts with fixed capital
+            new_money = 100.0
+            new_capital_stock = 100.0
             
             # Create new firm with inherited strategy
             new_firm = FirmAgent(
@@ -735,35 +695,33 @@ class EconomyModel(Model):
             
             # Inherit connections from failed firm
             new_firm.connected_firms = failed_firm.connected_firms.copy()
-            
+
             # Update all agent references BEFORE removing failed_firm from grid
-            # This ensures failed_firm still has a valid position during updates
-            all_agents = list(self.agents)  # create a copy
-            for ag in all_agents:
-                if isinstance(ag, HouseholdAgent) and failed_firm in ag.nearby_firms:
-                    ag.nearby_firms.remove(failed_firm)
-                    ag.nearby_firms.append(new_firm)
-                elif isinstance(ag, FirmAgent) and failed_firm in ag.connected_firms:
-                    ag.connected_firms.remove(failed_firm)
-                    ag.connected_firms.append(new_firm)
+            # Use cached lists for efficiency
+            for hh in self._households:
+                if failed_firm in hh.nearby_firms:
+                    hh.nearby_firms.remove(failed_firm)
+                    hh.nearby_firms.append(new_firm)
+            for f in self._firms:
+                if f is not failed_firm and failed_firm in f.connected_firms:
+                    f.connected_firms.remove(failed_firm)
+                    f.connected_firms.append(new_firm)
             
             # Track replacement for debugging
             self._debug_recent_replacements.append(failed_firm.unique_id)
             if len(self._debug_recent_replacements) > 20:
                 self._debug_recent_replacements = self._debug_recent_replacements[-20:]
-            
+
             # Now safely remove from grid AND model, then place new agent
+            self._unregister_agent(failed_firm)  # Update caches
             self.grid.remove_agent(failed_firm)
             self.agents.remove(failed_firm)  # CRITICAL: Also remove from model's agent list
             self.grid.place_agent(new_firm, failed_pos)
+            self._register_agent(new_firm)  # Update caches
             new_firms.append(new_firm)
             
             self.total_firm_replacements += 1
-            if self.realistic_liquidation:
-                print(f"[EVOLUTION] Step {self.current_step}: Liquidated firm {failed_firm.unique_id} (${failed_money + failed_capital:.1f} → ${total_liquidation:.1f}), "
-                      f"new firm {new_firm.unique_id} starts with ${new_money + new_capital_stock:.1f} (total replacements: {self.total_firm_replacements})")
-            else:
-                print(f"[EVOLUTION] Step {self.current_step}: Replaced failed firm {failed_firm.unique_id} with mutated offspring {new_firm.unique_id} (total: {self.total_firm_replacements})")
+            print(f"[EVOLUTION] Step {self.current_step}: Replaced failed firm {failed_firm.unique_id} with offspring {new_firm.unique_id} (total: {self.total_firm_replacements})")
 
         # Refresh trophic levels and seed inventory for replacements to keep supply chains running
         if new_firms:
@@ -823,26 +781,59 @@ class EconomyModel(Model):
     # ------------------------------------------------------------------ #
 
     def _sample_pixelwise_hazard(self) -> None:
-        """For each cell, draw independent floods for each return-period raster.
+        """Sample hazard only at agent locations using lazy loading.
 
         Probability cell flooded with intensity from raster *i* is 1/RP_i each
         year, independent across cells and RPs. If multiple RPs trigger on the
         same cell in the same year we keep the maximum depth.
-        """
-        n_cells = len(self.valid_coordinates)
-        max_depth = np.zeros(n_cells, dtype=float)
-        combined_loss = np.zeros(n_cells, dtype=float)  # 0=no loss
 
-        # Store intensity maps per hazard type for agent-level vulnerability application
-        hazard_intensities = {}
-        
+        Uses LazyHazard to sample directly from full-resolution GeoTIFF files
+        without loading entire rasters into memory. This reduces memory usage
+        from ~4GB to <1MB for global hazard datasets.
+        """
+        # Collect unique agent cell positions and their geographic coordinates
+        agent_cells: dict[Coords, Tuple[float, float]] = {}  # grid coord -> (lon, lat)
+
+        for ag in self._firms:
+            x, y = ag.pos
+            coord = (x, y)
+            if coord not in agent_cells:
+                lon = float(self.lon_vals[x])
+                lat = float(self.lat_vals[y])
+                agent_cells[coord] = (lon, lat)
+
+        for ag in self._households:
+            x, y = ag.pos
+            coord = (x, y)
+            if coord not in agent_cells:
+                lon = float(self.lon_vals[x])
+                lat = float(self.lat_vals[y])
+                agent_cells[coord] = (lon, lat)
+
+        n_agent_cells = len(agent_cells)
+        if n_agent_cells == 0:
+            return
+
+        # Convert to lists for sampling
+        cell_coords = list(agent_cells.keys())  # grid coordinates
+        geo_coords = [agent_cells[c] for c in cell_coords]  # (lon, lat) tuples
+
+        # Reset hazard_map for agent cells only
+        for coord in cell_coords:
+            self.hazard_map[coord] = 0.0
+
+        # Store intensity per agent cell for each hazard type
+        # Dict: htype -> dict of coord -> intensity
+        hazard_intensities: dict[str, dict[Coords, float]] = {}
+
         for htype, haz in self.hazards.items():
-            # Build per-hazard intensity map this year by selecting at most one event
-            intens = np.zeros(n_cells, dtype=float)
+            # Initialize intensity dict for this hazard type
+            cell_intensities: dict[Coords, float] = {c: 0.0 for c in cell_coords}
             ranges = self._hazard_event_ranges.get(htype, [])
 
+            # Find active events for current step
             active_events: list[tuple[int, float]] = []
-            for i in range(haz.intensity.shape[0]):
+            for i in range(haz.n_events):
                 if i < len(ranges):
                     start, end = ranges[i]
                     if not (start <= self.current_step <= end):
@@ -854,33 +845,37 @@ class EconomyModel(Model):
 
             if active_events:
                 for idx_ev, p_hit in active_events:
-                    row = haz.intensity[idx_ev]
-                    depths = row.toarray().ravel() if hasattr(row, "toarray") else np.asarray(row).ravel()
-                    # Cell-wise Bernoulli with per-step probability p_hit; combine with max
-                    hit_mask = np.random.random(n_cells) < p_hit
+                    # Use lazy sampling - only reads pixels at agent locations
+                    agent_depths = haz.sample_at_coords(geo_coords, idx_ev)
+
+                    # Bernoulli sampling: each agent cell has p_hit chance of flooding
+                    hit_mask = np.random.random(n_agent_cells) < p_hit
                     if hit_mask.any():
-                        intens[hit_mask] = np.maximum(intens[hit_mask], depths[hit_mask])
+                        for i, coord in enumerate(cell_coords):
+                            if hit_mask[i]:
+                                cell_intensities[coord] = max(cell_intensities[coord], agent_depths[i])
 
-            # Update global max depth for viz
-            max_depth = np.maximum(max_depth, intens)
-            
-            # Store intensity for agent-level processing (absolute depths)
-            hazard_intensities[htype] = intens
+            # Update hazard_map with max depth for this hazard type
+            for coord, intensity in cell_intensities.items():
+                self.hazard_map[coord] = max(self.hazard_map[coord], intensity)
 
-        # If impacts disabled, zero‐out losses and intensities so agents see
-        # a risk‐free environment while preserving RNG sequence.
+            hazard_intensities[htype] = cell_intensities
+
+        # If impacts disabled, zero-out intensities
         if not self.apply_hazard_impacts:
-            max_depth[:] = 0
-            hazard_intensities = {htype: np.zeros(n_cells) for htype in hazard_intensities}
+            for coord in cell_coords:
+                self.hazard_map[coord] = 0.0
+            hazard_intensities = {htype: {c: 0.0 for c in cell_coords} for htype in hazard_intensities}
 
-        # Write hazard_map for visualisation (max depth across hazards)
-        for idx, coord in enumerate(self.valid_coordinates):
-            self.hazard_map[coord] = float(max_depth[idx])
+        # Count flooded agent cells for logging
+        flooded_cells = sum(1 for c in cell_coords if self.hazard_map[c] > 0)
 
-        # Apply agent-specific vulnerability and damage
-        for ag in self.agents:
+        # Apply agent-specific damage using JRC damage functions
+        # Get the global damage functions instance (loaded once, cached)
+        damage_funcs = get_damage_functions()
+
+        def apply_damage(ag, is_firm: bool):
             if ag.pos is None:
-                # Debug info: check if this agent was recently replaced
                 agent_info = f"Agent {ag.unique_id} (type: {type(ag).__name__})"
                 recent_replacements = getattr(self, '_debug_recent_replacements', [])
                 was_replaced = ag.unique_id in recent_replacements
@@ -888,48 +883,49 @@ class EconomyModel(Model):
                                f"Recently replaced: {was_replaced}. "
                                f"Recent replacements: {recent_replacements[-5:]}. "
                                f"This likely indicates a bug in agent creation or placement.")
-            
-            x, y = ag.pos
-            idx = y * len(self.lon_vals) + x
-            
-            # Determine agent sector for vulnerability mapping
-            if isinstance(ag, FirmAgent):
-                agent_sector = ag.sector
-            else:  # HouseholdAgent
-                agent_sector = getattr(ag, 'sector', 'residential')
-            
+
+            coord = ag.pos  # (x, y) tuple
+            agent_sector = ag.sector if is_firm else "residential"
+
+            # Get agent's geographic coordinates for region-specific damage curves
+            x, y = coord
+            lon = float(self.lon_vals[x])
+            lat = float(self.lat_vals[y])
+            region = get_region_from_coords(lon, lat)
+
             # Calculate combined loss across all hazard types for this agent
             combined_loss_agent = 0.0
-            for htype, intens in hazard_intensities.items():
-                if intens[idx] == 0:
+            for htype, intens_dict in hazard_intensities.items():
+                intensity = intens_dict.get(coord, 0.0)
+                if intensity == 0:
                     continue
-                    
-                # Get sector-specific vulnerability function
-                impf = self._build_vulnerability(htype, agent_sector)
-                
-                # Calculate damage ratio for this hazard type
-                mdr = np.clip(impf.calc_mdr(np.array([intens[idx]]))[0], 0.0, 1.0)
-                
+
+                # Get damage fraction from JRC damage functions
+                mdr = damage_funcs.get_damage_fraction(intensity, agent_sector, region)
+
                 # Combine multiplicatively: 1 - prod(1 - loss)
                 combined_loss_agent = 1 - (1 - combined_loss_agent) * (1 - mdr)
-            
+
             if combined_loss_agent == 0:
-                continue
-                
+                return
+
             # Apply damage to agent
-            if isinstance(ag, FirmAgent):
+            if is_firm:
                 ag.capital_stock *= 1 - combined_loss_agent
-                # Reduce productive capacity this year
                 ag.damage_factor *= 1 - combined_loss_agent
-                # Damage inventories
                 ag.inventory_output = int(ag.inventory_output * (1 - combined_loss_agent))
                 for k in list(ag.inventory_inputs.keys()):
                     ag.inventory_inputs[k] = int(ag.inventory_inputs[k] * (1 - combined_loss_agent))
             else:
                 ag.capital *= 1 - combined_loss_agent
 
-        flooded_cells = (max_depth > 0).sum()
-        print(f"[INFO] Step {self.current_step}: flooded cells = {flooded_cells}/{n_cells}")
+        # Process firms and households using cached lists
+        for firm in self._firms:
+            apply_damage(firm, is_firm=True)
+        for hh in self._households:
+            apply_damage(hh, is_firm=False)
+
+        print(f"[INFO] Step {self.current_step}: flooded agent cells = {flooded_cells}/{n_agent_cells}")
 
     # ------------------------------------------------------------------ #
     #                        TRADE NETWORK BUILDER                       #
@@ -1002,21 +998,31 @@ class EconomyModel(Model):
     # ------------------------------------------------------------------ #
     def _connect_households_to_firms(self) -> None:
         """Attach each household to nearby firms within a Manhattan radius of 3."""
+        # Use cached lists if available, otherwise fall back to filtering
+        if self._firms:
+            firm_agents = self._firms
+        else:
+            firm_agents = [ag for ag in self.agents if isinstance(ag, FirmAgent)]
 
-        firm_agents = [ag for ag in self.agents if isinstance(ag, FirmAgent)]
         if not firm_agents:
             return  # edge-case: no firms
 
-        household_agents = [ag for ag in self.agents if isinstance(ag, HouseholdAgent)]
+        if self._households:
+            household_agents = self._households
+        else:
+            household_agents = [ag for ag in self.agents if isinstance(ag, HouseholdAgent)]
 
         for hh in household_agents:
             # Avoid duplicating if links already present
             if hh.nearby_firms:
                 continue
 
-            for firm in firm_agents:
-                if getattr(firm, "sector", "") != getattr(hh, "sector", ""):
-                    continue  # only link to firms of the same sector
+            # Use sector cache if available
+            sector_firms = self._firms_by_sector.get(hh.sector, []) if self._firms_by_sector else None
+            if sector_firms is None:
+                sector_firms = [f for f in firm_agents if f.sector == hh.sector]
+
+            for firm in sector_firms:
                 dx = abs(hh.pos[0] - firm.pos[0])
                 dy = abs(hh.pos[1] - firm.pos[1])
                 if dx + dy <= self.work_radius:
@@ -1024,9 +1030,7 @@ class EconomyModel(Model):
 
             # Guarantee at least one connection (pick nearest firm *in same sector*) ----
             if not hh.nearby_firms:
-                same_sector_firms = [f for f in firm_agents if f.sector == getattr(hh, "sector", "")]
-                if not same_sector_firms:
-                    same_sector_firms = firm_agents  # fallback to any sector
+                same_sector_firms = sector_firms if sector_firms else firm_agents
                 nearest = min(
                     same_sector_firms,
                     key=lambda f: (f.pos[0] - hh.pos[0]) ** 2 + (f.pos[1] - hh.pos[1]) ** 2,

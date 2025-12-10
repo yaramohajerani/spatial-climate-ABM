@@ -1,149 +1,123 @@
 # Spatial Climate-Economy Agent-Based Model
 
-This is a spatial agent-based model (ABM) for simulating climate-economy interactions. The model couples economic behavior with climate hazard impacts using Mesa for agent-based modeling and CLIMADA for climate impact assessment.
+This is a spatial agent-based model (ABM) for simulating climate-economy interactions. The model couples economic behavior with climate hazard impacts using Mesa for agent-based modeling and JRC flood depth-damage functions for impact assessment.
 
 ## Model Overview
 
-The model simulates economic agents (households and firms) on a spatial grid derived from climate hazard rasters. Agents interact through labor markets, supply chains, and goods markets while adapting to climate risks through migration, wage adjustments, and capital investment decisions.
+The model simulates economic agents (households and firms) on a spatial grid while exposing them to climate hazards sampled from GeoTIFF rasters. Agents interact through labor markets, supply chains, and goods markets while adapting to climate risks through migration, wage adjustments, and capital investment decisions.
 
 ### Key Features
 
-- **Spatial Environment**: Grid derived from GeoTIFF hazard rasters with land mask using Natural Earth country boundaries
+- **Spatial Environment**: 1-degree resolution global grid with agents placed based on topology files
 - **Agent Types**: Households (labor suppliers) and firms (producers with Leontief technology)
 - **Economic Markets**: Endogenous wages, dynamic pricing, labor mobility, and supply chain networks
-- **Climate Integration**: CLIMADA-based damage functions with independent hazard sampling per grid cell
+- **Climate Integration**: Lazy hazard sampling from full-resolution GeoTIFF rasters with JRC region-specific damage curves
 - **Adaptive Behaviors**: Risk-based household migration and firm capital adjustments
 - **Firm Learning System**: Evolutionary strategy-based learning for budget allocation, pricing, wage setting, and risk adaptation
-- **Multiple Sectors**: Agriculture, manufacturing, wholesale, retail, services, and commodity sectors
+- **Multiple Sectors**: Commodity and manufacturing sectors with configurable consumption ratios
 
-### Recent Model Improvements
+### Model Highlights
 
-**Firm Learning System (08/25)**:
-- **Evolutionary Strategy Learning**: Firms evolve strategies for budget allocation, pricing, wage setting, and risk adaptation
-- **Performance-Based Selection**: Failed firms are replaced with mutated versions of successful firms
-- **Adaptive Decision Making**: 6 key parameters control firm behavior: budget weights, risk sensitivity, pricing aggressiveness, wage responsiveness
-- **Fitness Evaluation**: Multi-component scoring based on money growth, production consistency, survival time, and resource balance
-- **Population Dynamics**: Bankruptcy prevention through learned optimal behaviors, with up to 25% of firms replaced per step
-
-**Enhanced Economic Realism (07/25)**:
-- **Responsive Wage Dynamics**: Wages now adjust quickly to financial constraints - firms cut wages aggressively when cash-limited, preventing artificial firm failures
-- **Scarcity-Based Pricing**: Prices rise naturally when production stops or inventory is low, creating realistic scarcity premiums
-- **Improved Budget Allocation**: Manufacturing firms prioritize labor budget when cash-constrained, ensuring they can afford workers
-- **Relaxed Price Bounds**: Removed artificial price caps (1.5x → 1000x household wealth) to allow natural economic growth over decades
-- **Market-Driven Inflation**: Prices can grow organically without artificial constraints, enabling realistic multi-decade simulations
-
-**Key Economic Behaviors**:
-- High unemployment → Rapid wage cuts → Firm survival
-- Low production → Higher prices → Better firm cash flow
-- Cash constraints → Labor budget prioritization → Continued employment
-- Learning pressure → Strategy evolution → Improved adaptation
-- Market forces → Natural price/wage equilibrium → Sustainable growth
+- **Memory-efficient hazard loading**: Samples hazard values only at agent locations using `rasterio.sample()`, avoiding loading full rasters into memory
+- **Region-specific damage functions**: JRC depth-damage curves for Europe, Asia, Africa, North America, South America, and Oceania
+- **No preprocessing required**: Works directly with full-resolution Aqueduct flood rasters (~90MB each)
+- **Distance-soft labor and goods markets**: Households consider all firms; distance is a disutility but there is no hard radius
+- **Learning System**: Evolutionary strategy learning with fitness-based replacement of weak firms
 
 ## Core Architecture
 
 ### Spatial Grid and Environment
 
-The model uses a `mesa.space.MultiGrid` derived from input GeoTIFF raster dimensions. A 1° geographic catchment is automatically converted to grid cell units to ensure consistent distance calculations across different raster resolutions. Agents are only placed on land cells identified using Natural Earth country boundaries (excluding Antarctica).
+The model uses a `mesa.space.MultiGrid` with a fixed 1-degree resolution (360×180 = 64,800 cells). This is decoupled from the hazard raster resolution, allowing efficient use of full-resolution global hazard data. Agents are placed based on coordinates specified in topology files.
 
 ### Agent Classes
 
 #### HouseholdAgent
 - **Labor Supply**: Each household supplies 1 unit of labor per step
-- **Employment Choice**: Maximizes `wage - distance_cost × distance` utility across all firms in the same sector (remote work allowed; distance is just a disutility, not a hard cutoff)
-- **Consumption**: Spends 50% of money on goods, targeting 2-3 different trophic level ranges for variety; can buy from any firm with inventory (no proximity restriction)
+- **Employment Choice**: Maximizes `wage - distance_cost × distance` utility across all firms (cross-sector employment allowed)
+- **Consumption**: Allocates budget across sectors based on configurable ratios (default: 30% commodity, 70% manufacturing)
 - **Risk Behavior**: Monitors hazard within random radius (1-50 cells), relocates when max hazard > 0.1
-- **Sector Specialization**: Only works for firms in the same sector (but distance is soft)
 
 #### FirmAgent
 - **Production Technology**: Leontief production function with labor, material inputs, and capital
 - **Technical Coefficients**: 0.5 units each of labor, inputs, and capital per unit output
 - **Learning System**: Evolutionary strategy learning with 6 adaptive parameters and fitness-based selection
-- **Wage Setting**: Learned wage responsiveness - cuts wages aggressively when cash-constrained, raises when labor-limited
-- **Dynamic Pricing**: Learned pricing aggressiveness with supply-demand driven adjustments and scarcity premiums
-- **Input Procurement**: Independent input requirements from each connected supplier (all sectors)
-- **Budget Allocation**: Learned budget weights across labor, inputs, and capital based on previous limiting factor and strategy evolution
-- **Capital Investment**: Purchase additional capital when capital-constrained from cheapest available sellers
-- **Risk Adaptation**: Learned risk sensitivity - increase capital requirements when local hazard > 0.1, with firm-specific relaxation rates
-
-### Economic Mechanics
-
-#### Labor Markets
-- Households choose employers from all firms in their sector based on wage-distance utility (distance is a disutility, not a hard cutoff)
-- **Responsive wage dynamics**: Firms cut wages aggressively when cash-constrained, raise when labor-limited
-- **Financial constraint detection**: Firms that can't afford 2+ workers trigger rapid wage cuts (20% adjustment)
-- **Market-driven adjustment**: Wage changes respond to unemployment rate and firm financial health
-
-#### Supply Chain Networks
-- **Random Networks**: Distance-weighted probabilistic connections between firms
-- **Custom Topology**: JSON-specified firm locations and directed supply relationships
-- **Trophic Levels**: Computed network hierarchy determines production sequencing and initial inventory allocation
-
-#### Firm Learning System
-- **Learning Architecture**: Evolutionary strategy with performance tracking and fitness-based selection
-- **Strategy Parameters**: 
-  - Budget allocation weights (labor, inputs, capital): 0.8-1.2× base allocation
-  - Risk sensitivity: 0.5-1.5× hazard response aggressiveness  
-  - Price aggressiveness: 0.5-1.5× pricing adjustment magnitude
-  - Wage responsiveness: 0.5-1.5× wage adjustment speed
-- **Performance Tracking**: 10-step memory of money, production, capital, and limiting factors
-- **Fitness Evaluation**: Weighted combination of money growth (40%), production consistency (30%), survival bonus (20%), resource balance (10%)
-- **Strategy Adaptation**: Hill-climbing with mutation every 5 steps - reinforce successful changes, randomize after failures
-- **Population Dynamics**: Failed firms (money < 1.0 or 50% wealth decline) replaced by mutated offspring of successful firms
-- **Evolutionary Pressure**: Up to 25% of firms replaced per step after step 5, with fitness-weighted parent selection
-
-#### Production and Trade
-- **Leontief Technology**: Output limited by minimum of labor/coeff, inputs/coeff, capital/coeff
-- **Damage Factor**: Climate impacts reduce productive capacity with 50% recovery per step
-- **Budget Allocation**: 
-  - Allocates 90% of cash across labor, inputs (per supplier), and capital with a minimum labor reserve (3× wage) layered on top of learned weights
-  - Learned budget weights modify base allocation (0.8-1.2× multipliers)
-  - Previous limiting factor gets bonus weight scaled by learned responsiveness
-  - Each connected supplier gets independent input budget allocation
-- **Inventory Management**: Finished goods inventory with independent input tracking per supplier
-- **Dynamic Pricing**: 
-  - Learned price aggressiveness scales adjustments (0.5-1.5× multiplier)
-  - If households bought nothing and inventory exists, prices are cut sharply (escalating with repeated no-sales) and clamped to an affordability cap (~25% of avg household money)
-  - Scarcity pricing: +5% when no recent production and low inventory
-  - Supply-demand: +2% when inventory < 0.5× recent production, -2% when > 3×
-  - Cash-flow pricing only raises prices when households are actually buying
-  - Affordability bounds prevent runaway pricing relative to household wealth
+- **Wage Setting**: Raises wages when labour-limited and solvent, cuts when cash-constrained
+- **Dynamic Pricing**: Supply-demand driven adjustments with scarcity premiums
+- **Input Procurement**: Inputs from connected suppliers are substitutable (sum-based)
 
 ### Climate Hazard System
 
+#### Lazy Hazard Loading
+The model uses memory-efficient lazy loading for hazard data:
+- **No full raster loading**: Only reads pixel values at agent locations (~100 agents vs 933M pixels)
+- **Direct GeoTIFF access**: Uses `rasterio.sample()` for on-demand sampling
+- **Memory usage**: <1MB vs ~4GB for loading full global rasters
+- **Performance**: ~6ms sampling time vs ~4.5s for full load
+
 #### Hazard Events
 - **Format**: `"RP:START_STEP:END_STEP:HAZARD_TYPE:path/to/geotiff.tif"`
+- **Return Periods**: RP2 (50% annual), RP10 (10% annual), RP100 (1% annual)
 - **Sampling**: Independent per-cell draws each step based on return period frequencies
-- **Multiple Events**: Supports overlapping hazard types and time windows
 - **Intensity Combination**: Maximum depth used when multiple events affect same cell
 
-#### Impact Calculation
-- **Vulnerability Curves**: JRC flood curves for FL hazard type, linear for others
-- **Damage Application**: Multiplicative combination across hazard types
-- **Asset Impact**: Reduces firm capital stock, household capital, and firm inventories
-- **Production Impact**: Temporary capacity reduction via damage_factor
+#### JRC Damage Functions
+Damage is calculated using JRC Global Flood Depth-Damage Functions:
+- **Source**: `data/global_flood_depth_damage_functions.xlsx`
+- **Region detection**: Automatic based on agent coordinates (Europe, Asia, Africa, etc.)
+- **Sector mapping**:
+  - `residential` → Residential buildings
+  - `commodity`, `manufacturing` → Industrial buildings
+- **Interpolation**: Linear interpolation between depth-damage points
 
-#### Time Resolution
-- Default: 4 steps per year (quarterly resolution)
-- Configurable via `steps_per_year` parameter
-- Hazard probabilities adjusted accordingly (p_step = p_annual / steps_per_year)
+### Firm Learning System
+- **Strategy Parameters**: Budget allocation weights, risk sensitivity, price aggressiveness, wage responsiveness
+- **Performance Tracking**: 10-step memory of money, production, capital, and limiting factors
+- **Fitness Evaluation**: Weighted combination of money growth (40%), production consistency (30%), survival bonus (20%), resource balance (10%)
+- **Population Dynamics**: Failed firms replaced by mutated offspring of successful firms
 
 ## Usage
 
 ### Running Simulations
 
-Use a JSON parameter file (recommended) or pass `--rp-file` directly:
+Use a JSON parameter file:
 
 ```bash
-python run_simulation.py --param-file parameters.json
-# or, single hazard:
-python run_simulation.py --rp-file "10:1:20:FL:data/processed/flood_rp10.tif" --steps 50 --seed 42
+# Run with full-resolution hazard files (no preprocessing needed!)
+python run_simulation.py --param-file gfdl_rcp45_parameters.json
+
+# Or with preprocessed files
+python run_simulation.py --param-file aqueduct_riverine_parameters.json
 ```
 
-Parameters in the JSON file mirror the CLI flags; see `quick_test_parameters.json` for an example.
+### Parameter File Format
 
-### Data Preprocessing
+```json
+{
+  "rp_files": [
+    "2:1:80:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00002.tif",
+    "10:1:80:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00010.tif",
+    "100:1:80:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00100.tif"
+  ],
+  "steps": 320,
+  "seed": 42,
+  "topology": "small_firm_topology.json",
+  "start_year": 2020,
+  "steps_per_year": 4,
+  "learning": {
+    "enabled": true,
+    "memory_length": 10,
+    "mutation_rate": 0.05,
+    "adaptation_frequency": 5,
+    "min_money_survival": 1.0,
+    "replacement_frequency": 10
+  }
+}
+```
 
-For large rasters, use the preprocessing utility:
+### Data Preprocessing (Optional)
+
+For cropping or downsampling large rasters (optional - model works with full-resolution files):
 
 ```bash
 python prepare_hazard/preprocess_geotiff.py \
@@ -160,8 +134,8 @@ Specify firm locations and supply chains via JSON:
 ```json
 {
   "firms": [
-    {"id": 1, "lon": -73.5, "lat": 40.7, "sector": "agriculture", "capital": 100.0},
-    {"id": 2, "lon": -73.6, "lat": 40.8, "sector": "manufacturing", "capital": 150.0}
+    {"id": 1, "lon": 106.7, "lat": 10.8, "sector": "commodity", "capital": 5.0},
+    {"id": 2, "lon": 100.5, "lat": 13.7, "sector": "manufacturing", "capital": 3.0}
   ],
   "edges": [
     {"src": 1, "dst": 2}
@@ -171,51 +145,34 @@ Specify firm locations and supply chains via JSON:
 
 ## Output Files
 
-### Standard Outputs
-- **simulation_results.csv**: Model-level time series (production, wealth, wages, prices, risk, average fitness, firm replacements)
-- **simulation_agents.csv**: Agent-level panel data (money, capital, production, sector, type, fitness, survival_time)
-- **applied_events.csv**: Log of hazard events (step, event_name, event_id)
-- **simulation_timeseries.png**: Multi-panel plots of key metrics including learning system dynamics
-- **dashboard_timeseries.png**: Composite plots from interactive dashboard
-
-### Comparison Analysis
-- **comparison_plot.png**: Side-by-side hazard vs baseline scenarios including firm fitness and replacement dynamics
-- **comparison_plot_agents.csv**: Agent-level data for both scenarios with learning metrics
+- **simulation_*.csv**: Model-level time series (production, wealth, wages, prices, risk)
+- **simulation_*_agents.csv**: Agent-level panel data (money, capital, production, sector, type)
+- **simulation_*_timeseries.png**: Multi-panel plots of key metrics
+- **simulation_*_sector_bottlenecks.png**: Sector-level bottleneck analysis
 
 ## Model Parameters
 
 ### Agent Configuration
 - `num_households`: Number of household agents (default: 100)
-- `num_firms`: Number of firm agents (default: 20, overridden by topology file)
+- `num_firms`: Number of firm agents (overridden by topology file)
 - `seed`: Random seed for reproducibility
-
-### Spatial Parameters
-- `work_radius`: Employment/shopping radius in grid cells (auto-computed from 1° geographic)
-- Grid dimensions automatically derived from hazard raster extent
 
 ### Economic Parameters
 - **Technical Coefficients**: Labor (0.5), Input (0.5), Capital (0.5) per unit output
-- **Depreciation Rate**: 0.2% per step (≈0.8% annually for quarterly steps)
-- **Price Adjustment**: Supply-demand driven with scarcity premiums and upper bounds (1000× household wealth ceiling)
-- **Wage Adjustment**: Responsive to financial constraints with rapid adjustment (20%) when cash-limited
-- **Budget Allocation**: All firms allocate 90% of cash with previous limiting factor getting 30% bonus weight
-
-### Risk Parameters
-- **Household Migration**: Threshold 0.1, monitoring radius 1-50 cells
-- **Firm Adaptation**: Capital requirement increase 20%, relaxation 20-50% per year (modulated by learned risk sensitivity)
-- **Relocation Cost**: 10% of wealth and capital lost during migration
+- **Depreciation Rate**: 0.2% per step
+- **Consumption Ratios**: Configurable household spending by sector (default: 30% commodity, 70% manufacturing)
 
 ### Learning Parameters
-- **Learning System**: Enabled/disabled via `learning.enabled` (default: true)
-- **Memory Length**: Steps of performance history tracked (default: 10)
-- **Mutation Rate**: Standard deviation for strategy mutations (default: 0.05)
-- **Adaptation Frequency**: Steps between strategy evaluations (default: 5)  
-- **Survival Threshold**: Minimum money level before firm failure (default: 1.0)
-- **Replacement Frequency**: Steps between evolutionary replacement cycles (default: 10)
+- `learning.enabled`: Enable/disable firm learning (default: true)
+- `learning.memory_length`: Steps of performance history (default: 10)
+- `learning.mutation_rate`: Strategy mutation standard deviation (default: 0.05)
+- `learning.adaptation_frequency`: Steps between strategy evaluations (default: 5)
+- `learning.min_money_survival`: Minimum money before firm failure (default: 1.0)
+- `learning.replacement_frequency`: Steps between replacement cycles (default: 10)
 
 ### Climate Parameters
 - **Recovery Rate**: 50% of damage factor recovered per step
-- **Vulnerability**: JRC depth-damage curves for floods, linear for other hazards
+- **Vulnerability**: JRC region-specific depth-damage curves
 - **Sampling**: Independent per-cell Poisson process based on return periods
 
 ## File Organization
@@ -224,39 +181,51 @@ Specify firm locations and supply chains via JSON:
 ├── model.py              # Main EconomyModel class
 ├── agents.py             # HouseholdAgent and FirmAgent classes
 ├── run_simulation.py     # CLI runner with parameter file support
-├── compare_simulations.py # Baseline vs hazard comparison utility
-├── visualization.py      # Solara interactive dashboard
-├── hazard_utils.py       # GeoTIFF processing and CLIMADA integration
+├── hazard_utils.py       # LazyHazard class for memory-efficient sampling
+├── damage_functions.py   # JRC damage functions from Excel
 ├── trophic_utils.py      # Network topology analysis
-├── prepare_hazard/       # Data preprocessing utilities
-├── data/                 # Raw and processed hazard rasters
-├── frames/               # Animation frames from dashboard
+├── visualization.py      # Solara interactive dashboard
+├── prepare_hazard/       # Data preprocessing utilities (optional)
+├── data/                 # Hazard rasters and damage function Excel
+│   └── global_flood_depth_damage_functions.xlsx
 └── *_parameters.json     # Parameter files for different scenarios
 ```
 
-## Development
+## Dependencies
 
-### Key Dependencies
+### Core Requirements
 - Mesa ≥3.2.0 (agent-based modeling framework)
-- CLIMADA ≥4.1.0 (climate impact assessment)
+- NumPy, Pandas (data processing)
+- Rasterio (GeoTIFF reading)
+- GeoPandas (spatial data)
+- openpyxl (Excel reading for damage functions)
+- Matplotlib (visualization)
+
+### Optional
 - Solara (interactive dashboard)
-- Rasterio, GDAL (GeoTIFF processing)
-- NumPy, Pandas, Matplotlib (data processing and visualization)
+
+### Not Required
+- CLIMADA is no longer needed - damage functions are loaded directly from the JRC Excel file
+
+## Performance
+
+| Aspect | Value |
+|--------|-------|
+| Hazard loading | ~1ms (metadata only) |
+| Hazard sampling | ~6ms per step (90 agents) |
+| Memory for hazards | <1MB |
+| Agent grid | 64,800 cells (1° resolution) |
+| Full raster support | 933M pixels (no preprocessing needed) |
+
+## Development
 
 ### Model Extension Points
 - **New Agent Types**: Inherit from `mesa.Agent`, implement `step()` method
-- **Additional Hazards**: Add vulnerability curves in `_build_vulnerability()`
-- **Economic Mechanisms**: Modify production functions, market clearing in agent `step()` methods
-- **Spatial Features**: Extend grid properties, distance calculations in `EconomyModel`
+- **Additional Hazards**: Add sector mappings in `damage_functions.py`
+- **Economic Mechanisms**: Modify production functions in agent `step()` methods
+- **New Regions**: Update `get_region_from_coords()` in `damage_functions.py`
 
 ### Testing and Validation
 - Use consistent `seed` values for reproducible results
 - Monitor key invariants: wealth conservation, market clearing
 - Compare outcomes across parameter variations
-- Validate against empirical data where available
-
-### Performance Considerations
-- Grid size scales quadratically with memory usage
-- Agent count affects per-step computation time
-- Hazard raster resolution impacts both memory and disk I/O
-- Use preprocessing for large datasets to optimize performance

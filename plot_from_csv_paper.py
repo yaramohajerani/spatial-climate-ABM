@@ -164,7 +164,7 @@ def main():
     # Create color/style mapping: colors for hazard vs baseline, line styles for learning vs no learning
     scenario_style_map = {}
     for scenario in unique_scenarios:
-        color = "tab:orange" if "hazard" in scenario.lower() else "tab:blue"
+        color = "tab:red" if "hazard" in scenario.lower() else "tab:blue"
         linestyle = ":" if "no learning" in scenario.lower() else "-"
             
         scenario_style_map[scenario] = {"color": color, "linestyle": linestyle}
@@ -200,7 +200,7 @@ def main():
     ]
     
     # Create 3x3 subplot grid
-    fig, axes = plt.subplots(3, 3, figsize=(13, 6.5))
+    fig, axes = plt.subplots(3, 3, figsize=(16, 9))
     
     # Units for y-axis labels
     units = {
@@ -237,7 +237,7 @@ def main():
                 if metric_name in grp.columns:
                     ax.plot(grp[x_col], grp[metric_name], 
                            color=style["color"], linestyle=style["linestyle"], 
-                           label=f"Mean - {scenario}", linewidth=2, zorder=3)
+                           label=f"Mean - {scenario}", linewidth=1.5, alpha=0.7, zorder=3)
             
             # Add sector lines from agent data for wages and prices
             if show_sector_series and not firm_agents_df.empty and metric_name in ["Mean_Price", "Mean_Wage"]:
@@ -303,7 +303,7 @@ def main():
                 x_vals = mean_grp.index
                 style = scenario_style_map[scenario]
                 ax.plot(x_vals, mean_grp.values, 
-                       color=style["color"], linewidth=2, linestyle=style["linestyle"], 
+                       color=style["color"], linewidth=1.5, alpha=0.7, linestyle=style["linestyle"], 
                        label=f"Mean - {scenario}", zorder=3)
             
             # Add sector lines
@@ -366,7 +366,7 @@ def main():
                 x_vals = mean_grp.index
                 style = scenario_style_map[scenario]
                 ax.plot(x_vals, mean_grp.values, 
-                       color=style["color"], linewidth=2, linestyle=style["linestyle"], 
+                       color=style["color"], linewidth=1.5, alpha=0.7, linestyle=style["linestyle"], 
                        label=f"Mean - {scenario}", zorder=3)
             
             # Add sector lines if household data has sectors
@@ -555,11 +555,11 @@ def main():
                 else:
                     line.set_linewidth(3)  # Thicker for main scenario lines
     
-    plt.suptitle("Baseline vs. RCP8.5 Agent Trajectories", fontsize=14, fontweight='bold')
+    plt.suptitle("Baseline vs. RCP4.5 Agent Trajectories", fontsize=14, fontweight='bold')
     plt.tight_layout()
     
     # Adjust layout to make room for bottom legend
-    plt.subplots_adjust(bottom=0.095)
+    plt.subplots_adjust(bottom=0.07)
     
     # Save plot
     out_path = Path(args.out)

@@ -87,6 +87,9 @@ def main() -> None:  # noqa: D401
         # 5. Learning parameters --------------------------------------------
         args.learning_params = param_data.get("learning", {})
 
+        # 6. Consumption ratios by sector -----------------------------------
+        args.consumption_ratios = param_data.get("consumption_ratios", None)
+
     # Ensure we have at least one RP spec after merging param file -----------
     if not args.rp_file:
         raise SystemExit("No --rp-file entries provided and none found in parameter file.")
@@ -136,6 +139,10 @@ def main() -> None:  # noqa: D401
     if not hasattr(args, "learning_params"):
         args.learning_params = {}
 
+    # Ensure consumption_ratios exists even if no param file
+    if not hasattr(args, "consumption_ratios"):
+        args.consumption_ratios = None  # model will use default
+
     # Configure scenario settings
     apply_hazards = not args.no_hazards
     if args.no_learning:
@@ -164,7 +171,6 @@ def main() -> None:  # noqa: D401
     model = EconomyModel(
         num_households=100,
         num_firms=20,
-        shock_step=5,
         hazard_events=events,
         seed=args.seed,
         apply_hazard_impacts=apply_hazards,
@@ -172,6 +178,7 @@ def main() -> None:  # noqa: D401
         start_year=args.start_year,
         steps_per_year=args.steps_per_year,
         learning_params=learning_config,
+        consumption_ratios=args.consumption_ratios,
     )
 
     for _ in range(args.steps):
