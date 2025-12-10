@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Tuple, Iterable
+from typing import Dict, List, Tuple, Iterable, Union
 
 import numpy as np
 import pandas as pd
@@ -14,11 +14,10 @@ from mesa.datacollection import DataCollector
 from mesa.space import MultiGrid
 
 from agents import FirmAgent, HouseholdAgent
-from hazard_utils import hazard_from_geotiffs
+from hazard_utils import lazy_hazard_from_geotiffs, LazyHazard
 from trophic_utils import compute_trophic_levels
 
-from climada.hazard import Hazard
-from climada.entity import Exposures, ImpactFunc
+from damage_functions import get_damage_functions, get_region_from_coords
 
 Coords = Tuple[int, int]
 
@@ -136,19 +135,27 @@ class EconomyModel(Model):
         # Store mapping of event index -> (start, end) per hazard type
         self._hazard_event_ranges: dict[str, List[Tuple[int, int]]] = dict(grouped_ranges)
 
-        self.hazards: dict[str, Hazard] = {}
+        # Use lazy hazard loading for memory efficiency (samples on-demand)
+        # This reduces memory from ~4GB to <1MB for global hazard datasets
+        self.hazards: dict[str, LazyHazard] = {}
 
-        first_lon, first_lat = None, None
+        first_haz = None
         for htype, grp in grouped_files.items():
-            haz, lon_vals, lat_vals = hazard_from_geotiffs(grp, haz_type=htype)
-            # Store only hazard data, vulnerability will be applied per agent
+            haz, _, _ = lazy_hazard_from_geotiffs(grp, haz_type=htype)
+            # Store lazy hazard that samples on-demand
             self.hazards[htype] = haz
+            if first_haz is None:
+                first_haz = haz
 
-            if first_lon is None:
-                first_lon, first_lat = lon_vals, lat_vals
+        # Use a COARSE agent grid (1-degree resolution = 360x180 cells)
+        # This is decoupled from the hazard raster resolution.
+        # When sampling hazards, we convert grid positions to lon/lat
+        # and sample at those coordinates from the full-resolution raster.
+        agent_grid_resolution = 1.0  # degrees per cell
 
-        self.lon_vals = first_lon  # type: ignore[assignment]
-        self.lat_vals = first_lat
+        # Build coarse lon/lat arrays for agent placement
+        self.lon_vals = np.arange(-180 + agent_grid_resolution/2, 180, agent_grid_resolution)
+        self.lat_vals = np.arange(-90 + agent_grid_resolution/2, 90, agent_grid_resolution)
 
         # ---------------- Derived spatial metrics ------------------- #
         # Translate a desired 1° geographic radius into grid cells so that
@@ -180,10 +187,9 @@ class EconomyModel(Model):
             (x, y) for y in range(height) for x in range(width)
         ]
 
-        # Initialize per-cell hazard depth map with zero intensity values
-        self.hazard_map: Dict[Coords, float] = {
-            coord: 0.0 for coord in self.valid_coordinates
-        }
+        # Initialize per-cell hazard depth map (populated on-demand for agent cells only)
+        # This is a sparse dict, not pre-populated for all cells
+        self.hazard_map: Dict[Coords, float] = {}
 
         # --- Hazard configuration --- #
         self.shock_step = shock_step  # timestep to introduce hazard
@@ -260,8 +266,8 @@ class EconomyModel(Model):
         # Populate agent caches after all agents created
         self._rebuild_agent_caches()
 
-        # Build exposures and assign centroids for each hazard
-        self._exposures = self._build_exposures()
+        # NOTE: With LazyHazard, we no longer need CLIMADA exposures/centroids.
+        # Hazard sampling is done directly from GeoTIFF files at agent locations.
 
         # ------------------ Pre-compute trophic levels ------------------- #
         firm_adj_init = {
@@ -285,9 +291,6 @@ class EconomyModel(Model):
                     ag.inventory_output = 10  # near-root suppliers
                 else:
                     ag.inventory_output = 5   # downstream firms
-
-        for haz in self.hazards.values():
-            self._exposures.assign_centroids(haz)
 
         # --- Step counter --- #
         self.current_step: int = 0
@@ -565,79 +568,6 @@ class EconomyModel(Model):
         """Return hazard risk (0-1) for a given cell."""
         return self.hazard_map.get(pos, 0.0)
 
-    # ------------------------------------------------------------------ #
-    #                     IMPACT / EXPOSURE HELPERS                     #
-    # ------------------------------------------------------------------ #
-
-    def _build_exposures(self) -> Exposures:
-        """Construct a CLIMADA Exposures object from all agents."""
-        records = []
-        for ag in self.agents:
-            x, y = ag.pos
-            lon = float(self.lon_vals[x])
-            lat = float(self.lat_vals[y])
-            # Use capital stock for firms, capital for households as exposure value
-            if isinstance(ag, FirmAgent):
-                val = ag.capital_stock
-            else:
-                val = ag.capital
-            records.append({
-                "latitude": lat,
-                "longitude": lon,
-                "value": val,
-                "impf_": 1,  # generic impact function id column recognised by CLIMADA
-            })
-
-        exp = Exposures(pd.DataFrame.from_records(records))
-        # Geometry is now set during init in CLIMADA ≥5, but for backward
-        # compatibility ensure lat/lon columns are translated into geometry.
-        if not hasattr(exp, "geometry") or exp.geometry.is_empty.any():  # pragma: no cover
-            exp.set_lat_lon()
-
-        return exp
-
-    @staticmethod
-    def _build_vulnerability(haz_type: str = "FL", sector: str = "residential") -> ImpactFunc:
-        """Return a single ImpactFunc appropriate for the hazard type and sector.
-
-        The caller can still wrap the result in an ``ImpactFuncSet`` if they
-        need CLIMADA's higher-level interfaces, but for the pixel-wise damage
-        calculation performed inside this model we only ever use one curve.
-
-        Supported hazard types:
-        • ``FL`` (flood): JRC global depth–damage curve via ``climada_petals``.
-          If the Petals dependency is unavailable we fall back to a simple
-          linear 0-1 relationship between intensity and mean damage ratio.
-        
-        Sector mapping for JRC curves:
-        • agriculture, commodities -> agriculture
-        • manufacturing -> industrial  
-        • others -> residential (default)
-        """
-        # Map model sectors to JRC asset types
-        jrc_asset_type = "residential"  # default
-        if sector in ["agriculture", "commodities"]:
-            jrc_asset_type = "agriculture"
-        elif sector == "manufacturing":
-            jrc_asset_type = "industrial"
-        
-        try:
-            if haz_type == "FL":
-                from climada_petals.entity.impact_funcs.river_flood import ImpfRiverFlood  # type: ignore
-
-                impf = ImpfRiverFlood.from_jrc_region_sector("Global", jrc_asset_type)
-                impf.id = 1
-                return impf
-        except Exception:  # noqa: BLE001
-            pass  # fall back to linear
-
-        impf = ImpactFunc(haz_type=haz_type, id=1, name="Linear")
-        impf.intensity = np.array([0.0, 1.0])
-        impf.mdd = np.array([0.0, 1.0])
-        impf.paa = np.array([1.0, 1.0])
-        impf.unit = "m"
-        return impf
-
     # --------------------------------------------------------------------- #
     #                               MESA STEP                               #
     # --------------------------------------------------------------------- #
@@ -905,38 +835,42 @@ class EconomyModel(Model):
     # ------------------------------------------------------------------ #
 
     def _sample_pixelwise_hazard(self) -> None:
-        """Sample hazard only at agent locations for efficiency.
+        """Sample hazard only at agent locations using lazy loading.
 
         Probability cell flooded with intensity from raster *i* is 1/RP_i each
         year, independent across cells and RPs. If multiple RPs trigger on the
         same cell in the same year we keep the maximum depth.
 
-        Optimization: Only samples cells where agents are located instead of
-        all 2M+ grid cells, since hazard sampling is independent per cell.
+        Uses LazyHazard to sample directly from full-resolution GeoTIFF files
+        without loading entire rasters into memory. This reduces memory usage
+        from ~4GB to <1MB for global hazard datasets.
         """
-        # Collect unique agent cell positions and build mapping
-        agent_cells: dict[Coords, int] = {}  # coord -> grid index
-        lon_len = len(self.lon_vals)
+        # Collect unique agent cell positions and their geographic coordinates
+        agent_cells: dict[Coords, Tuple[float, float]] = {}  # grid coord -> (lon, lat)
 
         for ag in self._firms:
             x, y = ag.pos
             coord = (x, y)
             if coord not in agent_cells:
-                agent_cells[coord] = y * lon_len + x
+                lon = float(self.lon_vals[x])
+                lat = float(self.lat_vals[y])
+                agent_cells[coord] = (lon, lat)
 
         for ag in self._households:
             x, y = ag.pos
             coord = (x, y)
             if coord not in agent_cells:
-                agent_cells[coord] = y * lon_len + x
+                lon = float(self.lon_vals[x])
+                lat = float(self.lat_vals[y])
+                agent_cells[coord] = (lon, lat)
 
         n_agent_cells = len(agent_cells)
         if n_agent_cells == 0:
             return
 
-        # Convert to arrays for vectorized operations
-        cell_coords = list(agent_cells.keys())
-        cell_indices = np.array([agent_cells[c] for c in cell_coords])
+        # Convert to lists for sampling
+        cell_coords = list(agent_cells.keys())  # grid coordinates
+        geo_coords = [agent_cells[c] for c in cell_coords]  # (lon, lat) tuples
 
         # Reset hazard_map for agent cells only
         for coord in cell_coords:
@@ -951,8 +885,9 @@ class EconomyModel(Model):
             cell_intensities: dict[Coords, float] = {c: 0.0 for c in cell_coords}
             ranges = self._hazard_event_ranges.get(htype, [])
 
+            # Find active events for current step
             active_events: list[tuple[int, float]] = []
-            for i in range(haz.intensity.shape[0]):
+            for i in range(haz.n_events):
                 if i < len(ranges):
                     start, end = ranges[i]
                     if not (start <= self.current_step <= end):
@@ -964,18 +899,12 @@ class EconomyModel(Model):
 
             if active_events:
                 for idx_ev, p_hit in active_events:
-                    row = haz.intensity[idx_ev]
-                    # Extract full row once, then index into it
-                    if hasattr(row, "toarray"):
-                        full_depths = row.toarray().ravel()
-                    else:
-                        full_depths = np.asarray(row).ravel()
+                    # Use lazy sampling - only reads pixels at agent locations
+                    agent_depths = haz.sample_at_coords(geo_coords, idx_ev)
 
-                    # Only sample Bernoulli for agent cells
+                    # Bernoulli sampling: each agent cell has p_hit chance of flooding
                     hit_mask = np.random.random(n_agent_cells) < p_hit
                     if hit_mask.any():
-                        # Get depths only at agent cell indices
-                        agent_depths = full_depths[cell_indices]
                         for i, coord in enumerate(cell_coords):
                             if hit_mask[i]:
                                 cell_intensities[coord] = max(cell_intensities[coord], agent_depths[i])
@@ -995,16 +924,9 @@ class EconomyModel(Model):
         # Count flooded agent cells for logging
         flooded_cells = sum(1 for c in cell_coords if self.hazard_map[c] > 0)
 
-        # Apply agent-specific vulnerability and damage
-        # Use cached agent lists and cached vulnerability functions for efficiency
-        # Cache vulnerability functions per (hazard_type, sector) to avoid repeated construction
-        vuln_cache: dict[tuple[str, str], ImpactFunc] = {}
-
-        def get_vulnerability(htype: str, sector: str) -> ImpactFunc:
-            key = (htype, sector)
-            if key not in vuln_cache:
-                vuln_cache[key] = self._build_vulnerability(htype, sector)
-            return vuln_cache[key]
+        # Apply agent-specific damage using JRC damage functions
+        # Get the global damage functions instance (loaded once, cached)
+        damage_funcs = get_damage_functions()
 
         def apply_damage(ag, is_firm: bool):
             if ag.pos is None:
@@ -1017,7 +939,13 @@ class EconomyModel(Model):
                                f"This likely indicates a bug in agent creation or placement.")
 
             coord = ag.pos  # (x, y) tuple
-            agent_sector = ag.sector if is_firm else getattr(ag, 'sector', 'residential')
+            agent_sector = ag.sector if is_firm else "residential"
+
+            # Get agent's geographic coordinates for region-specific damage curves
+            x, y = coord
+            lon = float(self.lon_vals[x])
+            lat = float(self.lat_vals[y])
+            region = get_region_from_coords(lon, lat)
 
             # Calculate combined loss across all hazard types for this agent
             combined_loss_agent = 0.0
@@ -1026,11 +954,8 @@ class EconomyModel(Model):
                 if intensity == 0:
                     continue
 
-                # Get sector-specific vulnerability function (cached)
-                impf = get_vulnerability(htype, agent_sector)
-
-                # Calculate damage ratio for this hazard type
-                mdr = np.clip(impf.calc_mdr(np.array([intensity]))[0], 0.0, 1.0)
+                # Get damage fraction from JRC damage functions
+                mdr = damage_funcs.get_damage_fraction(intensity, agent_sector, region)
 
                 # Combine multiplicatively: 1 - prod(1 - loss)
                 combined_loss_agent = 1 - (1 - combined_loss_agent) * (1 - mdr)

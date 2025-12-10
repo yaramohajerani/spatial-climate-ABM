@@ -1,0 +1,27 @@
+{
+  "rp_files": [
+    "2:1:80:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00002.tif",
+    "10:1:80:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00010.tif",
+    "100:1:80:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00100.tif",
+    "2:81:160:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2050_rp00002.tif",
+    "10:81:160:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2050_rp00010.tif",
+    "100:81:160:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2050_rp00100.tif",
+    "2:161:320:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2080_rp00002.tif",
+    "10:161:320:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2080_rp00010.tif",
+    "100:161:320:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2080_rp00100.tif"
+  ],
+  "steps": 320,
+  "seed": 42,
+  "topology": "small_firm_topology.json",
+  "start_year": 2020,
+  "steps_per_year": 4,
+  "learning": {
+    "enabled": false,
+    "memory_length": 10,
+    "mutation_rate": 0.05,
+    "adaptation_frequency": 5,
+    "min_money_survival": 1.0,
+    "replacement_frequency": 10,
+    "realistic_liquidation": false
+  }
+}
