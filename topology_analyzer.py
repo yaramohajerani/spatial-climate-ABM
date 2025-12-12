@@ -95,7 +95,45 @@ def print_stats(g: nx.DiGraph, levels: Dict[int, int]):
         print(f"  {node:3d}  {sector:<15}  {lvl if lvl is not None else 'N/A'}")
 
 
-def plot_network(g: nx.DiGraph, levels: Dict[int, int], outfile: Path):
+def _abbr(sector: str) -> str:
+    return {
+        "agriculture": "A",
+        "mining": "M",
+        "extraction": "E",
+        "manufacturing": "F",  # factory
+        "services": "S",
+        "retail": "R",
+        "wholesale": "W",  # legacy
+    }.get(sector.lower(), sector[:1].upper())
+
+
+def _layout_by_level(g: nx.DiGraph, levels: Dict[int, int]) -> Dict[int, tuple[float, float]]:
+    """Deterministic, non-overlapping horizontal layout by trophic level."""
+    if not levels:
+        return {n: (i, 0) for i, n in enumerate(g.nodes())}
+
+    level_groups: Dict[int, List[int]] = {}
+    max_lvl = max(levels.values())
+    for n in g.nodes():
+        lvl = levels.get(n, max_lvl + 1)
+        level_groups.setdefault(lvl, []).append(n)
+
+    pos: Dict[int, tuple[float, float]] = {}
+    vertical_spacing = 2.2  # generous vertical room
+    min_hspan = 8.0
+
+    for lvl, nodes in sorted(level_groups.items()):
+        count = len(nodes)
+        # even spacing across a fixed horizontal span prevents overlap
+        span = max(min_hspan, count * 1.1)
+        xs = np.linspace(-span / 2, span / 2, count)
+        y = -float(lvl) * vertical_spacing
+        for x, node in zip(xs, sorted(nodes)):
+            pos[node] = (float(x), y)
+    return pos
+
+
+def _draw_network(ax, g: nx.DiGraph, levels: Dict[int, int]):
     # Colour map by trophic level (None => grey)
     if levels:
         min_lvl = min(levels.values())
@@ -115,95 +153,32 @@ def plot_network(g: nx.DiGraph, levels: Dict[int, int], outfile: Path):
         else:
             colours.append(cm.viridis(norm(lvl)))
 
-    # -------------------------------------------------------------- #
-    # Layout strategy:
-    #   • y-positions fixed by (negative) trophic level so higher levels appear lower.
-    #   • x-positions arranged to prevent overlaps within each level using systematic spacing.
-    #   • This maintains trophic level grouping while ensuring no symbol overlaps.
-    # -------------------------------------------------------------- #
+    pos = _layout_by_level(g, levels)
 
-    # Group nodes by trophic level
-    lvl_vals = list(levels.values()) or [0]
-    max_lvl = max(lvl_vals)
-    
-    # Group nodes by their trophic level
-    level_groups = {}
-    for n in g.nodes():
-        lvl = levels.get(n, max_lvl + 1)
-        if lvl not in level_groups:
-            level_groups[lvl] = []
-        level_groups[lvl].append(n)
-    
-    pos = {}
-    node_radius = 0.15  # Circle radius for overlap detection
-    circle_diameter = node_radius * 2  # Full circle diameter for buffer
-    vertical_spacing = 2.0  # Spacing between trophic levels to prevent vertical overlap
-    
-    # Determine horizontal extent based on maximum nodes in any level
-    max_nodes_per_level = max(len(nodes) for nodes in level_groups.values()) if level_groups else 1
-    horizontal_extent = max(8.0, max_nodes_per_level * circle_diameter * 3)  # Minimum 8 units wide
-    
-    # Process each trophic level
-    for lvl, nodes in level_groups.items():
-        y_pos = -float(lvl) * vertical_spacing  # Higher levels appear lower with more spacing
-        num_nodes = len(nodes)
-        
-        # Track positions used in this row only
-        row_positions = []
-        
-        # For each node, find a random non-overlapping position
-        for node in sorted(nodes):  # Sort for consistency
-            max_attempts = 100  # Prevent infinite loops
-            attempts = 0
-            
-            while attempts < max_attempts:
-                # Random x position within the full horizontal extent
-                x_pos = np.random.uniform(-horizontal_extent/2, horizontal_extent/2)
-                
-                # Check if this position overlaps with any existing position in this row
-                overlaps = any(abs(x_pos - existing_x) < circle_diameter for existing_x in row_positions)
-                
-                if not overlaps:
-                    row_positions.append(x_pos)
-                    pos[node] = [x_pos, y_pos]
-                    break
-                
-                attempts += 1
-            
-            # Fallback if we couldn't find a random position (shouldn't happen with reasonable node counts)
-            if attempts >= max_attempts:
-                # Use systematic spacing as fallback
-                fallback_x = -horizontal_extent/2 + len(row_positions) * circle_diameter * 1.5
-                row_positions.append(fallback_x)
-                pos[node] = [fallback_x, y_pos]
-
-    nx.draw_networkx_edges(g, pos, alpha=0.3, arrows=True, width=0.5)
-    nx.draw_networkx_nodes(g, pos, node_color=colours, node_size=300, edgecolors="black", linewidths=0.5)
+    nx.draw_networkx_edges(g, pos, ax=ax, alpha=0.25, arrows=True, width=0.6, arrowstyle="-|>", arrowsize=8)
+    nx.draw_networkx_nodes(
+        g,
+        pos,
+        ax=ax,
+        node_color=colours,
+        node_size=320,
+        edgecolors="black",
+        linewidths=0.5,
+    )
 
     # Label nodes with sector initial + id; white text for dark nodes
-    if g.number_of_nodes() <= 120:
-        def _abbr(sector: str) -> str:
-            return {
-                "agriculture": "A",
-                "mining": "M",
-                "extraction": "E",
-                "manufacturing": "F",  # factory
-                "services": "S",
-                "wholesale": "W",
-            }.get(sector.lower(), sector[:1].upper())
-
-        ax = plt.gca()
+    if g.number_of_nodes() <= 140:
+        mid_lvl = (max_lvl + min_lvl) / 2
         for n in g.nodes():
             lbl = f"{_abbr(g.nodes[n].get('sector', ''))}{n}"
             x, y = pos[n]
-            font_color = "white" if levels.get(n, 0) < (max_lvl + min_lvl) / 2 else "black"
-            ax.text(x, y, lbl, fontsize=6, ha="center", va="center", color=font_color)
+            font_color = "white" if levels.get(n, 0) < mid_lvl else "black"
+            ax.text(x, y, lbl, fontsize=6.5, ha="center", va="center", color=font_color, zorder=5)
 
     # Add legend/colour bar for trophic levels
     from matplotlib.cm import ScalarMappable
     sm = ScalarMappable(cmap=plt.cm.viridis, norm=norm)
     sm.set_array([])
-    ax = plt.gca()
     cbar = plt.colorbar(sm, ax=ax, shrink=0.7, pad=0.02)
     cbar.set_label("Trophic level")
 
@@ -217,12 +192,8 @@ def plot_network(g: nx.DiGraph, levels: Dict[int, int], outfile: Path):
             labels_sec.append(f"{_abbr(sec)} = {sec}")
         ax.legend(handles, labels_sec, title="Sector key", fontsize=6, loc="upper left", bbox_to_anchor=(1.02, 1.0))
 
-    plt.title("Supply-chain network coloured by trophic level")
-    plt.axis("off")
-    plt.tight_layout()
-    plt.savefig(outfile)
-    plt.close()
-    print(f"Saved network plot to {outfile}")
+    ax.set_title("Supply chain (trophic layout)")
+    ax.axis("off")
 
 
 # ------------------------------------------------------------------ #
@@ -230,7 +201,7 @@ def plot_network(g: nx.DiGraph, levels: Dict[int, int], outfile: Path):
 # ------------------------------------------------------------------ #
 
 
-def plot_world_map(g: nx.DiGraph, outfile: Path):
+def plot_world_map(ax, g: nx.DiGraph):
     """Scatter firm locations on a world map coloured by sector with supply chain connections."""
 
     # Build DataFrame of nodes
@@ -249,7 +220,6 @@ def plot_world_map(g: nx.DiGraph, outfile: Path):
     # World coastlines
     world = gpd.read_file(gpd.datasets.get_path("naturalearth_lowres"))
 
-    fig, ax = plt.subplots(figsize=(12, 8))  # Larger figure for better visibility
     world.plot(ax=ax, color="lightgrey", edgecolor="white", linewidth=0.3)
 
     # Create color mapping first so we can use it for both nodes and edges
@@ -309,10 +279,7 @@ def plot_world_map(g: nx.DiGraph, outfile: Path):
            transform=ax.transAxes, fontsize=8, verticalalignment='top',
            bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue", alpha=0.8))
     
-    plt.tight_layout()
-    plt.savefig(outfile, dpi=150, bbox_inches='tight')  # Higher DPI for better quality
-    plt.close()
-    print(f"Saved map plot with connections to {outfile}")
+    ax.set_aspect("equal", adjustable="box")
 
 
 def main():
@@ -330,11 +297,14 @@ def main():
 
     if args.plot:
         outfile = args.topology.with_name(args.topology.stem + "_network.pdf")
-        plot_network(g, levels, outfile)
-
-        # Additional world map plot
-        outfile_map = args.topology.with_name(args.topology.stem + "_map.pdf")
-        plot_world_map(g, outfile_map)
+        fig, axes = plt.subplots(1, 2, figsize=(14, 8))
+        _draw_network(axes[0], g, levels)
+        plot_world_map(axes[1], g)
+        fig.suptitle("Topology overview", fontsize=12)
+        plt.tight_layout()
+        plt.savefig(outfile, dpi=180, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Saved combined network+map plot to {outfile}")
 
 
 if __name__ == "__main__":
