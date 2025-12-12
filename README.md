@@ -14,7 +14,7 @@ The model simulates economic agents (households and firms) on a spatial grid whi
 - **Climate Integration**: Lazy hazard sampling from full-resolution GeoTIFF rasters with JRC region-specific damage curves
 - **Adaptive Behaviors**: Risk-based household migration and firm capital adjustments
 - **Firm Learning System**: Evolutionary strategy-based learning for budget allocation, pricing, wage setting, and risk adaptation
-- **Multiple Sectors**: Commodity and manufacturing sectors with configurable consumption ratios
+- **Multiple Sectors**: Commodity, manufacturing, and retail sectors with sector-specific production coefficients and configurable consumption ratios
 
 ### Model Highlights
 
@@ -35,15 +35,18 @@ The model uses a `mesa.space.MultiGrid` with a fixed 1-degree resolution (360×1
 #### HouseholdAgent
 - **Labor Supply**: Each household supplies 1 unit of labor per step
 - **Employment Choice**: Maximizes `wage - distance_cost × distance` utility across all firms (cross-sector employment allowed)
-- **Consumption**: Allocates budget across sectors based on configurable ratios (default: 30% commodity, 70% manufacturing)
+- **Consumption**: Allocates budget across sectors based on configurable ratios; supports fractional purchases when budget < unit price
 - **Risk Behavior**: Monitors hazard within random radius (1-50 cells), relocates when max hazard > 0.1
 
 #### FirmAgent
 - **Production Technology**: Leontief production function with labor, material inputs, and capital
-- **Technical Coefficients**: 0.5 units each of labor, inputs, and capital per unit output
+- **Sector-Specific Coefficients**: Each sector has different labor, input, and capital requirements per unit output:
+  - Commodity: labor=0.6, input=0.0, capital=0.7 (capital-intensive extraction, no upstream inputs)
+  - Manufacturing: labor=0.3, input=0.6, capital=0.6 (automated, capital & input intensive)
+  - Retail: labor=0.5, input=0.4, capital=0.2 (moderate labor, low capital needs)
 - **Learning System**: Evolutionary strategy learning with 6 adaptive parameters and fitness-based selection
-- **Wage Setting**: Raises wages when labour-limited and solvent, cuts when cash-constrained
-- **Dynamic Pricing**: Supply-demand driven adjustments with scarcity premiums
+- **Wage Setting**: Raises wages after 4 consecutive cycles of labor shortage (persistent shortage threshold prevents wage spirals)
+- **Dynamic Pricing**: Supply-demand driven adjustments with cost-floor mechanism
 - **Input Procurement**: Inputs from connected suppliers are substitutable (sum-based)
 
 ### Climate Hazard System
@@ -67,7 +70,7 @@ Damage is calculated using JRC Global Flood Depth-Damage Functions:
 - **Region detection**: Automatic based on agent coordinates (Europe, Asia, Africa, etc.)
 - **Sector mapping**:
   - `residential` → Residential buildings
-  - `commodity`, `manufacturing` → Industrial buildings
+  - `commodity`, `manufacturing`, `retail` → Industrial buildings
 - **Interpolation**: Linear interpolation between depth-damage points
 
 ### Firm Learning System
@@ -104,6 +107,11 @@ python run_simulation.py --param-file aqueduct_riverine_parameters.json
   "topology": "small_firm_topology.json",
   "start_year": 2020,
   "steps_per_year": 4,
+  "consumption_ratios": {
+    "commodity": 0.25,
+    "manufacturing": 0.45,
+    "retail": 0.30
+  },
   "learning": {
     "enabled": true,
     "memory_length": 10,
@@ -135,10 +143,12 @@ Specify firm locations and supply chains via JSON:
 {
   "firms": [
     {"id": 1, "lon": 106.7, "lat": 10.8, "sector": "commodity", "capital": 5.0},
-    {"id": 2, "lon": 100.5, "lat": 13.7, "sector": "manufacturing", "capital": 3.0}
+    {"id": 2, "lon": 100.5, "lat": 13.7, "sector": "manufacturing", "capital": 3.0},
+    {"id": 3, "lon": 101.2, "lat": 14.1, "sector": "retail", "capital": 1.5}
   ],
   "edges": [
-    {"src": 1, "dst": 2}
+    {"src": 1, "dst": 2},
+    {"src": 2, "dst": 3}
   ]
 }
 ```
@@ -158,9 +168,15 @@ Specify firm locations and supply chains via JSON:
 - `seed`: Random seed for reproducibility
 
 ### Economic Parameters
-- **Technical Coefficients**: Labor (0.5), Input (0.5), Capital (0.5) per unit output
+- **Sector-Specific Technical Coefficients**:
+  | Sector | Labor | Input | Capital | Notes |
+  |--------|-------|-------|---------|-------|
+  | Commodity | 0.6 | 0.0 | 0.7 | Capital-intensive extraction, no upstream inputs |
+  | Manufacturing | 0.3 | 0.6 | 0.6 | Automated, capital & input intensive |
+  | Retail | 0.5 | 0.4 | 0.2 | Moderate labor, low capital needs |
 - **Depreciation Rate**: 0.2% per step
-- **Consumption Ratios**: Configurable household spending by sector (default: 30% commodity, 70% manufacturing)
+- **Consumption Ratios**: Configurable household spending by sector (default: 25% commodity, 45% manufacturing, 30% retail)
+- **Wage Adjustment Threshold**: 4 consecutive cycles of labor shortage required before wage increase
 
 ### Learning Parameters
 - `learning.enabled`: Enable/disable firm learning (default: true)

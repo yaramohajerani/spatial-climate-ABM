@@ -189,9 +189,7 @@ class HouseholdAgent(Agent):
                 for seller in sector_firms:
                     if remaining_sector_budget <= 0:
                         break
-                    if seller.price > remaining_sector_budget:
-                        continue  # can't afford even one unit
-
+                    # Allow fractional purchases - buy whatever we can afford
                     max_quantity = remaining_sector_budget / seller.price
                     qty_bought = seller.sell_goods_to_household(self, quantity=max_quantity)
                     if qty_bought > 0:
@@ -239,11 +237,23 @@ class HouseholdAgent(Agent):
 class FirmAgent(Agent):
     """A firm with a simple Leontief production function and local trade."""
 
-    # Leontief technical coefficients (units required per unit output)
-    LABOR_COEFF: float = 0.5  # less than 1 → higher productivity
-    INPUT_COEFF: float = 0.5
-    CAPITAL_COEFF: float = 0.5  # capital units per output unit
-    
+    # Sector-specific Leontief technical coefficients (units required per unit output)
+    # Lower coefficient = higher productivity (less input needed per output)
+    SECTOR_COEFFICIENTS: dict = {
+        # Commodity (raw materials): labor-intensive extraction, VERY capital-intensive (heavy equipment)
+        "commodity": {"labor": 0.6, "input": 0.0, "capital": 0.7},
+        "agriculture": {"labor": 0.6, "input": 0.0, "capital": 0.7},
+        # Manufacturing: automated (low labor), capital-intensive, high input needs
+        "manufacturing": {"labor": 0.3, "input": 0.6, "capital": 0.6},
+        # Retail: moderate labor (modern retail has automation), low capital, moderate inputs
+        "retail": {"labor": 0.5, "input": 0.4, "capital": 0.2},
+        # Legacy support for old topology files
+        "wholesale": {"labor": 0.5, "input": 0.4, "capital": 0.2},
+        "services": {"labor": 0.9, "input": 0.1, "capital": 0.1},
+    }
+    # Default coefficients for unknown sectors
+    DEFAULT_COEFFICIENTS: dict = {"labor": 0.5, "input": 0.5, "capital": 0.5}
+
     # Learning parameters
     LEARNING_ENABLED: bool = True
     MEMORY_LENGTH: int = 10  # steps to track for performance evaluation
@@ -258,20 +268,29 @@ class FirmAgent(Agent):
         capital_stock: float = 100.0,
     ) -> None:
         super().__init__(model)
-        
+
         # Note: pos is handled by Mesa's grid.place_agent(), not set here
         self.sector = sector
         self.capital_stock = capital_stock
 
-        # Set starting price based on sector
+        # Set sector-specific production coefficients
+        coeffs = self.SECTOR_COEFFICIENTS.get(sector, self.DEFAULT_COEFFICIENTS)
+        self.LABOR_COEFF: float = coeffs["labor"]
+        self.INPUT_COEFF: float = coeffs["input"]
+        self.CAPITAL_COEFF: float = coeffs["capital"]
+
+        # Set starting price based on sector and coefficients
         # Initial price should cover costs plus margin
-        # With LABOR_COEFF=0.5, INPUT_COEFF=0.5, wage=1, input_price=1:
-        # cost = 0.5*1 + 0.5*1 = 1.0, so price should be ~1.2 for 20% margin
+        # cost = LABOR_COEFF * wage + INPUT_COEFF * input_price
+        # For commodity (no inputs): cost = 0.6 * 1 = 0.6, price ~0.8
+        # For manufacturing: cost = 0.3 * 1 + 0.6 * 0.8 = 0.78, price ~1.0
+        # For retail: cost = 0.8 * 1 + 0.4 * 1.0 = 1.2, price ~1.5
         base_price_by_sector = {
-            "commodity": 1.2,
-            "agriculture": 1.2,
-            "manufacturing": 1.2,
-            "wholesale": 1.2,
+            "commodity": 0.8,
+            "agriculture": 0.8,
+            "manufacturing": 1.0,
+            "retail": 1.5,
+            "wholesale": 1.5,
             "services": 1.2,
         }
         self.price: float = float(base_price_by_sector.get(self.sector, 1.2))
@@ -280,9 +299,10 @@ class FirmAgent(Agent):
         # Firm-specific wage offer (labour price) – starts at the model's base wage
         self.wage_offer: float = model.mean_wage if hasattr(model, "mean_wage") else 1.0
 
-        # Track whether labour was the binding constraint in the *previous* step
-        self.labor_limited_last_step: bool = False
+        # Track consecutive cycles of labor shortage for wage adjustment
+        self.labor_shortage_cycles: int = 0  # consecutive steps where firm couldn't hire needed workers
         self.last_hired_labor: int = 0  # employees hired in previous step
+        self.labor_demand: int = 0  # how many workers the firm wanted to hire
 
         # Input inventory keyed by supplier AgentID (or None for generic labour)
         self.inventory_inputs: dict[int, int] = defaultdict(int)  # per-supplier stock
@@ -608,8 +628,10 @@ class FirmAgent(Agent):
         unemployment_rate = getattr(self.model, "unemployment_rate_prev", 0.0)
 
         # Determine adjustment based on labor market conditions
-        if self.labor_limited_last_step:
-            # Firm wanted more workers but couldn't get them
+        # Only raise wages after 4 consecutive cycles of labor shortage (persistent issue)
+        LABOR_SHORTAGE_THRESHOLD = 4
+        if self.labor_shortage_cycles >= LABOR_SHORTAGE_THRESHOLD:
+            # Firm has persistently wanted more workers but couldn't get them
             if self.money < self.wage_offer * 2:
                 # Can't afford workers - hold wages steady (don't cut, that kills the economy)
                 signal = 0.0
@@ -765,14 +787,21 @@ class FirmAgent(Agent):
 
         # Determine primary limiting factor for diagnostic plotting
         # Compare theoretical maxima before damage factor applied
+        labor_capacity = labour_units / self.LABOR_COEFF
         limits = {
-            "labor": labour_units / self.LABOR_COEFF,
+            "labor": labor_capacity,
             "input": max_output_from_inputs,
             "capital": max_output_from_capital,
         }
         min_limit_val = min(limits.values())
         # Pick first factor that equals the min within small tolerance
         self.limiting_factor: str = next(k for k, v in limits.items() if abs(v - min_limit_val) < 1e-6)
+
+        # Calculate how many workers the firm could productively use
+        # This is based on input and capital constraints (what limits production besides labor)
+        max_useful_output = min(max_output_from_inputs, max_output_from_capital)
+        # Convert output capacity to labor demand (how many workers needed for that output)
+        self.labor_demand = int(np.ceil(max_useful_output * self.LABOR_COEFF)) if max_useful_output < float("inf") else labour_units
 
         self.production = possible_output
         if possible_output > 0:
@@ -798,7 +827,19 @@ class FirmAgent(Agent):
         # ----------------------------------------------------------------
         # Record labour count and limiting factor for next step's adjustments
         self.last_hired_labor = len(self.employees)
-        self.labor_limited_last_step = (self.limiting_factor == "labor")
+
+        # Track consecutive cycles of labor shortage:
+        # A firm has a labor shortage if:
+        # 1. It hired fewer workers than it demanded (demand not met), AND
+        # 2. It still had budget remaining to hire more workers (shortage due to unavailability)
+        has_labor_shortage = (
+            len(self.employees) < self.labor_demand and
+            self._budget_labor >= self.wage_offer  # Could afford at least one more worker
+        )
+        if has_labor_shortage:
+            self.labor_shortage_cycles += 1
+        else:
+            self.labor_shortage_cycles = 0  # Reset if shortage resolved
         self.employees.clear()
         
         # ---------------- Learning system updates ----------------------- #

@@ -212,7 +212,7 @@ class EconomyModel(Model):
                 "Input_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "input"),
                 "Average_Firm_Fitness": lambda m: np.mean([f.fitness_score for f in m._firms]) if m._firms else 0.0,
                 "Firm_Replacements": lambda m: getattr(m, 'total_firm_replacements', 0),
-                "Total_Sales": lambda m: sum(f.sales_total for f in m._firms),
+                "Total_Sales": lambda m: sum(f.sales_last_step for f in m._firms),
             },
             agent_reporters={
                 "money": lambda a: getattr(a, "money", np.nan),
@@ -229,7 +229,7 @@ class EconomyModel(Model):
                 "type": lambda a: type(a).__name__,
                 "fitness": lambda a: getattr(a, "fitness_score", np.nan),
                 "survival_time": lambda a: getattr(a, "survival_time", 0),
-                "sales_total": lambda a: getattr(a, "sales_total", np.nan),
+                "sales_total": lambda a: getattr(a, "sales_last_step", np.nan),
             },
         )
 

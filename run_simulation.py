@@ -1,5 +1,6 @@
 """Run prototype climate-economy ABM for 10 timesteps and persist results."""
 
+from pathlib import Path
 import argparse
 from datetime import datetime
 # Import model and agent classes
@@ -165,7 +166,10 @@ def main() -> None:  # noqa: D401
     
     scenario_label = "_".join(scenario_parts)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    scenario_label_ts = f"{scenario_label}_{timestamp}"
+    topo_tag = ""
+    if args.topology:
+        topo_tag = Path(args.topology).stem
+    scenario_label_ts = f"{scenario_label}_{topo_tag}_{timestamp}" if topo_tag else f"{scenario_label}_{timestamp}"
 
     # Headless mode: run the simulation directly
     model = EconomyModel(

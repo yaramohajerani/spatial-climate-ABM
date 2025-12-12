@@ -1,0 +1,32 @@
+{
+  "rp_files": [
+    "10:1:30:FL:data/processed/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00002_scaled-0.05.tif",
+    "10:1:30:FL:data/processed/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00010_scaled-0.05.tif",
+    "100:1:30:FL:data/processed/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00100_scaled-0.05.tif",
+    "10:31:80:FL:data/processed/inunriver_rcp4p5_0000GFDL-ESM2M_2050_rp00002_scaled-0.05.tif",
+    "10:31:80:FL:data/processed/inunriver_rcp4p5_0000GFDL-ESM2M_2050_rp00010_scaled-0.05.tif",
+    "100:31:80:FL:data/processed/inunriver_rcp4p5_0000GFDL-ESM2M_2050_rp00100_scaled-0.05.tif",
+    "10:81:150:FL:data/processed/inunriver_rcp4p5_0000GFDL-ESM2M_2080_rp00002_scaled-0.05.tif",
+    "10:81:150:FL:data/processed/inunriver_rcp4p5_0000GFDL-ESM2M_2080_rp00010_scaled-0.05.tif",
+    "100:81:150:FL:data/processed/inunriver_rcp4p5_0000GFDL-ESM2M_2080_rp00100_scaled-0.05.tif"
+  ],
+  "steps": 150,
+  "seed": 42,
+  "topology": "sample_firm_topology.json",
+  "start_year": 2025,
+  "steps_per_year": 2,
+  "consumption_ratios": {
+    "agriculture": 0.20,
+    "manufacturing": 0.30,
+    "services": 0.35,
+    "retail": 0.15
+  },
+  "learning": {
+    "enabled": true,
+    "memory_length": 10,
+    "mutation_rate": 0.05,
+    "adaptation_frequency": 5,
+    "min_money_survival": 1.0,
+    "replacement_frequency": 10
+  }
+}

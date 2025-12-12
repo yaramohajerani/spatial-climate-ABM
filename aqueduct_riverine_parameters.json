@@ -12,9 +12,14 @@
   ],
   "steps": 150,
   "seed": 42,
-  "topology": "small_firm_topology.json",
+  "topology": "riverine_firm_topology.json",
   "start_year": 2025,
   "steps_per_year": 2,
+  "consumption_ratios": {
+    "commodity": 0.25,
+    "manufacturing": 0.45,
+    "retail": 0.30
+  },
   "learning": {
     "enabled": true,
     "memory_length": 10,
