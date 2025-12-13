@@ -1,24 +1,36 @@
 # trophic_utils.py
 """Utility functions to compute trophic levels consistently across the project.
 
-A firm's trophic level is defined as:
-    1 + weighted average of the trophic levels of its direct suppliers
-where weights correspond to the monetary value of inputs provided by each
-supplier.  Firms that require only labour (i.e. have no material suppliers)
-have trophic level 1.
+Trophic Level Definition
+------------------------
+The trophic level (TL) of firm i is defined as:
 
-The algorithm is implemented as an iterative relaxation that converges even if
-cycles are present.  If the supply network is acyclic (the typical case) the
-iteration converges in one pass because suppliers are processed before buyers.
+    TL_i = 1 + Σ_j w_ij × TL_j
+
+where the weight w_ij represents the fraction of firm i's input spending
+that goes to supplier j:
+
+    w_ij = I_ij / Σ_k I_ik
+
+Here I_ij is the monetary value of inputs purchased from supplier j.
+Firms with no suppliers (primary producers) have TL = 1.
+
+For the static analysis (topology_analyzer.py), we assume each firm buys
+1 unit from each supplier, so w_ij = 1 / (number of suppliers).
+
+The algorithm uses iterative relaxation that converges even if cycles are
+present. For acyclic networks, convergence occurs in one pass.
 
 Usage example
 -------------
 >>> adj = {1: [], 2: [1], 3: [1, 2]}
 >>> levels = compute_trophic_levels(adj)
->>> levels[1]
+>>> levels[1]  # No suppliers -> TL = 1
 1.0
->>> levels[3]
-1 + (1*1 + 1*2)/2 = 2.5
+>>> levels[2]  # Buys from firm 1 -> TL = 1 + 1.0 = 2.0
+2.0
+>>> levels[3]  # Buys from firms 1,2 -> TL = 1 + (1.0 + 2.0)/2 = 2.5
+2.5
 """
 from __future__ import annotations
 
