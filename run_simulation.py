@@ -245,7 +245,6 @@ def main() -> None:  # noqa: D401
         "Firm_Wealth": "$",
         "Firm_Capital": "Units of Capital",
         "Household_Wealth": "$",
-        "Household_Capital": "Units of Capital",
         "Household_Labor_Sold": "Units of Labor",
         "Household_Consumption": "Units of Goods",
         "Average_Risk": "Score (0–1)",
@@ -361,7 +360,6 @@ def main() -> None:  # noqa: D401
 
     household_metric_map = {
         "Household_Wealth": "money",
-        "Household_Capital": "capital",
         "Household_Labor_Sold": "labor_sold",
         "Household_Consumption": "consumption",
     }

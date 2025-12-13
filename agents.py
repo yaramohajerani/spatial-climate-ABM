@@ -35,7 +35,6 @@ class HouseholdAgent(Agent):
         # Note: pos is handled by Mesa's grid.place_agent(), not set here
         self.money: float = money
         self.labor_supply: float = labor_supply
-        self.capital: float = 1.0
 
         # Sector specialisation – household will preferentially work for firms in this sector
         self.sector: str = sector
@@ -47,12 +46,6 @@ class HouseholdAgent(Agent):
         # Higher value → distance is more costly, so worker prefers closer firms.
         # Randomised per household to create heterogeneous behaviour.
         self.distance_cost: float = self.random.uniform(0.1, 0.5)
-
-        # ---------------- Risk behaviour parameters ------------------- #
-        # Randomised radius (in grid cells) within which the household
-        # monitors hazard intensity. If the maximum normalised intensity
-        # exceeds 0.5 anywhere in that radius the household will relocate.
-        self.risk_radius: int = self.random.randint(1, 50)
 
         # Aggregate statistics tracked per agent
         self.consumption: float = 0.0  # goods consumed (units)
@@ -106,7 +99,6 @@ class HouseholdAgent(Agent):
 
         # Apply relocation cost similar to climate‐driven migration
         self.money *= (1 - self.RELOCATION_COST)
-        self.capital *= (1 - self.RELOCATION_COST)
 
         # Refresh nearby firms after moving
         self._update_nearby_firms()
@@ -121,7 +113,7 @@ class HouseholdAgent(Agent):
         self.consumption = 0.0
 
         # ---------------- Heuristic relocation decision --------------- #
-        if self._max_hazard_within_radius(self.risk_radius) > 0.1:
+        if self._get_local_hazard() > 0.1:
             self._relocate()
 
         # 1. Choose employer based on wage–distance utility (remote work allowed) --------------- #
@@ -207,13 +199,8 @@ class HouseholdAgent(Agent):
             self._relocate_for_job()
             self._no_work_steps = 0  # reset after relocation
 
-    def _max_hazard_within_radius(self, radius: int) -> float:
-        """Return the hazard value at the agent's current position.
-
-        Note: Since hazard is only sampled at agent locations for efficiency,
-        we only check the agent's own cell rather than scanning a radius.
-        The radius parameter is kept for API compatibility but not used.
-        """
+    def _get_local_hazard(self) -> float:
+        """Return the hazard value at the agent's current cell."""
         return self.model.hazard_map.get(self.pos, 0.0)
 
     def _relocate(self) -> None:
@@ -224,9 +211,8 @@ class HouseholdAgent(Agent):
         new_pos = self.random.choice(safe_cells)
         self.model.grid.move_agent(self, new_pos)
 
-        # Apply relocation cost: lose a share of money and physical capital
+        # Apply relocation cost: lose a share of money
         self.money *= (1 - self.RELOCATION_COST)
-        self.capital *= (1 - self.RELOCATION_COST)
 
         # Track migration for statistics
         self.model.migrants_this_step += 1
@@ -329,8 +315,6 @@ class FirmAgent(Agent):
         self.no_sales_streak: int = 0
 
         # ---------------- Risk behaviour parameters ------------------- #
-        # Radius monitored for hazard events (random per firm)
-        self.risk_radius: int = self.random.randint(1, 50)
         # Capital coefficient parameters
         self.original_capital_coeff: float = self.CAPITAL_COEFF
         self.capital_coeff: float = self.CAPITAL_COEFF  # dynamic value
@@ -727,7 +711,7 @@ class FirmAgent(Agent):
         self.consumption = 0.0
 
         # ---------------- Hazard-driven capital adjustment (learned response) ------------ #
-        local_hazard = self._max_hazard_within_radius(self.risk_radius)
+        local_hazard = self._get_local_hazard()
         risk_sensitivity = self.strategy.get('risk_sensitivity', 1.0)
         
         if local_hazard > 0.1:
@@ -906,11 +890,6 @@ class FirmAgent(Agent):
     # ------------------------------------------------------------------ #
     #                        INTERNAL HELPERS                           #
     # ------------------------------------------------------------------ #
-    def _max_hazard_within_radius(self, radius: int) -> float:
-        """Return the hazard value at the agent's current position.
-
-        Note: Since hazard is only sampled at agent locations for efficiency,
-        we only check the agent's own cell rather than scanning a radius.
-        The radius parameter is kept for API compatibility but not used.
-        """
+    def _get_local_hazard(self) -> float:
+        """Return the hazard value at the agent's current cell."""
         return self.model.hazard_map.get(self.pos, 0.0) 

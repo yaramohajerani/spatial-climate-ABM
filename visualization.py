@@ -82,7 +82,6 @@ PLOT_PRICE = make_plot_component("Mean_Price")
 PLOT_WAGE = make_plot_component("Mean_Wage")
 PLOT_FIRM_CAP = make_plot_component("Firm_Capital")
 PLOT_HH_WEALTH = make_plot_component("Household_Wealth")
-PLOT_HH_CAP = make_plot_component("Household_Capital")
 PLOT_HH_LABOR = make_plot_component("Household_Labor_Sold")
 PLOT_HH_CONS = make_plot_component("Household_Consumption")
 
@@ -464,7 +463,6 @@ def SaveExitButton(model):  # noqa: ANN001
             ("Firm_Consumption", "Firm consumption"),
             ("Mean_Price", "Mean price"),
             ("Household_Wealth", "Household wealth"),
-            ("Household_Capital", "Household capital"),
             ("Household_Labor_Sold", "Household labour sold"),
             ("Household_Consumption", "Household consumption"),
             ("Mean_Wage", "Mean wage"),

@@ -198,7 +198,6 @@ class EconomyModel(Model):
                 "Firm_Capital": lambda m: sum(f.capital_stock for f in m._firms),
                 "Firm_Inventory": lambda m: sum(f.inventory_output for f in m._firms),
                 "Household_Wealth": lambda m: sum(h.money for h in m._households),
-                "Household_Capital": lambda m: sum(h.capital for h in m._households),
                 "Household_Labor_Sold": lambda m: sum(h.labor_sold for h in m._households),
                 "Household_Consumption": lambda m: sum(h.consumption for h in m._households),
                 "Average_Risk": lambda m: np.mean(list(m.hazard_map.values())),
@@ -906,21 +905,17 @@ class EconomyModel(Model):
             if combined_loss_agent == 0:
                 return
 
-            # Apply damage to agent
+            # Apply damage to firms (households not directly affected by flood damage)
             if is_firm:
                 ag.capital_stock *= 1 - combined_loss_agent
                 ag.damage_factor *= 1 - combined_loss_agent
                 ag.inventory_output = int(ag.inventory_output * (1 - combined_loss_agent))
                 for k in list(ag.inventory_inputs.keys()):
                     ag.inventory_inputs[k] = int(ag.inventory_inputs[k] * (1 - combined_loss_agent))
-            else:
-                ag.capital *= 1 - combined_loss_agent
 
-        # Process firms and households using cached lists
+        # Process firms only (households affected indirectly via employment/prices)
         for firm in self._firms:
             apply_damage(firm, is_firm=True)
-        for hh in self._households:
-            apply_damage(hh, is_firm=False)
 
         print(f"[INFO] Step {self.current_step}: flooded agent cells = {flooded_cells}/{n_agent_cells}")
 
