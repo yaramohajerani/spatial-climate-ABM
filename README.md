@@ -97,6 +97,7 @@ python run_simulation.py --param-file aqueduct_riverine_parameters.json
 
 ```json
 {
+  "num_households": 650,
   "rp_files": [
     "2:1:80:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00002.tif",
     "10:1:80:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00010.tif",
@@ -163,7 +164,7 @@ Specify firm locations and supply chains via JSON:
 ## Model Parameters
 
 ### Agent Configuration
-- `num_households`: Number of household agents (default: 100)
+- `num_households`: Number of household agents (default: 100, configurable via parameter file)
 - `num_firms`: Number of firm agents (overridden by topology file)
 - `seed`: Random seed for reproducibility
 

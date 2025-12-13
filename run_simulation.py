@@ -91,6 +91,9 @@ def main() -> None:  # noqa: D401
         # 6. Consumption ratios by sector -----------------------------------
         args.consumption_ratios = param_data.get("consumption_ratios", None)
 
+        # 7. Number of households -------------------------------------------
+        args.num_households = int(param_data.get("num_households", 100))
+
     # Ensure we have at least one RP spec after merging param file -----------
     if not args.rp_file:
         raise SystemExit("No --rp-file entries provided and none found in parameter file.")
@@ -144,6 +147,10 @@ def main() -> None:  # noqa: D401
     if not hasattr(args, "consumption_ratios"):
         args.consumption_ratios = None  # model will use default
 
+    # Ensure num_households exists even if no param file
+    if not hasattr(args, "num_households"):
+        args.num_households = 100  # default
+
     # Configure scenario settings
     apply_hazards = not args.no_hazards
     if args.no_learning:
@@ -173,7 +180,7 @@ def main() -> None:  # noqa: D401
 
     # Headless mode: run the simulation directly
     model = EconomyModel(
-        num_households=100,
+        num_households=args.num_households,
         num_firms=20,
         hazard_events=events,
         seed=args.seed,
