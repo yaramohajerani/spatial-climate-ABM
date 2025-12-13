@@ -347,10 +347,9 @@ class FirmAgent(Agent):
         """Initialize evolvable strategy parameters with small random variations."""
         return {
             'budget_labor_weight': self.random.uniform(0.8, 1.2),      # multiplier for labor budget allocation
-            'budget_input_weight': self.random.uniform(0.8, 1.2),      # multiplier for input budget allocation  
+            'budget_input_weight': self.random.uniform(0.8, 1.2),      # multiplier for input budget allocation
             'budget_capital_weight': self.random.uniform(0.8, 1.2),    # multiplier for capital budget allocation
             'risk_sensitivity': self.random.uniform(0.5, 1.5),         # hazard response aggressiveness
-            'price_aggressiveness': self.random.uniform(0.5, 1.5),     # pricing adjustment magnitude
             'wage_responsiveness': self.random.uniform(0.5, 1.5),      # wage adjustment responsiveness
         }
     
