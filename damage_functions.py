@@ -24,8 +24,11 @@ DEFAULT_DAMAGE_FUNCTIONS_PATH = Path(__file__).parent / "data" / "global_flood_d
 # Mapping from model sectors to JRC damage classes
 SECTOR_TO_JRC_CLASS = {
     "residential": "Residential buildings",
-    "commodity": "Industrial buildings",  # Raw materials / commodities
-    "manufacturing": "Industrial buildings",  # Manufacturing sector
+    "commodity": "Industrial buildings",  # Raw materials / extraction
+    "manufacturing": "Industrial buildings",  # Factories
+    "retail": "Commercial buildings",  # Stores, shops
+    "wholesale": "Commercial buildings",  # Distribution centers
+    "services": "Commercial buildings",  # Offices, service businesses
     "commercial": "Commercial buildings",
     "agriculture": "Agriculture",
     "transport": "Transport",
