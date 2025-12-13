@@ -1,6 +1,28 @@
 # Spatial Climate-Economy Agent-Based Model
 
-This is a spatial agent-based model (ABM) for simulating climate-economy interactions. The model couples economic behavior with climate hazard impacts using Mesa for agent-based modeling and JRC flood depth-damage functions for impact assessment.
+[![arXiv](https://img.shields.io/badge/arXiv-2509.18633-b31b1b.svg)](https://arxiv.org/abs/2509.18633)
+[![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
+[![NeurIPS 2025 CCAI](https://img.shields.io/badge/NeurIPS%202025-Climate%20Change%20AI-green.svg)](https://www.climatechange.ai/papers/neurips2025/19)
+
+This is a spatial agent-based model (ABM) for simulating climate-economy interactions. The model couples economic behavior with climate hazard impacts using Mesa for agent-based modeling. As an eaxmple, we assess the impact of acute flooding using JRC flood depth-damage functions for impact assessment.
+
+## Citation
+
+If you use this model in your research, please cite:
+
+> Mohajerani, Y. (2025). *Adaptive Learning in Spatial Agent-Based Models for Climate Risk Assessment: A Geospatial Framework with Evolutionary Economic Agents*. arXiv preprint arXiv:2509.18633. https://doi.org/10.48550/arXiv.2509.18633
+
+This work was accepted to the [NeurIPS 2025 Tackling Climate Change with Machine Learning](https://www.climatechange.ai/papers/neurips2025/19).
+
+```bibtex
+@article{mohajerani2025adaptive,
+  title={Adaptive Learning in Spatial Agent-Based Models for Climate Risk Assessment: A Geospatial Framework with Evolutionary Economic Agents},
+  author={Mohajerani, Yara},
+  journal={arXiv preprint arXiv:2509.18633},
+  year={2025},
+  doi={10.48550/arXiv.2509.18633}
+}
+```
 
 ## Model Overview
 
