@@ -59,6 +59,7 @@ class EconomyModel(Model):
         apply_hazard_impacts: bool = True,
         learning_params: dict | None = None,
         consumption_ratios: dict | None = None,
+        grid_resolution: float = 1.0,
     ) -> None:  # noqa: D401
         super().__init__(seed=seed)
 
@@ -138,15 +139,15 @@ class EconomyModel(Model):
             if first_haz is None:
                 first_haz = haz
 
-        # Use a COARSE agent grid (1-degree resolution = 360x180 cells)
+        # Agent grid resolution in degrees per cell (e.g., 1.0, 0.5, 0.25)
         # This is decoupled from the hazard raster resolution.
         # When sampling hazards, we convert grid positions to lon/lat
         # and sample at those coordinates from the full-resolution raster.
-        agent_grid_resolution = 1.0  # degrees per cell
+        self.grid_resolution: float = grid_resolution
 
-        # Build coarse lon/lat arrays for agent placement
-        self.lon_vals = np.arange(-180 + agent_grid_resolution/2, 180, agent_grid_resolution)
-        self.lat_vals = np.arange(-90 + agent_grid_resolution/2, 90, agent_grid_resolution)
+        # Build lon/lat arrays for agent placement
+        self.lon_vals = np.arange(-180 + grid_resolution/2, 180, grid_resolution)
+        self.lat_vals = np.arange(-90 + grid_resolution/2, 90, grid_resolution)
 
         # ---------------- Derived spatial metrics ------------------- #
         # Translate a desired 1° geographic radius into grid cells so that
@@ -551,7 +552,7 @@ class EconomyModel(Model):
     #                              UTILITIES                                #
     # --------------------------------------------------------------------- #
     def get_cell_risk(self, pos: Coords) -> float:
-        """Return hazard risk (0-1) for a given cell."""
+        """Return hazard depth (m) for a given cell."""
         return self.hazard_map.get(pos, 0.0)
 
     # --------------------------------------------------------------------- #

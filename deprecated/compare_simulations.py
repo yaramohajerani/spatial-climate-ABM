@@ -344,7 +344,7 @@ def main():
         "Household_Capital": "Units of Capital",
         "Household_Labor_Sold": "Units of Labor",
         "Household_Consumption": "Units of Goods",
-        "Average_Risk": "Score (0–1)",
+        "Average_Risk": "Flood Depth (m)",
         "Mean_Wage": "$ / Unit of Labor",
         "Mean_Price": "$ / Unit of Goods",
         "Labor_Limited_Firms": "count",

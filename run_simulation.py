@@ -94,6 +94,9 @@ def main() -> None:  # noqa: D401
         # 7. Number of households -------------------------------------------
         args.num_households = int(param_data.get("num_households", 100))
 
+        # 8. Grid resolution (degrees per cell) -----------------------------
+        args.grid_resolution = float(param_data.get("grid_resolution", 1.0))
+
     # Ensure we have at least one RP spec after merging param file -----------
     if not args.rp_file:
         raise SystemExit("No --rp-file entries provided and none found in parameter file.")
@@ -151,6 +154,10 @@ def main() -> None:  # noqa: D401
     if not hasattr(args, "num_households"):
         args.num_households = 100  # default
 
+    # Ensure grid_resolution exists even if no param file
+    if not hasattr(args, "grid_resolution"):
+        args.grid_resolution = 1.0  # default 1 degree
+
     # Configure scenario settings
     apply_hazards = not args.no_hazards
     if args.no_learning:
@@ -176,7 +183,18 @@ def main() -> None:  # noqa: D401
     topo_tag = ""
     if args.topology:
         topo_tag = Path(args.topology).stem
-    scenario_label_ts = f"{scenario_label}_{topo_tag}_{timestamp}" if topo_tag else f"{scenario_label}_{timestamp}"
+    param_tag = ""
+    if args.param_file:
+        param_tag = Path(args.param_file).stem
+
+    # Build output filename with all tags
+    tags = [scenario_label]
+    if param_tag:
+        tags.append(param_tag)
+    if topo_tag:
+        tags.append(topo_tag)
+    tags.append(timestamp)
+    scenario_label_ts = "_".join(tags)
 
     # Headless mode: run the simulation directly
     model = EconomyModel(
@@ -190,6 +208,7 @@ def main() -> None:  # noqa: D401
         steps_per_year=args.steps_per_year,
         learning_params=learning_config,
         consumption_ratios=args.consumption_ratios,
+        grid_resolution=args.grid_resolution,
     )
 
     for _ in range(args.steps):
@@ -247,7 +266,7 @@ def main() -> None:  # noqa: D401
         "Household_Wealth": "$",
         "Household_Labor_Sold": "Units of Labor",
         "Household_Consumption": "Units of Goods",
-        "Average_Risk": "Score (0–1)",
+        "Average_Risk": "Flood Depth (m)",
         "Mean_Wage": "$ / Unit of Labor",
         "Mean_Price": "$ / Unit of Goods",
         "Labor_Limited_Firms": "count",

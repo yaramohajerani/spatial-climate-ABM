@@ -4,21 +4,27 @@
 Typical Aqueduct tiles are ~100 MB – this helper can
 1.  crop them to a smaller bounding box,
 2.  resample them to a coarser grid, or
-3.  resample to the exact 1° model grid with MAX aggregation.
+3.  resample to the exact 1° model grid.
 
-All operations use MAX resampling to preserve peak flood depths.
+Resampling method can be 'max' (preserve peak depths) or 'mean' (average values).
 
 Examples
 --------
-1) Resample to model grid (recommended for simulation):
+1) Resample to model grid with MAX aggregation (recommended for simulation):
    $ python preprocess_geotiff.py \
          --input  data/raw/*.tif \
          --model-grid \
+         --resolution 1.0 \
+         --resampling max \
          --output-dir data/model_grid/
 
    This creates 360×180 rasters aligned exactly to the model's 1° grid
    (origin at -180, 90). MAX aggregation ensures that if any part of a
    1° cell floods, the cell gets that maximum depth value.
+
+   Use --resolution 0.5 for 0.5° grid (720×360 cells).
+   Use --resolution 0.25 for 0.25° grid (1440×720 cells).
+   Use --resampling mean for average flood depth across each cell.
 
 2) Crop only:
    $ python preprocess_geotiff.py \
@@ -90,8 +96,20 @@ def _parse_args() -> argparse.Namespace:  # noqa: D401
     res.add_argument(
         "--model-grid",
         action="store_true",
-        help="Resample to exact 1° grid aligned with model (-180 to 180, -90 to 90). "
-             "Uses MAX aggregation. Overrides scale-factor and target-resolution.",
+        help="Resample to model grid aligned with (-180 to 180, -90 to 90). "
+             "Use --resolution to set grid cell size. Overrides scale-factor and target-resolution.",
+    )
+    res.add_argument(
+        "--resolution",
+        type=float,
+        default=1.0,
+        help="Model grid resolution in degrees (default: 1.0). Common values: 1.0, 0.5, 0.25",
+    )
+    res.add_argument(
+        "--resampling",
+        choices=["max", "mean"],
+        default="max",
+        help="Resampling method: 'max' preserves peak flood depths, 'mean' averages values (default: max)",
     )
 
     p.add_argument(
@@ -121,7 +139,12 @@ def _process_one(
     scale_factor: float | None,
     target_res: float | None,
     model_grid: bool = False,
+    resolution: float = 1.0,
+    resampling_method: str = "max",
 ) -> None:  # noqa: D401
+    # Select resampling method
+    resample_enum = Resampling.max if resampling_method == "max" else Resampling.average
+
     with rasterio.open(path) as src:
         window = None
         if crop_bounds is not None:
@@ -133,13 +156,12 @@ def _process_one(
             data = src.read(1)
             transform = src.transform
 
-        # Model grid: exact 1° resolution aligned to (-180, 90) origin
+        # Model grid: configurable resolution aligned to (-180, 90) origin
         if model_grid:
-            # Model grid: 360 x 180 cells, 1° resolution
-            # Origin at (-180, 90), pixel size (1.0, -1.0)
-            dst_width = 360
-            dst_height = 180
-            dst_transform = rasterio.Affine(1.0, 0.0, -180.0, 0.0, -1.0, 90.0)
+            # Grid dimensions based on resolution (e.g., 1.0° -> 360x180, 0.5° -> 720x360)
+            dst_width = int(360 / resolution)
+            dst_height = int(180 / resolution)
+            dst_transform = rasterio.Affine(resolution, 0.0, -180.0, 0.0, -resolution, 90.0)
             dest = np.empty((dst_height, dst_width), dtype=data.dtype)
 
             reproject(
@@ -149,11 +171,11 @@ def _process_one(
                 src_crs=src.crs,
                 dst_transform=dst_transform,
                 dst_crs=src.crs,
-                resampling=Resampling.max,
+                resampling=resample_enum,
             )
             data = dest
             transform = dst_transform
-            suffix = "_model-grid-1deg"
+            suffix = f"_model-grid-{resolution}deg-{resampling_method}"
         else:
             # Original resampling logic
             if target_res is not None:
@@ -171,11 +193,11 @@ def _process_one(
                     src_crs=src.crs,
                     dst_transform=new_transform,
                     dst_crs=src.crs,
-                    resampling=Resampling.max,
+                    resampling=resample_enum,
                 )
                 data = dest
                 transform = new_transform
-            suffix = f"_scaled-{scale_factor}"
+            suffix = f"_scaled-{scale_factor}-{resampling_method}"
 
         profile = src.profile.copy()
         profile.update({
@@ -202,6 +224,8 @@ def main() -> None:  # noqa: D401
     scale_factor = args.scale_factor
     target_res = args.target_resolution
     model_grid = args.model_grid
+    resolution = args.resolution
+    resampling_method = args.resampling
 
     in_files: List[Path] = [Path(p).expanduser() for p in args.input]
     out_dir = Path(args.output_dir).expanduser()
@@ -209,7 +233,7 @@ def main() -> None:  # noqa: D401
     for f in in_files:
         if not f.exists():
             raise FileNotFoundError(f)
-        _process_one(f, out_dir, crop_bounds, scale_factor, target_res, model_grid)
+        _process_one(f, out_dir, crop_bounds, scale_factor, target_res, model_grid, resolution, resampling_method)
 
 
 if __name__ == "__main__":
