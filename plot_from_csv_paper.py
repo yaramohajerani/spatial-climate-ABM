@@ -192,15 +192,16 @@ def main():
             "zorder": 1
         }
     
-    # Define the specific metrics for 3x3 layout (excluding household consumption)
+    # Define the specific metrics for 4x2 layout
     metrics = [
-        "Firm_Production", "Firm_Wealth", "Firm_Capital", 
-        "Mean_Price", "Mean_Wage", "Household_Labor_Sold",
-        "Household_Wealth", "Bottleneck_Baseline", "Bottleneck_Hazard"
+        "Firm_Production", "Firm_Wealth",
+        "Firm_Capital", "Mean_Price",
+        "Mean_Wage", "Household_Labor_Sold",
+        "Bottleneck_Baseline_Learning", "Bottleneck_Hazard_Learning"
     ]
-    
-    # Create 3x3 subplot grid
-    fig, axes = plt.subplots(3, 3, figsize=(16, 9))
+
+    # Create 4x2 subplot grid
+    fig, axes = plt.subplots(4, 2, figsize=(12, 12))
     
     # Units for y-axis labels
     units = {
@@ -403,19 +404,34 @@ def main():
         elif metric_name.startswith("Bottleneck_"):
             # Bottleneck plots from agent data
             if firm_agents_df.empty:
-                ax.text(0.5, 0.5, "No agent data\navailable", 
+                ax.text(0.5, 0.5, "No agent data\navailable",
                        ha="center", va="center", transform=ax.transAxes)
                 return
-            
-            # Determine which scenario to plot
-            if metric_name == "Bottleneck_Baseline":
-                target_scenarios = [s for s in unique_scenarios if "Baseline" in s]
-            else:  # Bottleneck_Hazard
-                target_scenarios = [s for s in unique_scenarios if "Hazard" in s]
-            
+
+            # Determine which scenario to plot based on metric name
+            # Format: Bottleneck_{Baseline|Hazard}_{Learning|NoLearning}
+            is_baseline = "Baseline" in metric_name
+            is_learning = metric_name.endswith("_Learning")
+
+            base_type = "Baseline" if is_baseline else "Hazard"
+            learning_type = "Learning" if is_learning else "No Learning"
+
+            # Find matching scenario
+            target_scenarios = [
+                s for s in unique_scenarios
+                if base_type in s and (
+                    (is_learning and "No Learning" not in s) or
+                    (not is_learning and "No Learning" in s)
+                )
+            ]
+
             if not target_scenarios:
-                target_scenarios = [unique_scenarios[0]]  # fallback
-            
+                # Fallback: just match base type
+                target_scenarios = [s for s in unique_scenarios if base_type in s]
+
+            if not target_scenarios:
+                target_scenarios = [unique_scenarios[0]]  # ultimate fallback
+
             scenario = target_scenarios[0]
             if not firm_agents_df.empty and "Scenario" in firm_agents_df.columns:
                 df_sub = firm_agents_df[firm_agents_df["Scenario"] == scenario]
@@ -459,7 +475,8 @@ def main():
         # Set title and labels
         title = metric_name.replace("_", " ").replace("Bottleneck ", "")
         if metric_name.startswith("Bottleneck_"):
-            title = f"Production Bottlenecks ({title})"
+            # Include which variant (Learning/No Learning) in title
+            title = f"Bottlenecks: {base_type} ({learning_type})"
         ax.set_title(title, fontsize=10)
         
         ylabel = units.get(metric_name, "")
@@ -474,19 +491,19 @@ def main():
         if metric_name.startswith("Bottleneck_"):
             ax.legend(fontsize=6, ncol=3, loc='lower center', framealpha=0.8)
     
-    # Plot metrics in 3x3 grid
+    # Plot metrics in 5x2 grid
     for i, metric in enumerate(metrics):
-        row = i // 3
-        col = i % 3
+        row = i // 2
+        col = i % 2
         plot_metric(metric, axes[row, col])
-    
+
     # Add subplot labels (a, b, c, ...)
-    subplot_labels = [chr(ord('a') + i) for i in range(9)]
+    subplot_labels = [chr(ord('a') + i) for i in range(8)]
     for i, metric in enumerate(metrics):
-        row = i // 3
-        col = i % 3
-        axes[row, col].text(-0.1, 1.02, f'({subplot_labels[i]})', 
-                           transform=axes[row, col].transAxes, 
+        row = i // 2
+        col = i % 2
+        axes[row, col].text(-0.1, 1.02, f'({subplot_labels[i]})',
+                           transform=axes[row, col].transAxes,
                            fontsize=12, fontweight='bold', va='bottom', ha='right')
     
     # Create shared legend for non-bottleneck plots
@@ -494,8 +511,8 @@ def main():
     legend_ax = None
     for i, metric in enumerate(metrics):
         if not metric.startswith("Bottleneck_"):
-            row = i // 3
-            col = i % 3
+            row = i // 2
+            col = i % 2
             legend_ax = axes[row, col]
             break
     
@@ -555,11 +572,11 @@ def main():
                 else:
                     line.set_linewidth(3)  # Thicker for main scenario lines
     
-    plt.suptitle("Baseline vs. RCP4.5 Agent Trajectories", fontsize=14, fontweight='bold')
+    plt.suptitle("Baseline vs. RCP8.5 Agent Trajectories", fontsize=14, fontweight='bold')
     plt.tight_layout()
     
     # Adjust layout to make room for bottom legend
-    plt.subplots_adjust(bottom=0.07)
+    plt.subplots_adjust(bottom=0.05)
     
     # Save plot
     out_path = Path(args.out)
