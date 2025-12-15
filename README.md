@@ -30,7 +30,7 @@ The model simulates economic agents (households and firms) on a spatial grid whi
 
 ### Key Features
 
-- **Spatial Environment**: 1-degree resolution global grid with agents placed based on topology files
+- **Spatial Environment**: Configurable resolution global grid (default 1°, supports 0.5°, 0.25°) with agents placed based on topology files
 - **Agent Types**: Households (labor suppliers) and firms (producers with Leontief technology)
 - **Economic Markets**: Endogenous wages, dynamic pricing, labor mobility, and supply chain networks
 - **Climate Integration**: Lazy hazard sampling from full-resolution GeoTIFF rasters with JRC region-specific damage curves
@@ -50,7 +50,7 @@ The model simulates economic agents (households and firms) on a spatial grid whi
 
 ### Spatial Grid and Environment
 
-The model uses a `mesa.space.MultiGrid` with a fixed 1-degree resolution (360×180 = 64,800 cells). This is decoupled from the hazard raster resolution, allowing efficient use of full-resolution global hazard data. Agents are placed based on coordinates specified in topology files.
+The model uses a `mesa.space.MultiGrid` with configurable resolution (default 1° = 360×180 cells, or 0.5° = 720×360, or 0.25° = 1440×720 cells). This is decoupled from the hazard raster resolution, allowing efficient use of full-resolution global hazard data. Agents are placed based on coordinates specified in topology files.
 
 ### Agent Classes
 
@@ -120,6 +120,7 @@ python run_simulation.py --param-file aqueduct_riverine_parameters.json
 ```json
 {
   "num_households": 650,
+  "grid_resolution": 0.25,
   "rp_files": [
     "2:1:80:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00002.tif",
     "10:1:80:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00010.tif",
@@ -148,9 +149,18 @@ python run_simulation.py --param-file aqueduct_riverine_parameters.json
 
 ### Data Preprocessing (Optional)
 
-For cropping or downsampling large rasters (optional - model works with full-resolution files):
+For resampling rasters to model grid resolution (optional - model works with full-resolution files):
 
 ```bash
+# Resample to 0.25° model grid with max aggregation (preserves peak flood depths)
+python prepare_hazard/preprocess_geotiff.py \
+    --input data/raw/*.tif \
+    --model-grid \
+    --resolution 0.25 \
+    --resampling max \
+    --output-dir data/model_grid/
+
+# Or crop and scale for testing
 python prepare_hazard/preprocess_geotiff.py \
     --input raw/*.tif \
     --crop-bounds -74 40 -73 42 \
@@ -188,6 +198,7 @@ Specify firm locations and supply chains via JSON:
 ### Agent Configuration
 - `num_households`: Number of household agents (default: 100, configurable via parameter file)
 - `num_firms`: Number of firm agents (overridden by topology file)
+- `grid_resolution`: Spatial resolution in degrees (default: 1.0, options: 0.5, 0.25)
 - `seed`: Random seed for reproducibility
 
 ### Economic Parameters
@@ -253,7 +264,7 @@ Specify firm locations and supply chains via JSON:
 | Hazard loading | ~1ms (metadata only) |
 | Hazard sampling | ~6ms per step (90 agents) |
 | Memory for hazards | <1MB |
-| Agent grid | 64,800 cells (1° resolution) |
+| Agent grid | Configurable: 64,800 (1°), 259,200 (0.5°), or 1,036,800 (0.25°) cells |
 | Full raster support | 933M pixels (no preprocessing needed) |
 
 ## Development
