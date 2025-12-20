@@ -23,5 +23,6 @@
     "adaptation_frequency": 5,
     "min_money_survival": 1.0,
     "replacement_frequency": 10
-  }
+  },
+  "household_relocation": true
 }

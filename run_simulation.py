@@ -97,6 +97,9 @@ def main() -> None:  # noqa: D401
         # 8. Grid resolution (degrees per cell) -----------------------------
         args.grid_resolution = float(param_data.get("grid_resolution", 1.0))
 
+        # 9. Household relocation toggle -------------------------------------
+        args.household_relocation = bool(param_data.get("household_relocation", True))
+
     # Ensure we have at least one RP spec after merging param file -----------
     if not args.rp_file:
         raise SystemExit("No --rp-file entries provided and none found in parameter file.")
@@ -158,6 +161,10 @@ def main() -> None:  # noqa: D401
     if not hasattr(args, "grid_resolution"):
         args.grid_resolution = 1.0  # default 1 degree
 
+    # Ensure household_relocation exists even if no param file
+    if not hasattr(args, "household_relocation"):
+        args.household_relocation = True  # default enabled
+
     # Configure scenario settings
     apply_hazards = not args.no_hazards
     if args.no_learning:
@@ -209,6 +216,7 @@ def main() -> None:  # noqa: D401
         learning_params=learning_config,
         consumption_ratios=args.consumption_ratios,
         grid_resolution=args.grid_resolution,
+        household_relocation=args.household_relocation,
     )
 
     for _ in range(args.steps):

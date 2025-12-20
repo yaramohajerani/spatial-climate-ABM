@@ -66,7 +66,7 @@ The model uses a `mesa.space.MultiGrid` with configurable resolution (default 1Â
   - Commodity: labor=0.6, input=0.0, capital=0.7 (capital-intensive extraction, no upstream inputs)
   - Manufacturing: labor=0.3, input=0.6, capital=0.6 (automated, capital & input intensive)
   - Retail: labor=0.5, input=0.4, capital=0.2 (moderate labor, low capital needs)
-- **Learning System**: Evolutionary strategy learning with 6 adaptive parameters and fitness-based selection
+- **Learning System**: Evolutionary strategy learning with 5 adaptive parameters and fitness-based selection
 - **Wage Setting**: Raises wages after 4 consecutive cycles of labor shortage (persistent shortage threshold prevents wage spirals)
 - **Dynamic Pricing**: Supply-demand driven adjustments with cost-floor mechanism
 - **Input Procurement**: Inputs from connected suppliers are substitutable (sum-based)
@@ -97,8 +97,8 @@ Damage is calculated using JRC Global Flood Depth-Damage Functions:
 
 ### Firm Learning System
 - **Strategy Parameters**: Budget allocation weights, risk sensitivity, price aggressiveness, wage responsiveness
-- **Performance Tracking**: 10-step memory of money, production, capital, and limiting factors
-- **Fitness Evaluation**: Weighted combination of money growth (40%), production consistency (30%), survival bonus (20%), resource balance (10%)
+- **Performance Tracking**: 10-step memory of money, production, and capital stock
+- **Fitness Evaluation**: Weighted combination of money growth (log-scaled, 35%), production level (25%), peak maintenance (20%), survival bonus (20%)
 - **Population Dynamics**: Failed firms replaced by mutated offspring of successful firms
 
 ## Usage

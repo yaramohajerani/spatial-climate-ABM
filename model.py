@@ -60,6 +60,7 @@ class EconomyModel(Model):
         learning_params: dict | None = None,
         consumption_ratios: dict | None = None,
         grid_resolution: float = 1.0,
+        household_relocation: bool = True,
     ) -> None:  # noqa: D401
         super().__init__(seed=seed)
 
@@ -71,7 +72,11 @@ class EconomyModel(Model):
         # If False, hazards are still sampled to preserve random draws but
         # impacts (capital loss, damage, relocation triggers) are disabled.
         self.apply_hazard_impacts: bool = apply_hazard_impacts
-        
+
+        # Flag to toggle household relocation (both hazard-driven and job-driven).
+        # If False, households stay in place regardless of hazards or employment.
+        self.household_relocation_enabled: bool = household_relocation
+
         # Learning system parameters
         self.learning_config = learning_params or {}
         self.firm_learning_enabled: bool = self.learning_config.get('enabled', True)

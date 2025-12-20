@@ -45,7 +45,8 @@ class HouseholdAgent(Agent):
         # Trade-off coefficient between wage and distance when choosing employer.
         # Higher value → distance is more costly, so worker prefers closer firms.
         # Randomised per household to create heterogeneous behaviour.
-        self.distance_cost: float = self.random.uniform(0.1, 0.5)
+        # Low values (0.01-0.1) model remote work being widely available.
+        self.distance_cost: float = self.random.uniform(0.01, 0.1)
 
         # Aggregate statistics tracked per agent
         self.consumption: float = 0.0  # goods consumed (units)
@@ -113,7 +114,8 @@ class HouseholdAgent(Agent):
         self.consumption = 0.0
 
         # ---------------- Heuristic relocation decision --------------- #
-        if self._get_local_hazard() > 0.1:
+        # Only relocate when flood depth exceeds 0.5m (significant flooding)
+        if self.model.household_relocation_enabled and self._get_local_hazard() > 0.5:
             self._relocate()
 
         # 1. Choose employer based on wage–distance utility (remote work allowed) --------------- #
@@ -194,7 +196,7 @@ class HouseholdAgent(Agent):
         else:
             self._no_work_steps = 0
 
-        if self._no_work_steps >= 3:
+        if self._no_work_steps >= 3 and self.model.household_relocation_enabled:
             # Could not find work for 3 consecutive steps → move closer to another firm of same sector
             self._relocate_for_job()
             self._no_work_steps = 0  # reset after relocation
@@ -373,30 +375,56 @@ class FirmAgent(Agent):
             self.performance_history = self.performance_history[-self.memory_length:]
     
     def _evaluate_fitness(self) -> float:
-        """Calculate fitness based on recent performance."""
+        """Calculate fitness based on recent performance.
+
+        Components:
+        - Money growth (35%): Profitability, log-scaled to balance small vs large firms
+        - Production level (25%): Absolute output matters
+        - Peak maintenance (20%): Penalizes decline from recent peak, but not recovery
+        - Survival (20%): Longevity bonus
+        """
         if len(self.performance_history) < 2:
             return 0.0
-        
+
         recent = self.performance_history[-min(5, len(self.performance_history)):]
-        
-        # Components of fitness
-        money_growth = (recent[-1]['money'] - recent[0]['money']) / max(1.0, recent[0]['money'])
-        production_consistency = 1.0 - np.std([r['production'] for r in recent]) / max(1.0, np.mean([r['production'] for r in recent]))
-        survival_bonus = min(1.0, self.survival_time / 20.0)  # bonus for surviving longer
-        
-        # Penalize extreme limiting factors
-        recent_factors = [r['limiting_factor'] for r in recent]
-        factor_diversity = len(set(recent_factors)) / max(1, len(recent_factors))
-        
+
+        # 1. Money growth (35%) - log-scaled to balance small vs large firms
+        money_start = max(1.0, recent[0]['money'])
+        money_end = max(1.0, recent[-1]['money'])
+        log_money_growth = np.log(money_end / money_start)
+        money_score = np.tanh(log_money_growth)  # Bound to [-1, 1]
+
+        # 2. Production level (25%) - absolute production matters
+        productions = [r['production'] for r in recent]
+        mean_production = np.mean(productions)
+        # Normalize by a reasonable baseline (10 units is "good")
+        production_score = np.tanh(mean_production / 10.0)
+
+        # 3. Peak maintenance (20%) - penalize decline, don't penalize recovery
+        # Measures how close current production is to recent peak
+        # Recovery: current at/near peak → high score
+        # Decline: current far below peak → low score
+        # Stable: current equals peak → high score
+        peak_production = max(productions)
+        current_production = productions[-1]
+        if peak_production > 0:
+            peak_ratio = current_production / peak_production
+        else:
+            peak_ratio = 1.0  # No production history, neutral
+        peak_score = max(0.0, min(1.0, peak_ratio))
+
+        # 4. Survival bonus (20%) - longevity reward
+        survival_score = min(1.0, self.survival_time / 20.0)
+
         # Combined fitness score
         fitness = (
-            0.4 * np.tanh(money_growth * 2) +      # growth but diminishing returns
-            0.3 * production_consistency +          # stable production
-            0.2 * survival_bonus +                  # longevity reward
-            0.1 * factor_diversity                  # balanced resource utilization
+            0.35 * (money_score + 1) / 2 +    # Shift from [-1,1] to [0,1]
+            0.25 * production_score +          # Already [0,1] due to tanh of positive
+            0.20 * peak_score +                # Already [0,1]
+            0.20 * survival_score              # Already [0,1]
         )
-        
-        return max(0.0, fitness)
+
+        return max(0.0, min(1.0, fitness))
     
     def _adapt_strategy(self) -> None:
         """Adjust strategy based on recent performance."""

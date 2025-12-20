@@ -29,9 +29,14 @@ def parse_args():
         help="Hide sector-level time series from agent data",
     )
     parser.add_argument(
-        "--out", 
+        "--out",
         default="recreated_plot.png",
         help="Output plot filename"
+    )
+    parser.add_argument(
+        "--show-nolearning-bottlenecks",
+        action="store_true",
+        help="Add a 5th row showing No Learning bottleneck plots for Baseline and Hazard"
     )
     return parser.parse_args()
 
@@ -192,7 +197,7 @@ def main():
             "zorder": 1
         }
     
-    # Define the specific metrics for 4x2 layout
+    # Define the specific metrics - base 4x2 layout
     metrics = [
         "Firm_Production", "Firm_Wealth",
         "Firm_Capital", "Mean_Price",
@@ -200,8 +205,17 @@ def main():
         "Bottleneck_Baseline_Learning", "Bottleneck_Hazard_Learning"
     ]
 
-    # Create 4x2 subplot grid
-    fig, axes = plt.subplots(4, 2, figsize=(12, 12))
+    # Optionally add no-learning bottlenecks as 5th row
+    if args.show_nolearning_bottlenecks:
+        metrics.extend(["Bottleneck_Baseline_NoLearning", "Bottleneck_Hazard_NoLearning"])
+        n_rows = 5
+        fig_height = 15
+    else:
+        n_rows = 4
+        fig_height = 12
+
+    # Create subplot grid
+    fig, axes = plt.subplots(n_rows, 2, figsize=(12, fig_height))
     
     # Units for y-axis labels
     units = {
@@ -491,14 +505,14 @@ def main():
         if metric_name.startswith("Bottleneck_"):
             ax.legend(fontsize=6, ncol=3, loc='lower center', framealpha=0.8)
     
-    # Plot metrics in 5x2 grid
+    # Plot metrics in grid (4x2 or 5x2 depending on --show-nolearning-bottlenecks)
     for i, metric in enumerate(metrics):
         row = i // 2
         col = i % 2
         plot_metric(metric, axes[row, col])
 
     # Add subplot labels (a, b, c, ...)
-    subplot_labels = [chr(ord('a') + i) for i in range(8)]
+    subplot_labels = [chr(ord('a') + i) for i in range(len(metrics))]
     for i, metric in enumerate(metrics):
         row = i // 2
         col = i % 2
@@ -576,7 +590,7 @@ def main():
     plt.tight_layout()
     
     # Adjust layout to make room for bottom legend
-    plt.subplots_adjust(bottom=0.05)
+    plt.subplots_adjust(bottom=0.04)
     
     # Save plot
     out_path = Path(args.out)
