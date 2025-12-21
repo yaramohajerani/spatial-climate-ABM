@@ -138,23 +138,54 @@ def select_best_model(models):
     return min(valid_models, key=lambda m: m["bic"])
 
 
-def format_regression_text(model_result, scenario_name):
-    """Format regression results for display in a text box.
+def compute_summary_stats(x_data, y_data):
+    """Compute summary statistics for a time series.
 
-    Shows the key coefficient(s) with uncertainties:
-    - Linear: slope ± SE
-    - Quadratic: linear and quadratic coefficients ± SE
-    - Exponential: growth rate b ± SE
+    Calculates mean and std of annual (year-over-year) changes.
+    Since each step is half a year, annual changes are every 2 steps.
+
+    Returns:
+        dict with mean_annual_change, std_annual_change
+    """
+    if len(y_data) < 3:
+        return None
+
+    # Remove NaN values
+    y_clean = np.asarray(y_data)
+    mask = ~np.isnan(y_clean)
+    y_clean = y_clean[mask]
+
+    if len(y_clean) < 3:
+        return None
+
+    # Calculate annual changes (every 2 steps since each step is 0.5 year)
+    # y[i+2] - y[i] gives the change over 1 year
+    annual_changes = y_clean[2:] - y_clean[:-2]
+
+    if len(annual_changes) == 0:
+        return None
+
+    return {
+        "mean_annual_change": np.mean(annual_changes),
+        "std_annual_change": np.std(annual_changes),
+        "n_years": len(annual_changes),
+    }
+
+
+def format_summary_text(stats, scenario_name):
+    """Format summary statistics for display in a text box.
+
+    Shows mean ± std of annual changes.
 
     Args:
-        model_result: Dict from fit_* function
+        stats: Dict from compute_summary_stats
         scenario_name: Name of the scenario for labeling
 
     Returns:
         Formatted string for text box
     """
-    if model_result is None:
-        return f"{scenario_name}: No fit"
+    if stats is None:
+        return f"{scenario_name}: No data"
 
     # Shorten scenario name
     if "Baseline" in scenario_name and "No Learning" in scenario_name:
@@ -168,28 +199,10 @@ def format_regression_text(model_result, scenario_name):
     else:
         short_name = scenario_name[:6]
 
-    model_type = model_result["model"]
-    coeffs = model_result["coeffs"]
-    std_errors = model_result.get("std_errors", {})
+    mean_change = stats["mean_annual_change"]
+    std_change = stats["std_annual_change"]
 
-    if model_type == "linear":
-        slope = coeffs["slope"]
-        slope_se = std_errors.get("slope", 0)
-        return f"{short_name}: β={slope:.2e}±{slope_se:.2e}"
-
-    elif model_type == "quadratic":
-        b = coeffs["b"]  # linear term
-        c = coeffs["c"]  # quadratic term
-        b_se = std_errors.get("b", 0)
-        c_se = std_errors.get("c", 0)
-        return f"{short_name}: β₁={b:.2e}±{b_se:.2e}, β₂={c:.2e}±{c_se:.2e}"
-
-    elif model_type == "exponential":
-        b = coeffs["b"]  # growth rate
-        b_se = std_errors.get("b", 0)
-        return f"{short_name}: r={b:.2e}±{b_se:.2e}"
-
-    return f"{short_name}: {model_type}"
+    return f"{short_name}: Δ/yr={mean_change:+.2g}±{std_change:.2g}"
 
 
 def parse_args():
@@ -214,7 +227,7 @@ def parse_args():
     )
     parser.add_argument(
         "--out",
-        default="recreated_plot.png",
+        default="timeseries.png",
         help="Output plot filename"
     )
     parser.add_argument(
@@ -226,11 +239,6 @@ def parse_args():
         "--bottleneck-out",
         default="bottleneck_plot.png",
         help="Output filename for the bottleneck plots"
-    )
-    parser.add_argument(
-        "--no-regression",
-        action="store_true",
-        help="Disable regression analysis on time-series plots"
     )
     return parser.parse_args()
 
@@ -365,13 +373,13 @@ def main():
     for scenario in unique_scenarios:
         color = "tab:red" if "hazard" in scenario.lower() else "tab:blue"
         linestyle = ":" if "no learning" in scenario.lower() else "-"
-            
+
         scenario_style_map[scenario] = {"color": color, "linestyle": linestyle}
-    
+
     # Define sector color palettes keyed by baseline vs hazard for consistency with main lines
     sector_colors_baseline = ["#6baed6", "#3182bd"]
     sector_colors_hazard = ["#ffb347", "#ff7f0e"]
-    
+
     def get_sector_style(scenario, sector_idx):
         """Get color and style for a sector line based on scenario and sector index."""
         # Choose color palette based on hazard vs baseline
@@ -379,22 +387,23 @@ def main():
             color = sector_colors_hazard[sector_idx % len(sector_colors_hazard)]
         else:
             color = sector_colors_baseline[sector_idx % len(sector_colors_baseline)]
-        
+
         # Choose line style based on learning vs no learning
         linestyle = ":" if "no learning" in scenario.lower() else "-"
-        
+
         return {
             "color": color,
-            "linestyle": linestyle, 
+            "linestyle": linestyle,
             "alpha": 0.8,
             "linewidth": 0.7,
             "zorder": 1
         }
     
     # Define time-series metrics (separate from bottlenecks)
+    # Order: Production, Capital, Wealth, Price, Wage, Labor
     ts_metrics = [
-        "Firm_Production", "Firm_Wealth",
-        "Firm_Capital", "Mean_Price",
+        "Firm_Production", "Firm_Capital",
+        "Firm_Wealth", "Mean_Price",
         "Mean_Wage", "Household_Labor_Sold",
     ]
 
@@ -403,18 +412,6 @@ def main():
         "Bottleneck_Baseline_Learning", "Bottleneck_Hazard_Learning",
         "Bottleneck_Baseline_NoLearning", "Bottleneck_Hazard_NoLearning"
     ]
-
-    # Determine which regression model to use for each metric
-    # Production, Wealth, Capital, Wage: linear vs quadratic
-    # Price: exponential vs quadratic
-    # Household_Labor_Sold: no regression (values are constant/discrete)
-    regression_models = {
-        "Firm_Production": ["linear", "quadratic"],
-        "Firm_Wealth": ["linear", "quadratic"],
-        "Firm_Capital": ["linear", "quadratic"],
-        "Mean_Price": ["exponential", "quadratic"],
-        "Mean_Wage": ["linear", "quadratic"],
-    }
 
     # Create time-series figure (3x2 layout)
     fig_ts, axes_ts = plt.subplots(3, 2, figsize=(12, 10))
@@ -431,17 +428,12 @@ def main():
         "Household_Wealth": "$",
     }
     
-    # Store regression results for each metric
-    regression_results = {}
-
-    def plot_metric(metric_name, ax, model_types=None, show_regression=True):
-        """Plot a single metric with optional regression analysis.
+    def plot_metric(metric_name, ax):
+        """Plot a single metric.
 
         Args:
             metric_name: Name of the metric to plot
             ax: Matplotlib axes object
-            model_types: List of model types to compare (e.g., ["linear", "quadratic"])
-            show_regression: Whether to show regression results text box
         """
 
         # Define metric mappings for agent-level data
@@ -470,7 +462,7 @@ def main():
                     ax.plot(x_data, y_data,
                            color=style["color"], linestyle=style["linestyle"],
                            label=f"Mean - {scenario}", linewidth=1.5, alpha=0.7, zorder=3)
-                    # Store data for regression
+                    # Store data for summary stats
                     scenario_data[scenario] = (x_data, y_data)
             
             # Add sector lines from agent data for wages and prices
@@ -540,7 +532,7 @@ def main():
                 ax.plot(x_vals, y_vals,
                        color=style["color"], linewidth=1.5, alpha=0.7, linestyle=style["linestyle"],
                        label=f"Mean - {scenario}", zorder=3)
-                # Store data for regression
+                # Store data for summary stats
                 scenario_data[scenario] = (x_vals, y_vals)
             
             # Add sector lines
@@ -606,7 +598,7 @@ def main():
                 ax.plot(x_vals, y_vals,
                        color=style["color"], linewidth=1.5, alpha=0.7, linestyle=style["linestyle"],
                        label=f"Mean - {scenario}", zorder=3)
-                # Store data for regression
+                # Store data for summary stats
                 scenario_data[scenario] = (x_vals, y_vals)
             
             # Add sector lines if household data has sectors
@@ -711,46 +703,6 @@ def main():
             ax.set_ylim(0, 100)
             ax.set_ylabel("% of firms")
 
-        # Perform regression analysis for non-bottleneck metrics
-        if show_regression and model_types and scenario_data and not metric_name.startswith("Bottleneck_"):
-            reg_texts = []
-            metric_reg_results = {}
-
-            for scenario, (x_data, y_data) in scenario_data.items():
-                # Remove NaN values
-                mask = ~(np.isnan(x_data) | np.isnan(y_data))
-                x_clean = np.asarray(x_data)[mask]
-                y_clean = np.asarray(y_data)[mask]
-
-                if len(x_clean) < 4:
-                    continue
-
-                # Fit all specified model types
-                fitted_models = []
-                for model_type in model_types:
-                    if model_type == "linear":
-                        fitted_models.append(fit_linear(x_clean, y_clean))
-                    elif model_type == "quadratic":
-                        fitted_models.append(fit_quadratic(x_clean, y_clean))
-                    elif model_type == "exponential":
-                        fitted_models.append(fit_exponential(x_clean, y_clean))
-
-                # Select best model by BIC
-                best_model = select_best_model(fitted_models)
-                if best_model:
-                    metric_reg_results[scenario] = best_model
-                    reg_texts.append(format_regression_text(best_model, scenario))
-
-            # Store results for this metric
-            regression_results[metric_name] = metric_reg_results
-
-            # Add text box with regression results
-            if reg_texts:
-                text_str = "\n".join(reg_texts)
-                props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
-                ax.text(0.02, 0.98, text_str, transform=ax.transAxes, fontsize=7,
-                       verticalalignment='top', bbox=props)
-
         # Set title and labels
         title = metric_name.replace("_", " ").replace("Bottleneck ", "")
         if metric_name.startswith("Bottleneck_"):
@@ -770,15 +722,11 @@ def main():
         if metric_name.startswith("Bottleneck_"):
             ax.legend(fontsize=6, ncol=3, loc='lower center', framealpha=0.8)
     
-    # Determine whether to show regression
-    show_regression = not args.no_regression
-
     # Plot time-series metrics in 3x2 grid
     for i, metric in enumerate(ts_metrics):
         row = i // 2
         col = i % 2
-        model_types = regression_models.get(metric)  # None if not in dict
-        plot_metric(metric, axes_ts[row, col], model_types=model_types, show_regression=show_regression)
+        plot_metric(metric, axes_ts[row, col])
 
     # Add subplot labels (a, b, c, ...) to time-series figure
     for i, metric in enumerate(ts_metrics):
@@ -855,7 +803,7 @@ def main():
     for i, metric in enumerate(bottleneck_metrics):
         row = i // 2
         col = i % 2
-        plot_metric(metric, axes_bn[row, col], model_types=None, show_regression=False)
+        plot_metric(metric, axes_bn[row, col])
 
     # Add subplot labels to bottleneck figure
     for i, metric in enumerate(bottleneck_metrics):
@@ -876,30 +824,6 @@ def main():
     print(f"Bottleneck plot saved to {bn_out_path}")
     plt.close(fig_bn)
 
-    # Print regression summary
-    if show_regression and regression_results:
-        print("\n--- Regression Summary ---")
-        for metric, scenarios in regression_results.items():
-            print(f"\n{metric}:")
-            for scenario, result in scenarios.items():
-                model_type = result['model']
-                coeffs = result['coeffs']
-                std_errors = result.get('std_errors', {})
-                r2 = result['r_squared']
-                bic = result['bic']
-
-                if model_type == "linear":
-                    slope = coeffs['slope']
-                    slope_se = std_errors.get('slope', 0)
-                    print(f"  {scenario}: linear, slope={slope:.4e}±{slope_se:.4e} (R²={r2:.4f}, BIC={bic:.1f})")
-                elif model_type == "quadratic":
-                    b, c = coeffs['b'], coeffs['c']
-                    b_se, c_se = std_errors.get('b', 0), std_errors.get('c', 0)
-                    print(f"  {scenario}: quadratic, β₁={b:.4e}±{b_se:.4e}, β₂={c:.4e}±{c_se:.4e} (R²={r2:.4f}, BIC={bic:.1f})")
-                elif model_type == "exponential":
-                    rate = coeffs['b']
-                    rate_se = std_errors.get('b', 0)
-                    print(f"  {scenario}: exponential, rate={rate:.4e}±{rate_se:.4e} (R²={r2:.4f}, BIC={bic:.1f})")
 
 
 if __name__ == "__main__":
