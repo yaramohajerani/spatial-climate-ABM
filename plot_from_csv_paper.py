@@ -6,203 +6,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
-import warnings
-import statsmodels.api as sm
-
-
-def fit_linear(x, y):
-    """Fit linear regression y = a + b*x using statsmodels.
-
-    Returns:
-        dict with coefficients, standard errors, r_squared, bic, model_name
-    """
-    n = len(x)
-    if n < 3:
-        return None
-
-    try:
-        X = sm.add_constant(x)
-        model = sm.OLS(y, X).fit()
-
-        intercept = model.params[0]
-        slope = model.params[1]
-        intercept_se = model.bse[0]
-        slope_se = model.bse[1]
-
-        return {
-            "model": "linear",
-            "coeffs": {"intercept": intercept, "slope": slope},
-            "std_errors": {"intercept": intercept_se, "slope": slope_se},
-            "r_squared": model.rsquared,
-            "bic": model.bic,
-            "equation": f"y = {intercept:.2e} + {slope:.2e}x",
-            "predict": model.predict
-        }
-    except Exception:
-        return None
-
-
-def fit_quadratic(x, y):
-    """Fit quadratic regression y = a + b*x + c*x^2 using statsmodels.
-
-    Returns:
-        dict with coefficients, standard errors, r_squared, bic, model_name
-    """
-    n = len(x)
-    if n < 4:
-        return None
-
-    try:
-        X = np.column_stack([np.ones(n), x, x**2])
-        model = sm.OLS(y, X).fit()
-
-        a, b, c = model.params
-        a_se, b_se, c_se = model.bse
-
-        return {
-            "model": "quadratic",
-            "coeffs": {"a": a, "b": b, "c": c},
-            "std_errors": {"a": a_se, "b": b_se, "c": c_se},
-            "r_squared": model.rsquared,
-            "bic": model.bic,
-            "equation": f"y = {a:.2e} + {b:.2e}x + {c:.2e}x²",
-            "predict": model.predict
-        }
-    except Exception:
-        return None
-
-
-def fit_exponential(x, y):
-    """Fit exponential regression y = a * exp(b*x) via log-linear OLS.
-
-    Returns:
-        dict with coefficients, standard errors, r_squared, bic, model_name
-    """
-    n = len(x)
-    if n < 3:
-        return None
-
-    # Filter out non-positive y values for log transform
-    mask = y > 0
-    if np.sum(mask) < 3:
-        return None
-
-    x_valid = np.asarray(x)[mask]
-    y_valid = np.asarray(y)[mask]
-
-    try:
-        # Log-linear regression: log(y) = log(a) + b*x
-        log_y = np.log(y_valid)
-        X = sm.add_constant(x_valid)
-        model = sm.OLS(log_y, X).fit()
-
-        log_a = model.params[0]
-        b = model.params[1]
-        log_a_se = model.bse[0]
-        b_se = model.bse[1]
-        a = np.exp(log_a)
-        # Approximate SE for a using delta method: SE(a) ≈ a * SE(log_a)
-        a_se = a * log_a_se
-
-        # Calculate R² in original space
-        y_pred = a * np.exp(b * x_valid)
-        ss_res = np.sum((y_valid - y_pred) ** 2)
-        ss_tot = np.sum((y_valid - np.mean(y_valid)) ** 2)
-        r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
-
-        return {
-            "model": "exponential",
-            "coeffs": {"a": a, "b": b},
-            "std_errors": {"a": a_se, "b": b_se},
-            "r_squared": r_squared,
-            "bic": model.bic,  # BIC from log-space model
-            "equation": f"y = {a:.2e} × exp({b:.2e}x)",
-            "predict": lambda x_new, a=a, b=b: a * np.exp(b * x_new)
-        }
-    except Exception:
-        return None
-
-
-def select_best_model(models):
-    """Select the model with the lowest BIC from a list of fitted models.
-
-    Args:
-        models: List of model result dicts (from fit_* functions)
-
-    Returns:
-        Best model dict or None if all models failed
-    """
-    valid_models = [m for m in models if m is not None]
-    if not valid_models:
-        return None
-    return min(valid_models, key=lambda m: m["bic"])
-
-
-def compute_summary_stats(x_data, y_data):
-    """Compute summary statistics for a time series.
-
-    Calculates mean and std of annual (year-over-year) changes.
-    Since each step is half a year, annual changes are every 2 steps.
-
-    Returns:
-        dict with mean_annual_change, std_annual_change
-    """
-    if len(y_data) < 3:
-        return None
-
-    # Remove NaN values
-    y_clean = np.asarray(y_data)
-    mask = ~np.isnan(y_clean)
-    y_clean = y_clean[mask]
-
-    if len(y_clean) < 3:
-        return None
-
-    # Calculate annual changes (every 2 steps since each step is 0.5 year)
-    # y[i+2] - y[i] gives the change over 1 year
-    annual_changes = y_clean[2:] - y_clean[:-2]
-
-    if len(annual_changes) == 0:
-        return None
-
-    return {
-        "mean_annual_change": np.mean(annual_changes),
-        "std_annual_change": np.std(annual_changes),
-        "n_years": len(annual_changes),
-    }
-
-
-def format_summary_text(stats, scenario_name):
-    """Format summary statistics for display in a text box.
-
-    Shows mean ± std of annual changes.
-
-    Args:
-        stats: Dict from compute_summary_stats
-        scenario_name: Name of the scenario for labeling
-
-    Returns:
-        Formatted string for text box
-    """
-    if stats is None:
-        return f"{scenario_name}: No data"
-
-    # Shorten scenario name
-    if "Baseline" in scenario_name and "No Learning" in scenario_name:
-        short_name = "Base-NL"
-    elif "Baseline" in scenario_name:
-        short_name = "Base"
-    elif "Hazard" in scenario_name and "No Learning" in scenario_name:
-        short_name = "Haz-NL"
-    elif "Hazard" in scenario_name:
-        short_name = "Haz"
-    else:
-        short_name = scenario_name[:6]
-
-    mean_change = stats["mean_annual_change"]
-    std_change = stats["std_annual_change"]
-
-    return f"{short_name}: Δ/yr={mean_change:+.2g}±{std_change:.2g}"
 
 
 def parse_args():
@@ -231,14 +34,14 @@ def parse_args():
         help="Output plot filename"
     )
     parser.add_argument(
-        "--show-nolearning-bottlenecks",
-        action="store_true",
-        help="Add a 5th row showing No Learning bottleneck plots for Baseline and Hazard"
-    )
-    parser.add_argument(
         "--bottleneck-out",
         default="bottleneck_plot.png",
         help="Output filename for the bottleneck plots"
+    )
+    parser.add_argument(
+        "--show-inventory",
+        action="store_true",
+        help="Add a 4th row showing firm inventory and household liquidity"
     )
     return parser.parse_args()
 
@@ -400,12 +203,16 @@ def main():
         }
     
     # Define time-series metrics (separate from bottlenecks)
-    # Order: Production, Capital, Wealth, Price, Wage, Labor
+    # Order: Production, Capital, Liquidity, Labor, Wage, Price, [Inventory, Household Liquidity]
     ts_metrics = [
         "Firm_Production", "Firm_Capital",
-        "Firm_Wealth", "Mean_Price",
-        "Mean_Wage", "Household_Labor_Sold",
+        "Firm_Liquidity", "Household_Labor_Sold",
+        "Mean_Wage", "Mean_Price",
     ]
+
+    # Optionally add inventory row
+    if args.show_inventory:
+        ts_metrics.extend(["Firm_Inventory", "Household_Liquidity"])
 
     # Define bottleneck metrics separately
     bottleneck_metrics = [
@@ -413,19 +220,22 @@ def main():
         "Bottleneck_Baseline_NoLearning", "Bottleneck_Hazard_NoLearning"
     ]
 
-    # Create time-series figure (3x2 layout)
-    fig_ts, axes_ts = plt.subplots(3, 2, figsize=(12, 10))
+    # Create time-series figure (3x2 or 4x2 layout depending on --show-inventory)
+    n_rows = 4 if args.show_inventory else 3
+    fig_height = 13 if args.show_inventory else 10
+    fig_ts, axes_ts = plt.subplots(n_rows, 2, figsize=(12, fig_height))
     
     # Units for y-axis labels
     units = {
         "Firm_Production": "Units of Goods",
-        "Firm_Wealth": "$",
-        "Firm_Capital": "Units of Capital", 
+        "Firm_Liquidity": "$",
+        "Firm_Capital": "Units of Capital",
+        "Firm_Inventory": "Units of Goods",
         "Mean_Price": "$ / Unit of Goods",
         "Mean_Wage": "$ / Unit of Labor",
         "Household_Labor_Sold": "Units of Labor",
         "Household_Consumption": "Units of Goods",
-        "Household_Wealth": "$",
+        "Household_Liquidity": "$",
     }
     
     def plot_metric(metric_name, ax):
@@ -439,19 +249,17 @@ def main():
         # Define metric mappings for agent-level data
         firm_metric_map = {
             "Firm_Production": "production",
-            "Firm_Wealth": "money",
-            "Firm_Capital": "capital"
+            "Firm_Liquidity": "money",
+            "Firm_Capital": "capital",
+            "Firm_Inventory": "inventory"
         }
 
         household_metric_map = {
             "Household_Labor_Sold": "labor_sold",
             "Household_Consumption": "consumption",
-            "Household_Wealth": "money"
+            "Household_Liquidity": "money"
         }
 
-        # Dictionary to store (x, y) data for regression fitting per scenario
-        scenario_data = {}
-        
         if metric_name in ["Mean_Price", "Mean_Wage"]:
             # Plot main scenario lines from aggregate data
             for scenario, grp in df_combined.groupby("Scenario"):
@@ -462,9 +270,7 @@ def main():
                     ax.plot(x_data, y_data,
                            color=style["color"], linestyle=style["linestyle"],
                            label=f"Mean - {scenario}", linewidth=1.5, alpha=0.7, zorder=3)
-                    # Store data for summary stats
-                    scenario_data[scenario] = (x_data, y_data)
-            
+
             # Add sector lines from agent data for wages and prices
             if show_sector_series and not firm_agents_df.empty and metric_name in ["Mean_Price", "Mean_Wage"]:
                 agent_col = "price" if metric_name == "Mean_Price" else "wage"
@@ -532,9 +338,7 @@ def main():
                 ax.plot(x_vals, y_vals,
                        color=style["color"], linewidth=1.5, alpha=0.7, linestyle=style["linestyle"],
                        label=f"Mean - {scenario}", zorder=3)
-                # Store data for summary stats
-                scenario_data[scenario] = (x_vals, y_vals)
-            
+
             # Add sector lines
             if show_sector_series and not firm_agents_df.empty:
                 sectors = sorted(firm_agents_df["sector"].dropna().unique())
@@ -598,9 +402,7 @@ def main():
                 ax.plot(x_vals, y_vals,
                        color=style["color"], linewidth=1.5, alpha=0.7, linestyle=style["linestyle"],
                        label=f"Mean - {scenario}", zorder=3)
-                # Store data for summary stats
-                scenario_data[scenario] = (x_vals, y_vals)
-            
+
             # Add sector lines if household data has sectors
             if show_sector_series and not household_agents_df.empty and "sector" in household_agents_df.columns:
                 sectors = sorted(household_agents_df["sector"].dropna().unique())
