@@ -215,6 +215,9 @@ class EconomyModel(Model):
                 "Average_Firm_Fitness": lambda m: np.mean([f.fitness_score for f in m._firms]) if m._firms else 0.0,
                 "Firm_Replacements": lambda m: getattr(m, 'total_firm_replacements', 0),
                 "Total_Sales": lambda m: sum(f.sales_last_step for f in m._firms),
+                "Total_Firms": lambda m: len(m._firms),
+                "Flooded_Firms": lambda m: sum(1 for f in m._firms if m.hazard_map.get(f.pos, 0) > 0),
+                "Flooded_Households": lambda m: sum(1 for h in m._households if m.hazard_map.get(h.pos, 0) > 0),
             },
             agent_reporters={
                 "money": lambda a: getattr(a, "money", np.nan),
@@ -611,14 +614,16 @@ class EconomyModel(Model):
         if self._firms:
             self.mean_wage = float(np.mean([f.wage_offer for f in self._firms]))
 
+        # Collect data BEFORE evolutionary pressure so we capture firms that
+        # have already produced (and thus have limiting_factor set). New
+        # replacement firms haven't stepped yet and would skew bottleneck counts.
+        self.datacollector.collect(self)
+
         # ---------------- Evolutionary pressure (learning system) ---- #
         self.steps_since_replacement += 1
         if self.firm_learning_enabled and self.steps_since_replacement >= self.replacement_frequency:
             self._apply_evolutionary_pressure()
             self.steps_since_replacement = 0
-        
-        # Collect outputs after wage update so next step sees new wage
-        self.datacollector.collect(self)
 
     # --------------------------------------------------------------------- #
     #                         LEARNING SYSTEM METHODS                        #

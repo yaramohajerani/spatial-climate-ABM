@@ -1,5 +1,5 @@
 {
-  "num_households": 650,
+  "num_households": 1000,
   "grid_resolution": 0.25,
   "rp_files": [
    "2:1:30:FL:data/model_grid_025/inunriver_rcp8p5_0000GFDL-ESM2M_2030_rp00002_model-grid-0.25deg-max.tif",
@@ -23,7 +23,7 @@
   ],
   "steps": 150,
   "seed": 42,
-  "topology": "riverine_firm_topology.json",
+  "topology": "riverine_firm_topology_100.json",
   "start_year": 2025,
   "steps_per_year": 2,
   "consumption_ratios": {
