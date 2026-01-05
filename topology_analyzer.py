@@ -233,7 +233,7 @@ def _draw_network(ax, g: nx.DiGraph, levels: Dict[int, int]):
             ax.text(x_center, max_y, f"Level {band}", fontsize=10, ha="center",
                    fontweight="bold", color="dimgray")
 
-    ax.set_title("Supply Chain Network (Trophic Layout)", fontsize=12, fontweight="bold")
+    ax.set_title("Supply Chain Network: Trophic Layout", fontsize=12, fontweight="bold")
 
     # NetworkX turns off axis by default - turn it back on for x-axis
     ax.set_frame_on(True)
