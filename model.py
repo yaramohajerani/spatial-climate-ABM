@@ -190,6 +190,8 @@ class EconomyModel(Model):
 
         # Base wage used by firms when hiring labour
         self.mean_wage = 1.0
+        # Initial wage preserved as constant for minimum wage floor (ILO convention)
+        self.initial_mean_wage: float = 1.0
 
         # Compatibility stub – we no longer model migration but keep the attribute
         self.migrants_this_step: int = 0
@@ -637,16 +639,13 @@ class EconomyModel(Model):
         if self.current_step < 5:
             return
 
-        # Identify failed firms (very low money or negative growth)
+        # Identify failed firms (bankrupt only — money below survival threshold).
+        # No "persistent decline" check: during systemic crises all firms decline,
+        # and replacing solvent-but-declining firms destroys accumulated wealth.
         failed_firms = []
         for firm in self._firms:
             if firm.money < self.min_money_survival:
                 failed_firms.append(firm)
-            elif len(firm.performance_history) >= 5:
-                # Check for persistent decline
-                recent_money = [p['money'] for p in firm.performance_history[-5:]]
-                if len(recent_money) >= 2 and recent_money[-1] < recent_money[0] * 0.5:
-                    failed_firms.append(firm)
         
         if not failed_firms:
             return  # no firms to replace
@@ -655,8 +654,8 @@ class EconomyModel(Model):
         max_replacements = max(1, len(self._firms) // 4)  # replace at most 25% of firms per step
         failed_firms = failed_firms[:max_replacements]
 
-        # Identify successful firms (high fitness scores)
-        successful_firms = [f for f in self._firms if f not in failed_firms and f.fitness_score > 0.3]
+        # Identify successful firms (any positive production)
+        successful_firms = [f for f in self._firms if f not in failed_firms and f.fitness_score > 0]
         if not successful_firms:
             successful_firms = [f for f in self._firms if f not in failed_firms]  # fallback to non-failed
         

@@ -2,15 +2,15 @@
   "num_households": 650,
   "grid_resolution": 0.25,
   "rp_files": [
-   "100:1:30:FL:data/model_grid_025/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00100_model-grid-0.25deg-mean.tif",
-   "100:31:80:FL:data/model_grid_025/inunriver_rcp4p5_0000GFDL-ESM2M_2050_rp00100_model-grid-0.25deg-mean.tif",
-   "100:81:150:FL:data/model_grid_025/inunriver_rcp4p5_0000GFDL-ESM2M_2080_rp00100_model-grid-0.25deg-mean.tif"
+   "100:1:60:FL:data/model_grid_025/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00100_model-grid-0.25deg-mean.tif",
+   "100:61:160:FL:data/model_grid_025/inunriver_rcp4p5_0000GFDL-ESM2M_2050_rp00100_model-grid-0.25deg-mean.tif",
+   "100:161:300:FL:data/model_grid_025/inunriver_rcp4p5_0000GFDL-ESM2M_2080_rp00100_model-grid-0.25deg-mean.tif"
   ],
-  "steps": 150,
+  "steps": 300,
   "seed": 42,
   "topology": "riverine_firm_topology.json",
   "start_year": 2025,
-  "steps_per_year": 2,
+  "steps_per_year": 4,
   "consumption_ratios": {
     "commodity": 0.25,
     "manufacturing": 0.45,

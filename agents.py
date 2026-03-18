@@ -375,56 +375,16 @@ class FirmAgent(Agent):
             self.performance_history = self.performance_history[-self.memory_length:]
     
     def _evaluate_fitness(self) -> float:
-        """Calculate fitness based on recent performance.
+        """Fitness = time-averaged production over the memory window.
 
-        Components:
-        - Money growth (35%): Profitability, log-scaled to balance small vs large firms
-        - Production level (25%): Absolute output matters
-        - Peak maintenance (20%): Penalizes decline from recent peak, but not recovery
-        - Survival (20%): Longevity bonus
+        A single metric that implicitly captures all aspects of firm health:
+        sustaining high production requires adequate capital, liquidity,
+        labor, and input procurement across varying conditions.
         """
         if len(self.performance_history) < 2:
             return 0.0
-
-        recent = self.performance_history[-min(5, len(self.performance_history)):]
-
-        # 1. Money growth (35%) - log-scaled to balance small vs large firms
-        money_start = max(1.0, recent[0]['money'])
-        money_end = max(1.0, recent[-1]['money'])
-        log_money_growth = np.log(money_end / money_start)
-        money_score = np.tanh(log_money_growth)  # Bound to [-1, 1]
-
-        # 2. Production level (25%) - absolute production matters
-        productions = [r['production'] for r in recent]
-        mean_production = np.mean(productions)
-        # Normalize by a reasonable baseline (10 units is "good")
-        production_score = np.tanh(mean_production / 10.0)
-
-        # 3. Peak maintenance (20%) - penalize decline, don't penalize recovery
-        # Measures how close current production is to recent peak
-        # Recovery: current at/near peak → high score
-        # Decline: current far below peak → low score
-        # Stable: current equals peak → high score
-        peak_production = max(productions)
-        current_production = productions[-1]
-        if peak_production > 0:
-            peak_ratio = current_production / peak_production
-        else:
-            peak_ratio = 1.0  # No production history, neutral
-        peak_score = max(0.0, min(1.0, peak_ratio))
-
-        # 4. Survival bonus (20%) - longevity reward
-        survival_score = min(1.0, self.survival_time / 20.0)
-
-        # Combined fitness score
-        fitness = (
-            0.35 * (money_score + 1) / 2 +    # Shift from [-1,1] to [0,1]
-            0.25 * production_score +          # Already [0,1] due to tanh of positive
-            0.20 * peak_score +                # Already [0,1]
-            0.20 * survival_score              # Already [0,1]
-        )
-
-        return max(0.0, min(1.0, fitness))
+        productions = [r['production'] for r in self.performance_history]
+        return float(np.mean(productions))
     
     def _adapt_strategy(self) -> None:
         """Adjust strategy based on recent performance."""
@@ -558,53 +518,48 @@ class FirmAgent(Agent):
         as independent and gets separate budget allocation.
         """
 
-        # Base weights: technical coefficients × price proxies (Leontief logic)
-        avg_input_price = np.mean([s.price for s in self.connected_firms]) if self.connected_firms else 1.0
-
+        # Budget allocation uses pure technical coefficients (Leontief shares)
+        # so that nominal price changes cannot distort the allocation.
+        # The evolutionary strategy weights still allow learned adjustments.
         lim = getattr(self, "limiting_factor", "")
 
-        # Allocate capital budget if capital was limiting OR a shock just hit
+        # Capital weight: full coefficient when capital-limited or stressed,
+        # reduced weight otherwise to avoid over-investment in calm periods.
         cap_weight = 0.0
         if lim == "capital":
-            cap_weight = self.capital_coeff * self.price
+            cap_weight = self.capital_coeff
         else:
-            # Seed some capital budget after damage or depleted stock
             if (self.capital_stock < self.original_capital_coeff * 5) or (self.damage_factor < 0.99) or (self.capital_coeff > self.original_capital_coeff * 1.05):
-                cap_weight = self.capital_coeff * self.price * 0.3
+                cap_weight = self.capital_coeff * 0.3
 
-        # All sectors: treat each input type as independent
-        # Each connected firm represents a different input type
-        num_input_types = len(self.connected_firms) if self.connected_firms else 1
-        
-        # Base weights for each input type
+        # Input weights: equal share per supplier based on INPUT_COEFF
+        num_suppliers = max(1, len(self.connected_firms))
+        per_supplier_coeff = self.INPUT_COEFF / num_suppliers
+
         input_weights = {}
         for supplier in self.connected_firms:
-            input_weights[supplier.unique_id] = self.INPUT_COEFF * supplier.price
-        
-        # If no connected firms, use average price as fallback
+            input_weights[supplier.unique_id] = per_supplier_coeff
         if not input_weights:
-            input_weights["generic"] = self.INPUT_COEFF * avg_input_price
-        
-        # Total input weight is sum of all individual input weights
+            input_weights["generic"] = self.INPUT_COEFF
         total_input_weight = sum(input_weights.values())
-        
+
         weights = {
-            "labor": self.LABOR_COEFF * self.wage_offer * self.strategy.get('budget_labor_weight', 1.0),
+            "labor": self.LABOR_COEFF * self.strategy.get('budget_labor_weight', 1.0),
             "input_total": total_input_weight * self.strategy.get('budget_input_weight', 1.0),
             "capital": cap_weight * self.strategy.get('budget_capital_weight', 1.0),
         }
-        
+
         # Prioritise last limiting factor (learned response)
         if lim in weights and weights[lim] > 0:
             priority_multiplier = 1.0 + 0.3 * self.strategy.get('budget_' + lim + '_weight', 1.0)
             weights[lim] *= priority_multiplier
-        
+
         total_w = sum(weights.values())
         if total_w <= 0:
             total_w = 1.0
 
         # Cash to be allocated
-        liquid = max(0, self.money)  # Ensure non-negative
+        liquid = max(0, self.money)
         liquid_alloc = liquid * 0.9
         reserve_labor = liquid_alloc * weights["labor"] / total_w
         # Guarantee enough for multiple hires so labour is not starved by budgeting
@@ -615,17 +570,15 @@ class FirmAgent(Agent):
         # Set budgets
         self._budget_labor = reserve_labor
         self._budget_capital = reserve_cap
-        
-        # Allocate input budget per supplier (independent inputs)
+
+        # Allocate input budget per supplier (equal shares from technical coefficients)
         self._budget_input_per_supplier = {}
         if self.connected_firms:
             for supplier in self.connected_firms:
-                # Proportional allocation based on supplier's price
                 supplier_share = input_weights[supplier.unique_id] / total_input_weight
                 self._budget_input_per_supplier[supplier.unique_id] = reserve_input_total * supplier_share
         else:
-            # Fallback for no connected firms
-            self._budget_input = reserve_input_total 
+            self._budget_input = reserve_input_total
 
     # -------------------------------------------------------------------- #
 
@@ -669,11 +622,17 @@ class FirmAgent(Agent):
         adjustment = max(0.95, min(adjustment, 1.05))
 
         self.wage_offer *= adjustment
-        # Keep wage positive with a meaningful floor
-        self.wage_offer = float(max(0.1, min(self.wage_offer, 10.0)))
+        # Minimum wage floor at 40% of initial wage, as a proxy consistent with ILO (2016) observations that
+        # minimum wages in high-income economies typically fall between 40–60% of the median wage.
+        # Ceiling at 10x initial.
+        wage_floor = getattr(self.model, 'initial_mean_wage', 1.0) * 0.4
+        self.wage_offer = float(max(wage_floor, min(self.wage_offer, 10.0)))
 
-        # Recover 50% of remaining damage each step
-        self.damage_factor += (1.0 - self.damage_factor) * 0.5
+        # Liquidity-dependent recovery: firms with more capital recover faster because they can afford repairs. 
+        # Base rate 20%, scaling up to 50% for well-capitalised firms.
+        liquidity_ratio = min(1.0, self.money / 200.0)
+        recovery_rate = 0.2 + 0.3 * liquidity_ratio
+        self.damage_factor += (1.0 - self.damage_factor) * recovery_rate
         self.damage_factor = min(1.0, max(0.0, self.damage_factor))
 
         # ---------------- Dynamic pricing ----------------------------- #

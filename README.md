@@ -35,6 +35,8 @@ The model simulates economic agents (households and firms) on a spatial grid whi
 - **Economic Markets**: Endogenous wages, dynamic pricing, labor mobility, and supply chain networks
 - **Climate Integration**: Lazy hazard sampling from full-resolution GeoTIFF rasters with JRC region-specific damage curves
 - **Adaptive Behaviors**: Risk-based household migration and firm capital adjustments
+- **Liquidity-Dependent Recovery**: Post-disaster recovery speed scales with firm liquidity (firms with more capital can afford faster repairs)
+- **Minimum Wage Floor**: Wage offers bounded below at 40% of initial wage, a proxy consistent with ILO (2016) observations on minimum wages in high-income economies
 - **Firm Learning System**: Evolutionary strategy-based learning for budget allocation, pricing, wage setting, and risk adaptation
 - **Multiple Sectors**: Commodity, manufacturing, and retail sectors with sector-specific production coefficients and configurable consumption ratios
 
@@ -67,9 +69,11 @@ The model uses a `mesa.space.MultiGrid` with configurable resolution (default 1�
   - Manufacturing: labor=0.3, input=0.6, capital=0.6 (automated, capital & input intensive)
   - Retail: labor=0.5, input=0.4, capital=0.2 (moderate labor, low capital needs)
 - **Learning System**: Evolutionary strategy learning with 5 adaptive parameters and fitness-based selection
-- **Wage Setting**: Raises wages after 4 consecutive cycles of labor shortage (persistent shortage threshold prevents wage spirals)
+- **Wage Setting**: Raises wages after 4 consecutive cycles of labor shortage (persistent shortage threshold prevents wage spirals); minimum wage floor at 40% of initial wage
 - **Dynamic Pricing**: Supply-demand driven adjustments with cost-floor mechanism
+- **Damage Recovery**: Liquidity-dependent recovery rate (20%–50% per step) so stressed firms recover more slowly
 - **Input Procurement**: Inputs from connected suppliers are substitutable (sum-based)
+- **Budget Allocation**: Pure technical coefficient-based allocation ensures stable budget splits across labor, inputs, and capital regardless of nominal price levels; evolutionary strategy weights provide learned adjustments
 
 ### Climate Hazard System
 
@@ -97,9 +101,9 @@ Damage is calculated using JRC Global Flood Depth-Damage Functions:
 
 ### Firm Learning System
 - **Strategy Parameters**: Budget allocation weights, risk sensitivity, price aggressiveness, wage responsiveness
-- **Performance Tracking**: 10-step memory of money, production, and capital stock
-- **Fitness Evaluation**: Weighted combination of money growth (log-scaled, 35%), production level (25%), peak maintenance (20%), survival bonus (20%)
-- **Population Dynamics**: Failed firms replaced by mutated offspring of successful firms
+- **Performance Tracking**: 10-step rolling window (2.5 years at quarterly resolution) of money, production, and capital stock
+- **Fitness Evaluation**: Time-averaged production over the memory window — a single metric that implicitly captures all aspects of firm health. Robustness verified via sensitivity analysis across 5 memory window lengths.
+- **Population Dynamics**: Bankrupt firms (money below survival threshold) replaced by mutated offspring of successful firms; no persistent-decline trigger to avoid procyclical wealth destruction during systemic crises
 
 ## Usage
 
@@ -146,6 +150,20 @@ python run_simulation.py --param-file aqueduct_riverine_parameters.json
   }
 }
 ```
+
+### Sensitivity Analysis
+
+Run memory window sensitivity analysis to verify robustness of evolutionary learning results across different production averaging windows:
+
+```bash
+# Full sensitivity analysis
+python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json
+
+# Quick test (50 steps)
+python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --quick
+```
+
+This runs the hazard+learning scenario across 5 memory window lengths (1.25–5.0 years) and produces a comparison plot and summary CSV table.
 
 ### Data Preprocessing (Optional)
 
@@ -211,17 +229,18 @@ Specify firm locations and supply chains via JSON:
 - **Depreciation Rate**: 0.2% per step
 - **Consumption Ratios**: Configurable household spending by sector (default: 25% commodity, 45% manufacturing, 30% retail)
 - **Wage Adjustment Threshold**: 4 consecutive cycles of labor shortage required before wage increase
+- **Minimum Wage Floor**: 40% of initial mean wage, a proxy consistent with ILO (2016) observations (40–60% of median)
 
 ### Learning Parameters
 - `learning.enabled`: Enable/disable firm learning (default: true)
-- `learning.memory_length`: Steps of performance history (default: 10)
+- `learning.memory_length`: Steps of performance history for fitness averaging (default: 10, i.e. 2.5 years at quarterly resolution)
 - `learning.mutation_rate`: Strategy mutation standard deviation (default: 0.05)
 - `learning.adaptation_frequency`: Steps between strategy evaluations (default: 5)
 - `learning.min_money_survival`: Minimum money before firm failure (default: 1.0)
 - `learning.replacement_frequency`: Steps between replacement cycles (default: 10)
 
 ### Climate Parameters
-- **Recovery Rate**: 50% of damage factor recovered per step
+- **Recovery Rate**: Liquidity-dependent; 20% (money≈0) to 50% (money≥200) of remaining damage recovered per step
 - **Vulnerability**: JRC region-specific depth-damage curves
 - **Sampling**: Independent per-cell Poisson process based on return periods
 
@@ -231,6 +250,7 @@ Specify firm locations and supply chains via JSON:
 ├── model.py              # Main EconomyModel class
 ├── agents.py             # HouseholdAgent and FirmAgent classes
 ├── run_simulation.py     # CLI runner with parameter file support
+├── sensitivity_analysis.py # Fitness weight sensitivity analysis
 ├── hazard_utils.py       # LazyHazard class for memory-efficient sampling
 ├── damage_functions.py   # JRC damage functions from Excel
 ├── trophic_utils.py      # Network topology analysis
