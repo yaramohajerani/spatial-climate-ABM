@@ -287,10 +287,7 @@ class FirmAgent(Agent):
         # Firm-specific wage offer (labour price) – starts at the model's base wage
         self.wage_offer: float = model.mean_wage if hasattr(model, "mean_wage") else 1.0
 
-        # Track consecutive cycles of labor shortage for wage adjustment
-        self.labor_shortage_cycles: int = 0  # consecutive steps where firm couldn't hire needed workers
         self.last_hired_labor: int = 0  # employees hired in previous step
-        self.labor_demand: int = 0  # how many workers the firm wanted to hire
 
         # Input inventory keyed by supplier AgentID (or None for generic labour)
         self.inventory_inputs: dict[int, int] = defaultdict(int)  # per-supplier stock
@@ -588,45 +585,28 @@ class FirmAgent(Agent):
 
         # ---------------- Damage recovery ----------------------------- #
         # ---------------- Wage adjustment ----------------------------- #
-        # Supply-demand based wage adjustment
-        unemployment_rate = getattr(self.model, "unemployment_rate_prev", 0.0)
-
-        # Determine adjustment based on labor market conditions
-        # Only raise wages after 4 consecutive cycles of labor shortage (persistent issue)
-        LABOR_SHORTAGE_THRESHOLD = 4
-        if self.labor_shortage_cycles >= LABOR_SHORTAGE_THRESHOLD:
-            # Firm has persistently wanted more workers but couldn't get them
-            if self.money < self.wage_offer * 2:
-                # Can't afford workers - hold wages steady (don't cut, that kills the economy)
-                signal = 0.0
-            else:
-                # Supply-limited: raise wages to attract workers
-                signal = 1.0
+        # Revenue-based wage targeting: wages track marginal revenue product of labor.
+        # This replaces ad-hoc shortage-signal heuristics with a single economic principle:
+        # firms pay workers a fraction of what they produce, so wages are structurally
+        # bounded by firm revenue and self-correct during downturns.
+        labor_share = 0.5 * self.strategy.get('wage_responsiveness', 1.0)
+        if self.last_hired_labor > 0 and self.revenue_last_step > 0:
+            revenue_per_worker = self.revenue_last_step / self.last_hired_labor
+            target_wage = revenue_per_worker * labor_share
+        elif self.last_hired_labor == 0:
+            # No workers last round — offer above market mean to attract someone
+            target_wage = self.model.mean_wage * 1.1
         else:
-            # Not labor-constrained - adjust based on market conditions
-            if unemployment_rate > 0.2:
-                # High unemployment: modest downward pressure
-                signal = -0.5
-            elif unemployment_rate < 0.05:
-                # Very low unemployment: upward pressure
-                signal = 0.5
-            else:
-                # Normal conditions: hold steady
-                signal = 0.0
+            # Had workers but no revenue — hold current wage
+            target_wage = self.wage_offer
 
-        # Moderate adjustment strength
-        base_strength = 0.03 * self.strategy.get('wage_responsiveness', 1.0)
-        adjustment = 1 + base_strength * signal
+        # Smooth adjustment: 10% toward target each step
+        self.wage_offer += 0.1 * (target_wage - self.wage_offer)
 
-        # Bound adjustment to prevent extreme jumps
-        adjustment = max(0.95, min(adjustment, 1.05))
-
-        self.wage_offer *= adjustment
         # Minimum wage floor at 40% of initial wage, as a proxy consistent with ILO (2016) observations that
         # minimum wages in high-income economies typically fall between 40–60% of the median wage.
-        # Ceiling at 10x initial.
         wage_floor = getattr(self.model, 'initial_mean_wage', 1.0) * 0.4
-        self.wage_offer = float(max(wage_floor, min(self.wage_offer, 10.0)))
+        self.wage_offer = float(max(wage_floor, self.wage_offer))
 
         # Liquidity-dependent recovery: firms with more capital recover faster because they can afford repairs. 
         # Base rate 20%, scaling up to 50% for well-capitalised firms.
@@ -767,12 +747,6 @@ class FirmAgent(Agent):
         # Pick first factor that equals the min within small tolerance
         self.limiting_factor: str = next(k for k, v in limits.items() if abs(v - min_limit_val) < 1e-6)
 
-        # Calculate how many workers the firm could productively use
-        # This is based on input and capital constraints (what limits production besides labor)
-        max_useful_output = min(max_output_from_inputs, max_output_from_capital)
-        # Convert output capacity to labor demand (how many workers needed for that output)
-        self.labor_demand = int(np.ceil(max_useful_output * self.LABOR_COEFF)) if max_useful_output < float("inf") else labour_units
-
         self.production = possible_output
         if possible_output > 0:
             # Total inputs needed = output * INPUT_COEFF (consumed proportionally from all suppliers)
@@ -795,21 +769,8 @@ class FirmAgent(Agent):
         # ----------------------------------------------------------------
         # 3. Clear employee list for next step
         # ----------------------------------------------------------------
-        # Record labour count and limiting factor for next step's adjustments
+        # Record labour count for next step's wage adjustment
         self.last_hired_labor = len(self.employees)
-
-        # Track consecutive cycles of labor shortage:
-        # A firm has a labor shortage if:
-        # 1. It hired fewer workers than it demanded (demand not met), AND
-        # 2. It still had budget remaining to hire more workers (shortage due to unavailability)
-        has_labor_shortage = (
-            len(self.employees) < self.labor_demand and
-            self._budget_labor >= self.wage_offer  # Could afford at least one more worker
-        )
-        if has_labor_shortage:
-            self.labor_shortage_cycles += 1
-        else:
-            self.labor_shortage_cycles = 0  # Reset if shortage resolved
         self.employees.clear()
         
         # ---------------- Learning system updates ----------------------- #
