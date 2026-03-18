@@ -339,7 +339,6 @@ class FirmAgent(Agent):
             'budget_input_weight': self.random.uniform(0.8, 1.2),      # multiplier for input budget allocation
             'budget_capital_weight': self.random.uniform(0.8, 1.2),    # multiplier for capital budget allocation
             'risk_sensitivity': self.random.uniform(0.5, 1.5),         # hazard response aggressiveness
-            'wage_responsiveness': self.random.uniform(0.5, 1.5),      # wage adjustment responsiveness
         }
     
     def _record_performance(self) -> None:
@@ -564,10 +563,10 @@ class FirmAgent(Agent):
         # This replaces ad-hoc shortage-signal heuristics with a single economic principle:
         # firms pay workers a fraction of what they produce, so wages are structurally
         # bounded by firm revenue and self-correct during downturns.
-        labor_share = 0.5 * self.strategy.get('wage_responsiveness', 1.0)
+        LABOR_SHARE = 0.5  # fixed fraction of revenue per worker paid as wages
         if self.last_hired_labor > 0 and self.revenue_last_step > 0:
             revenue_per_worker = self.revenue_last_step / self.last_hired_labor
-            target_wage = revenue_per_worker * labor_share
+            target_wage = revenue_per_worker * LABOR_SHARE
         elif self.last_hired_labor == 0:
             # No workers last round — offer above market mean to attract someone
             target_wage = self.model.mean_wage * 1.1
