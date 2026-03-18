@@ -27,14 +27,12 @@ class HouseholdAgent(Agent):
         model: "EconomyModel",
         pos: Coords,
         money: float = 100.0,
-        labor_supply: float = 1.0,
         sector: str = "manufacturing",
     ) -> None:
         super().__init__(model)
-        
+
         # Note: pos is handled by Mesa's grid.place_agent(), not set here
         self.money: float = money
-        self.labor_supply: float = labor_supply
 
         # Sector specialisation – household will preferentially work for firms in this sector
         self.sector: str = sector
@@ -216,8 +214,6 @@ class HouseholdAgent(Agent):
         # Apply relocation cost: lose a share of money
         self.money *= (1 - self.RELOCATION_COST)
 
-        # Track migration for statistics
-        self.model.migrants_this_step += 1
 
     # ---------------- End of Household.step() bookkeeping -------- #
 
@@ -300,7 +296,6 @@ class FirmAgent(Agent):
         # Statistics
         self.production: float = 0.0  # units produced this step
         self.consumption: float = 0.0  # units of inputs consumed this step
-        self.sales_total: float = 0.0  # units sold (households + firms) this step
 
         # Cumulative damage to productive capacity (1 = undamaged)
         self.damage_factor: float = 1.0
@@ -319,7 +314,6 @@ class FirmAgent(Agent):
         self.relaxation_ratio: float = self.random.uniform(0.2, 0.5)
 
         # Budget reservation placeholders (set each step by prepare_budget)
-        self._budget_input: float = 0.0
         self._budget_capital: float = 0.0
         self._budget_labor: float = 0.0
         self._budget_input_per_supplier: dict[int, float] = {} # New placeholder for independent input budgets
@@ -328,7 +322,6 @@ class FirmAgent(Agent):
         learning_config = getattr(model, 'learning_config', {})
         self.learning_enabled: bool = getattr(model, 'firm_learning_enabled', self.LEARNING_ENABLED)
         self.memory_length: int = learning_config.get('memory_length', self.MEMORY_LENGTH)
-        self.mutation_rate: float = learning_config.get('mutation_rate', self.MUTATION_RATE)  
         self.adaptation_frequency: int = learning_config.get('adaptation_frequency', self.ADAPTATION_FREQUENCY)
         self.performance_history: list[dict] = []  # Track recent performance metrics
         self.strategy: dict[str, float] = self._initialize_strategy()
@@ -336,7 +329,6 @@ class FirmAgent(Agent):
         self.steps_since_adaptation: int = 0
         
         # Survival tracking for evolutionary pressure
-        self.birth_step: int = getattr(model, 'current_step', 0)
         self.survival_time: int = 0
 
     # ---------------- Learning System Methods ----------------------------- #
@@ -351,20 +343,9 @@ class FirmAgent(Agent):
         }
     
     def _record_performance(self) -> None:
-        """Track current performance metrics for learning evaluation."""
-        current_perf = {
-            'step': getattr(self.model, 'current_step', 0),
-            'money': self.money,
-            'capital_stock': self.capital_stock,
-            'production': self.production,
-            'inventory': self.inventory_output,
-            'limiting_factor': getattr(self, 'limiting_factor', ''),
-            'wage_offer': self.wage_offer,
-            'price': self.price,
-        }
-        
-        self.performance_history.append(current_perf)
-        
+        """Track production for fitness evaluation."""
+        self.performance_history.append({'production': self.production})
+
         # Keep only recent history
         if len(self.performance_history) > self.memory_length:
             self.performance_history = self.performance_history[-self.memory_length:]
@@ -461,7 +442,6 @@ class FirmAgent(Agent):
         # Track sales for demand-based pricing
         self.sales_this_step += qty
         self.revenue_this_step += total_cost
-        self.sales_total += qty
         return qty
 
     def sell_goods_to_firm(self, buyer: "FirmAgent", quantity: int = 1) -> int:
@@ -500,7 +480,6 @@ class FirmAgent(Agent):
         # Track sales for demand-based pricing
         self.sales_this_step += qty
         self.revenue_this_step += cost
-        self.sales_total += qty
         return qty
 
     # ---------------- Budgeting helper ---------------------------------- #
@@ -572,8 +551,6 @@ class FirmAgent(Agent):
             for supplier in self.connected_firms:
                 supplier_share = input_weights[supplier.unique_id] / total_input_weight
                 self._budget_input_per_supplier[supplier.unique_id] = reserve_input_total * supplier_share
-        else:
-            self._budget_input = reserve_input_total
 
     # -------------------------------------------------------------------- #
 
@@ -708,8 +685,6 @@ class FirmAgent(Agent):
         max_possible = min(labour_units / self.LABOR_COEFF, max_output_from_inputs, max_output_from_capital)
         possible_output = max_possible * self.damage_factor
 
-        capital_limited = possible_output < max_possible and (max_output_from_capital <= labour_units / self.LABOR_COEFF)
-
         # Determine primary limiting factor for diagnostic plotting
         # Compare theoretical maxima before damage factor applied
         labor_capacity = labour_units / self.LABOR_COEFF
@@ -797,7 +772,6 @@ class FirmAgent(Agent):
         self.revenue_last_step = self.revenue_this_step
         self.sales_this_step = 0.0
         self.revenue_this_step = 0.0
-        self.sales_total = 0.0
 
     # ---------------- Internal helpers -------------------------------- #
     def _labor_available(self) -> int:

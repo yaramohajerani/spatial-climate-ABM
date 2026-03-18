@@ -22,23 +22,6 @@ from damage_functions import get_damage_functions, get_region_from_coords
 Coords = Tuple[int, int]
 
 
-class StepCache:
-    """Cache for values computed once per step to avoid redundant iterations."""
-
-    __slots__ = ('total_household_money', 'avg_household_money', 'num_households',
-                 'total_labor_sold', 'valid')
-
-    def __init__(self):
-        self.valid = False
-        self.total_household_money = 0.0
-        self.avg_household_money = 0.0
-        self.num_households = 0
-        self.total_labor_sold = 0.0
-
-    def invalidate(self):
-        self.valid = False
-
-
 class EconomyModel(Model):
     """Spatial ABM of an economy subject to climate risk."""
 
@@ -96,9 +79,6 @@ class EconomyModel(Model):
         self._firms: List[FirmAgent] = []
         # Cached agents by sector
         self._firms_by_sector: Dict[str, List[FirmAgent]] = defaultdict(list)
-        self._households_by_sector: Dict[str, List[HouseholdAgent]] = defaultdict(list)
-        # Step-level cache for aggregates (invalidated each step)
-        self._step_cache = StepCache()
 
         # Calendar mapping -------------------------------------------------- #
         self.start_year: int = start_year
@@ -193,9 +173,6 @@ class EconomyModel(Model):
         # Initial wage preserved as constant for minimum wage floor (ILO convention)
         self.initial_mean_wage: float = 1.0
 
-        # Compatibility stub – we no longer model migration but keep the attribute
-        self.migrants_this_step: int = 0
-
         # DataCollector – track aggregate production each step for inspection
         # Note: Uses cached agent lists (m._firms, m._households) for efficiency
         self.datacollector = DataCollector(
@@ -236,7 +213,7 @@ class EconomyModel(Model):
                 "type": lambda a: type(a).__name__,
                 "fitness": lambda a: getattr(a, "fitness_score", np.nan),
                 "survival_time": lambda a: getattr(a, "survival_time", 0),
-                "sales_total": lambda a: getattr(a, "sales_last_step", np.nan),
+                "sales_last_step": lambda a: getattr(a, "sales_last_step", np.nan),
             },
         )
 
@@ -292,12 +269,6 @@ class EconomyModel(Model):
         # --- Step counter --- #
         self.current_step: int = 0
 
-        # Log of applied events (step, event_name, event_id)
-        self.applied_events: List[Tuple[int, str, int]] = []
-
-        # Labour market tracker: unemployment rate from previous step (0-1)
-        self.unemployment_rate_prev: float = 0.0
-        
         # Learning system tracking
         self.steps_since_replacement: int = 0
         self.total_firm_replacements: int = 0
@@ -311,12 +282,10 @@ class EconomyModel(Model):
         self._households.clear()
         self._firms.clear()
         self._firms_by_sector.clear()
-        self._households_by_sector.clear()
 
         for ag in self.agents:
             if isinstance(ag, HouseholdAgent):
                 self._households.append(ag)
-                self._households_by_sector[ag.sector].append(ag)
             elif isinstance(ag, FirmAgent):
                 self._firms.append(ag)
                 self._firms_by_sector[ag.sector].append(ag)
@@ -325,7 +294,6 @@ class EconomyModel(Model):
         """Register a single agent in the caches."""
         if isinstance(agent, HouseholdAgent):
             self._households.append(agent)
-            self._households_by_sector[agent.sector].append(agent)
         elif isinstance(agent, FirmAgent):
             self._firms.append(agent)
             self._firms_by_sector[agent.sector].append(agent)
@@ -335,37 +303,11 @@ class EconomyModel(Model):
         if isinstance(agent, HouseholdAgent):
             if agent in self._households:
                 self._households.remove(agent)
-            if agent in self._households_by_sector.get(agent.sector, []):
-                self._households_by_sector[agent.sector].remove(agent)
         elif isinstance(agent, FirmAgent):
             if agent in self._firms:
                 self._firms.remove(agent)
             if agent in self._firms_by_sector.get(agent.sector, []):
                 self._firms_by_sector[agent.sector].remove(agent)
-
-    def _update_step_cache(self) -> None:
-        """Compute step-level aggregates once per step."""
-        if self._step_cache.valid:
-            return
-        total = 0.0
-        for hh in self._households:
-            total += hh.money
-        n = len(self._households)
-        self._step_cache.total_household_money = total
-        self._step_cache.num_households = n
-        self._step_cache.avg_household_money = total / n if n > 0 else 0.0
-        self._step_cache.total_labor_sold = sum(hh.labor_sold for hh in self._households)
-        self._step_cache.valid = True
-
-    def get_total_household_money(self) -> float:
-        """Get cached total household money."""
-        self._update_step_cache()
-        return self._step_cache.total_household_money
-
-    def get_avg_household_money(self) -> float:
-        """Get cached average household money."""
-        self._update_step_cache()
-        return self._step_cache.avg_household_money
 
     # --------------------------------------------------------------------- #
     #                             INITIALISERS                               #
@@ -559,27 +501,14 @@ class EconomyModel(Model):
                 self.grid.place_agent(hh, pos)
 
     # --------------------------------------------------------------------- #
-    #                              UTILITIES                                #
-    # --------------------------------------------------------------------- #
-    def get_cell_risk(self, pos: Coords) -> float:
-        """Return hazard depth (m) for a given cell."""
-        return self.hazard_map.get(pos, 0.0)
-
-    # --------------------------------------------------------------------- #
     #                               MESA STEP                               #
     # --------------------------------------------------------------------- #
     def step(self) -> None:  # noqa: D401, N802
         """Advance model by one timestep (representing one year)."""
         self.current_step += 1
 
-        # Invalidate step cache at start of each step
-        self._step_cache.invalidate()
-
         # Each year: sample hazard independently for every cell based on RP
         self._sample_pixelwise_hazard()
-
-        # Reset placeholder counters
-        self.migrants_this_step = 0
 
         # ---------------- Budget planning phase --------------------- #
         for firm in self._firms:
@@ -603,14 +532,6 @@ class EconomyModel(Model):
         firms.sort(key=lambda f: (self._firm_levels.get(f.unique_id, 1.0), self.random.random()))
         for firm in firms:
             firm.step()
-
-        # ---------------- Labour market metrics ----------------------- #
-        total_households = len(self._households)
-        total_labor_sold = sum(hh.labor_sold for hh in self._households)
-        if total_households > 0:
-            self.unemployment_rate_prev = max(0.0, 1.0 - (total_labor_sold / total_households))
-        else:
-            self.unemployment_rate_prev = 0.0
 
         # ---------------- Record average wage for data collection ----- #
         if self._firms:
@@ -772,15 +693,6 @@ class EconomyModel(Model):
         out_path_obj = Path(out_path).with_suffix("")  # Remove extension if present
         agents_path = out_path_obj.with_name(f"{out_path_obj.stem}_agents.csv")
         agents_path.write_text(agents_df.to_csv(index=False))
-
-        # also save event log
-        if self.applied_events:
-            import csv
-            ev_path = Path(out_path).with_name("applied_events.csv")
-            with ev_path.open("w", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(["Step", "Event_Name", "Event_ID"])
-                writer.writerows(self.applied_events)
 
     # ------------------------------------------------------------------ #
     #                       EVENT APPLICATION LOGIC                      #
