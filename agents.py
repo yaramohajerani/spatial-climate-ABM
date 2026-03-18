@@ -305,13 +305,11 @@ class FirmAgent(Agent):
         # Cumulative damage to productive capacity (1 = undamaged)
         self.damage_factor: float = 1.0
 
-        # Sales tracking for demand-based pricing
+        # Sales tracking for pricing and wage mechanisms
         self.sales_last_step: float = 0.0
-        self.sales_prev_step: float = 0.0
         self.revenue_last_step: float = 0.0
         self.sales_this_step: float = 0.0
         self.revenue_this_step: float = 0.0
-        self.no_sales_streak: int = 0
 
         # ---------------- Risk behaviour parameters ------------------- #
         # Capital coefficient parameters
@@ -616,61 +614,38 @@ class FirmAgent(Agent):
         self.damage_factor = min(1.0, max(0.0, self.damage_factor))
 
         # ---------------- Dynamic pricing ----------------------------- #
-        # Supply-demand based pricing using inventory levels
+        # Markup pricing: price = unit_cost × (1 + markup), where markup is set
+        # by sell-through rate.  This replaces ad-hoc inventory-threshold bands,
+        # cost-floor ratchets, and price ceilings with one economic principle:
+        # prices track costs and adjust margins based on realised demand.
 
-        # Calculate cost floor based on firm's actual costs plus profit margin
-        # Use firm's own wage_offer (actual cost) not model mean
+        # Unit cost from actual production inputs
         avg_input_price = 0.0
         if self.connected_firms:
             avg_input_price = float(np.mean([s.price for s in self.connected_firms]))
-        # Variable cost per unit
-        variable_cost = (
+        unit_cost = (
             self.wage_offer * self.LABOR_COEFF
             + avg_input_price * self.INPUT_COEFF
         )
-        # Cost floor includes 20% profit margin to ensure firm solvency
-        cost_floor = variable_cost * 1.2
-        cost_floor = max(0.5, cost_floor)  # Minimum floor of 0.5
 
-        # Supply-demand indicator: compare inventory to recent production
-        # High inventory relative to sales = excess supply = lower price
-        # Low inventory relative to sales = excess demand = raise price
-        current_sales = self.sales_last_step
-
-        # Target inventory level: roughly 2x recent sales
-        target_inventory = max(2.0, current_sales * 2.0)
-        inventory_ratio = self.inventory_output / target_inventory if target_inventory > 0 else 1.0
-
-        if inventory_ratio > 2.0:
-            # Too much inventory: modest price cut to clear stock
-            price_adjustment = 0.97
-        elif inventory_ratio > 1.5:
-            # Slightly high inventory: small price cut
-            price_adjustment = 0.99
-        elif inventory_ratio < 0.5:
-            # Low inventory, high demand: raise price
-            price_adjustment = 1.03
-        elif inventory_ratio < 0.8:
-            # Slightly low inventory: small price increase
-            price_adjustment = 1.01
+        # Sell-through rate: fraction of available goods that were sold this step.
+        # Available = current inventory (post-sale) + what was just sold.
+        available = self.inventory_output + self.sales_this_step
+        if available > 0 and self.sales_this_step > 0:
+            sell_through = min(1.0, self.sales_this_step / available)
         else:
-            # Balanced: hold price
-            price_adjustment = 1.0
+            sell_through = 0.0
 
-        # Apply no-sales penalty more gently
-        if current_sales <= 0 and self.inventory_output > 0:
-            # Have inventory but no sales: modest price cut
-            price_adjustment = min(price_adjustment, 0.95)
+        # Target markup scales linearly with sell-through:
+        #   sell_through = 1.0  →  markup = +0.5  (strong demand, 50% margin)
+        #   sell_through = 0.5  →  markup =  0.0  (break-even)
+        #   sell_through = 0.0  →  markup = -0.5  (weak demand, sell below cost)
+        target_markup = sell_through - 0.5
+        target_price = unit_cost * (1.0 + target_markup)
 
-        self.price *= price_adjustment
-
-        # Clamp prices to sensible bounds
-        # Price should be above cost floor and below reasonable maximum
-        # Use cached household money from model for efficiency
-        avg_household_money = self.model.get_avg_household_money()
-        max_reasonable_price = max(cost_floor * 3.0, avg_household_money * 0.5)
-
-        self.price = float(max(cost_floor, min(self.price, max_reasonable_price)))
+        # Smooth adjustment: 20% toward target each step
+        self.price += 0.2 * (target_price - self.price)
+        self.price = float(max(0.5, self.price))  # absolute floor to prevent zero/negative
 
         # Reset per-step statistics
         self.production = 0.0
@@ -817,12 +792,7 @@ class FirmAgent(Agent):
                             self.capital_stock += bought
                             remaining_budget -= bought * seller.price
 
-        # Persist sales metrics for next step's pricing decisions
-        if self.sales_this_step <= 0:
-            self.no_sales_streak += 1
-        else:
-            self.no_sales_streak = 0
-        self.sales_prev_step = self.sales_last_step
+        # Persist sales metrics for next step's pricing and wage decisions
         self.sales_last_step = self.sales_this_step
         self.revenue_last_step = self.revenue_this_step
         self.sales_this_step = 0.0

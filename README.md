@@ -70,7 +70,7 @@ The model uses a `mesa.space.MultiGrid` with configurable resolution (default 1�
   - Retail: labor=0.5, input=0.4, capital=0.2 (moderate labor, low capital needs)
 - **Learning System**: Evolutionary strategy learning with 5 adaptive parameters and fitness-based selection
 - **Wage Setting**: Revenue-based wage targeting — wages track revenue per worker × labor share, with smooth adjustment (10% toward target per step); minimum wage floor at 40% of initial wage
-- **Dynamic Pricing**: Supply-demand driven adjustments with cost-floor mechanism
+- **Dynamic Pricing**: Markup pricing — price = unit cost × (1 + markup), where markup is set by sell-through rate; prices track costs bidirectionally with no cost-floor ratchet
 - **Damage Recovery**: Liquidity-dependent recovery rate (20%–50% per step) so stressed firms recover more slowly
 - **Input Procurement**: Inputs from connected suppliers are substitutable (sum-based)
 - **Budget Allocation**: Pure technical coefficient-based allocation ensures stable budget splits across labor, inputs, and capital regardless of nominal price levels; evolutionary strategy weights provide learned adjustments
