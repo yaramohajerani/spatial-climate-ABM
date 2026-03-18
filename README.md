@@ -68,7 +68,7 @@ The model uses a `mesa.space.MultiGrid` with configurable resolution (default 1�
   - Commodity: labor=0.6, input=0.0, capital=0.7 (capital-intensive extraction, no upstream inputs)
   - Manufacturing: labor=0.3, input=0.6, capital=0.6 (automated, capital & input intensive)
   - Retail: labor=0.5, input=0.4, capital=0.2 (moderate labor, low capital needs)
-- **Learning System**: Evolutionary strategy learning with 4 adaptive parameters and fitness-based selection
+- **Learning System**: Evolutionary strategy learning with 5 adaptive parameters and fitness-based selection
 - **Wage Setting**: Revenue-based wage targeting — wages track revenue per worker × labor share, with smooth adjustment (10% toward target per step); minimum wage floor at 40% of initial wage
 - **Dynamic Pricing**: Markup pricing — price = unit cost × (1 + markup), where markup is set by sell-through rate; prices track costs bidirectionally with no cost-floor ratchet
 - **Damage Recovery**: Liquidity-dependent recovery rate (20%–50% per step) so stressed firms recover more slowly
@@ -100,7 +100,7 @@ Damage is calculated using JRC Global Flood Depth-Damage Functions:
 - **Interpolation**: Linear interpolation between depth-damage points
 
 ### Firm Learning System
-- **Strategy Parameters**: Budget allocation weights (labor/input/capital) and risk sensitivity
+- **Strategy Parameters**: Budget allocation weights, risk sensitivity, price aggressiveness, wage responsiveness (controls labor share of revenue)
 - **Performance Tracking**: 10-step rolling window (2.5 years at quarterly resolution) of money, production, and capital stock
 - **Fitness Evaluation**: Time-averaged production over the memory window — a single metric that implicitly captures all aspects of firm health. Robustness verified via sensitivity analysis across 5 memory window lengths.
 - **Population Dynamics**: Bankrupt firms (money below survival threshold) replaced by mutated offspring of successful firms; no persistent-decline trigger to avoid procyclical wealth destruction during systemic crises
@@ -228,7 +228,7 @@ Specify firm locations and supply chains via JSON:
   | Retail | 0.5 | 0.4 | 0.2 | Moderate labor, low capital needs |
 - **Depreciation Rate**: 0.2% per step
 - **Consumption Ratios**: Configurable household spending by sector (default: 25% commodity, 45% manufacturing, 30% retail)
-- **Wage Mechanism**: Revenue-based targeting — firms set wages at `revenue_per_worker × 0.5` (fixed labor share), with 10% smooth adjustment per step. Wages are structurally bounded by revenue and self-correct during downturns.
+- **Wage Mechanism**: Revenue-based targeting — firms set wages at `revenue_per_worker × labor_share` (default labor share 0.5, modulated by learned `wage_responsiveness`), with 10% smooth adjustment per step. Wages are structurally bounded by revenue and self-correct during downturns.
 - **Minimum Wage Floor**: 40% of initial mean wage, a proxy consistent with ILO (2016) observations (40–60% of median)
 
 ### Learning Parameters
