@@ -59,3 +59,21 @@ Tracking changes to the model methodology that need to be reflected in the manus
 - **What was kept**: Absolute price floor of 0.5 (prevents degenerate zero/negative prices). Unit cost computation (wage × LABOR_COEFF + input_price × INPUT_COEFF) serves as the cost anchor, not a floor.
 - **Where**: `agents.py`, `FirmAgent.step()` dynamic pricing section. Removed `no_sales_streak` and `sales_prev_step` from `FirmAgent.__init__()` and end-of-step bookkeeping.
 - **Manuscript impact**: Replace pricing description with markup pricing mechanism. Note that prices are anchored to unit costs with demand-responsive margins. The sell-through → markup mapping is the single pricing rule; no inventory thresholds or cost floors. Below-cost pricing during weak demand is realistic (clearance/loss-leader behaviour) and breaks the supply-chain price ratchet.
+
+## 10. Mean hazard sampling (replaces max sampling)
+- **What**: Hazard rasters are now resampled to the model grid using **mean** aggregation instead of **max**. The preprocessed GeoTIFF filenames reflect this (`*-mean.tif` instead of the previous convention).
+- **Why**: Max sampling produced overly extreme flood depths at the model grid scale (0.25°), since it selected the single worst pixel within each ~25km cell. Mean sampling better represents the average hazard exposure across the cell, producing more realistic damage levels and more stable economic dynamics.
+- **Where**: `prepare_hazard/preprocess_geotiff.py` resampling step; all `*_parameters.json` files updated to point to mean-sampled rasters.
+- **Manuscript impact**: Update hazard preprocessing description to note mean (not max) aggregation. Justify as representative average exposure rather than worst-case pixel.
+
+## 11. Expanded firm network (65 → 100 firms)
+- **What**: The firm topology was expanded from 65 to 100 firms (`riverine_firm_topology_100.json`).
+- **Why**: A larger network provides better statistical coverage of the supply chain and more robust emergent dynamics. 100 firms with 1000 households gives a 10:1 household-to-firm ratio.
+- **Where**: `riverine_firm_topology_100.json`; `aqueduct_riverine_parameters_rcp8p5.json` updated to reference the new topology.
+- **Manuscript impact**: Update network size in model description. Note 100 firms and 1000 households.
+
+## 12. Real-unit presentation for monetary metrics
+- **What**: Firm liquidity and wage time series are now shown in real units (deflated by the mean price at each time step) rather than nominal dollars. Household consumption replaces the employment panel in the default plot layout (employment is near 100% throughout and can be stated in text).
+- **Why**: In a closed economy without a monetary authority, nominal prices drift upward over time. Plotting wages and liquidity in nominal terms overstates firm health and masks purchasing-power erosion. Dividing by mean price converts to constant-purchasing-power units, making cross-scenario and cross-period comparisons meaningful.
+- **Where**: `plot_from_csv_paper.py` — price deflator built per scenario; applied to `Firm_Liquidity` and `Mean_Wage` lines (main + sector breakdowns). Default 3×2 layout changed to Production, Capital, Liquidity (real), Household Consumption, Wage (real), Price. Former employment panel moved to optional `--show-inventory` row.
+- **Manuscript impact**: Update figure descriptions and axis labels to note real units (deflated by mean price). Replace employment panel discussion with a sentence noting near-full employment. Add household consumption panel description.

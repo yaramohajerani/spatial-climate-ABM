@@ -41,7 +41,7 @@ def parse_args():
     parser.add_argument(
         "--show-inventory",
         action="store_true",
-        help="Add a 4th row showing firm inventory and household liquidity"
+        help="Add a 4th row showing firm inventory and household labor sold"
     )
     return parser.parse_args()
 
@@ -202,17 +202,30 @@ def main():
             "zorder": 1
         }
     
+    # Build per-scenario price deflator for converting nominal → real values.
+    # Maps (scenario, year_or_step) → mean_price.  Metrics tagged as "real"
+    # will be divided by the deflator so they are expressed in base-period units.
+    price_deflator: dict[str, dict] = {}
+    for scenario, grp in df_combined.groupby("Scenario"):
+        if "Mean_Price" in grp.columns:
+            deflator = grp.set_index(x_col)["Mean_Price"].to_dict()
+            price_deflator[scenario] = deflator
+
     # Define time-series metrics (separate from bottlenecks)
-    # Order: Production, Capital, Liquidity, Labor, Wage, Price, [Inventory, Household Liquidity]
+    # Order: Production, Capital, Liquidity (real), Consumption, Wage (real), Price
+    # Optional 4th row: Firm Inventory + Household Labor Sold
     ts_metrics = [
         "Firm_Production", "Firm_Capital",
-        "Firm_Liquidity", "Household_Labor_Sold",
+        "Firm_Liquidity", "Household_Consumption",
         "Mean_Wage", "Mean_Price",
     ]
 
-    # Optionally add inventory row
+    # Optionally add diagnostic row
     if args.show_inventory:
-        ts_metrics.extend(["Firm_Inventory", "Household_Liquidity"])
+        ts_metrics.extend(["Firm_Inventory", "Household_Labor_Sold"])
+
+    # Metrics that should be deflated (divided by mean price) to show real values
+    real_metrics = {"Firm_Liquidity", "Mean_Wage"}
 
     # Define bottleneck metrics separately
     bottleneck_metrics = [
@@ -228,16 +241,27 @@ def main():
     # Units for y-axis labels
     units = {
         "Firm_Production": "Units of Goods",
-        "Firm_Liquidity": "$",
+        "Firm_Liquidity": "Real Units ($ / Mean Price)",
         "Firm_Capital": "Units of Capital",
         "Firm_Inventory": "Units of Goods",
         "Mean_Price": "$ / Unit of Goods",
-        "Mean_Wage": "$ / Unit of Labor",
+        "Mean_Wage": "Real Units ($ / Mean Price)",
         "Household_Labor_Sold": "Units of Labor",
         "Household_Consumption": "Units of Goods",
         "Household_Liquidity": "$",
     }
     
+    def deflate(x_vals, y_vals, scenario, metric_name):
+        """Divide y-values by the mean price at each x-value if metric is real."""
+        if metric_name not in real_metrics:
+            return y_vals
+        deflator = price_deflator.get(scenario, {})
+        if not deflator:
+            return y_vals
+        prices = np.array([deflator.get(x, np.nan) for x in x_vals])
+        prices[prices == 0] = np.nan
+        return np.where(np.isfinite(prices), y_vals / prices, y_vals)
+
     def plot_metric(metric_name, ax):
         """Plot a single metric.
 
@@ -266,7 +290,7 @@ def main():
                 style = scenario_style_map[scenario]
                 if metric_name in grp.columns:
                     x_data = grp[x_col].values
-                    y_data = grp[metric_name].values
+                    y_data = deflate(x_data, grp[metric_name].values, scenario, metric_name)
                     ax.plot(x_data, y_data,
                            color=style["color"], linestyle=style["linestyle"],
                            label=f"Mean - {scenario}", linewidth=1.5, alpha=0.7, zorder=3)
@@ -275,21 +299,21 @@ def main():
             if show_sector_series and not firm_agents_df.empty and metric_name in ["Mean_Price", "Mean_Wage"]:
                 agent_col = "price" if metric_name == "Mean_Price" else "wage"
                 sectors = sorted(firm_agents_df["sector"].dropna().unique())
-                
+
                 for scenario in unique_scenarios:
                     if not firm_agents_df.empty and "Scenario" in firm_agents_df.columns:
                         df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
                     else:
                         df_scen = firm_agents_df  # Use all data if no scenario column
-                    
+
                     df_scen = add_year_from_step(df_scen, scenario)
                     style = scenario_style_map[scenario]
-                    
+
                     for idx_sec, sector in enumerate(sectors):
                         sector_data = df_scen[df_scen["sector"] == sector]
                         if sector_data.empty:
                             continue
-                        
+
                         # Use Year column if available, otherwise Step
                         if "Year" in sector_data.columns:
                             grp = sector_data.dropna(subset=["Year"]).groupby("Year")[agent_col].mean()
@@ -299,13 +323,14 @@ def main():
                             grp = sector_data.groupby("Step")[agent_col].mean()
                         if grp.empty:
                             continue
-                            
+
                         x_vals = grp.index
+                        y_vals = deflate(np.array(x_vals), grp.values, scenario, metric_name)
                         sector_style = get_sector_style(scenario, idx_sec)
-                        
-                        ax.plot(x_vals, grp.values, 
+
+                        ax.plot(x_vals, y_vals,
                                label=f"{sector} - {scenario}", **sector_style)
-        
+
         elif metric_name in firm_metric_map:
             # Plot firm metrics with main lines and sector breakdown
             agent_col = firm_metric_map[metric_name]
@@ -333,7 +358,7 @@ def main():
                     continue
 
                 x_vals = np.array(mean_grp.index)
-                y_vals = mean_grp.values
+                y_vals = deflate(x_vals, mean_grp.values, scenario, metric_name)
                 style = scenario_style_map[scenario]
                 ax.plot(x_vals, y_vals,
                        color=style["color"], linewidth=1.5, alpha=0.7, linestyle=style["linestyle"],
@@ -342,16 +367,16 @@ def main():
             # Add sector lines
             if show_sector_series and not firm_agents_df.empty:
                 sectors = sorted(firm_agents_df["sector"].dropna().unique())
-                
+
                 for scenario in unique_scenarios:
                     if not firm_agents_df.empty and "Scenario" in firm_agents_df.columns:
                         df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
                     else:
                         df_scen = firm_agents_df  # Use all data if no scenario column
-                    
+
                     df_scen = add_year_from_step(df_scen, scenario)
                     style = scenario_style_map[scenario]
-                    
+
                     for idx_sec, sector in enumerate(sectors):
                         sector_data = df_scen[df_scen["sector"] == sector]
                         # Use Year column if available, otherwise Step
@@ -363,11 +388,12 @@ def main():
                             grp = sector_data.groupby("Step")[agent_col].mean()
                         if grp.empty:
                             continue
-                            
-                        x_vals = grp.index
+
+                        x_vals = np.array(grp.index)
+                        y_vals = deflate(x_vals, grp.values, scenario, metric_name)
                         sector_style = get_sector_style(scenario, idx_sec)
-                        
-                        ax.plot(x_vals, grp.values, 
+
+                        ax.plot(x_vals, y_vals,
                                label=f"{sector} - {scenario}", **sector_style)
         
         elif metric_name in household_metric_map:
