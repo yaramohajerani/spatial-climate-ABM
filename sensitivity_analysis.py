@@ -5,8 +5,14 @@ values to verify that qualitative conclusions are robust to the
 choice of production averaging window.
 
 Usage:
+    # Full run (saves timeseries + summary CSVs and plot)
     python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json
+
+    # Quick test (50 steps)
     python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --quick
+
+    # Re-plot from existing timeseries CSV (no simulation needed)
+    python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --from-csv sensitivity_timeseries.csv
 """
 
 import argparse
@@ -55,6 +61,10 @@ def _parse_args():
     p.add_argument(
         "--seed", type=int, default=None,
         help="Override random seed from param file",
+    )
+    p.add_argument(
+        "--from-csv", default=None,
+        help="Path to existing sensitivity timeseries CSV; skips simulation and just plots",
     )
     return p.parse_args()
 
@@ -108,15 +118,49 @@ def run_scenario(params: dict, events: list, memory_length: int,
     return model.results_to_dataframe()
 
 
+# Columns to save in the timeseries CSV
+TIMESERIES_COLS = [
+    "Year", "Step", "Firm_Production", "Firm_Capital", "Firm_Wealth",
+    "Mean_Wage", "Mean_Price", "Household_Consumption",
+    "Household_Labor_Sold", "Total_Firms",
+]
+
+
+def save_timeseries(results: dict[str, pd.DataFrame], out_path: str):
+    """Save per-step timeseries data for all memory configs to a single CSV."""
+    frames = []
+    for label, df in results.items():
+        kept = df[[c for c in TIMESERIES_COLS if c in df.columns]].copy()
+        kept.insert(0, "Memory_Window", label)
+        frames.append(kept)
+    combined = pd.concat(frames, ignore_index=True)
+    combined.to_csv(out_path, index=False)
+    print(f"Timeseries data saved to {out_path}")
+
+
+def load_timeseries(csv_path: str) -> dict[str, pd.DataFrame]:
+    """Load timeseries CSV back into a dict keyed by memory window label."""
+    df = pd.read_csv(csv_path)
+    results = {}
+    for label, grp in df.groupby("Memory_Window", sort=False):
+        results[label] = grp.drop(columns=["Memory_Window"]).reset_index(drop=True)
+    return results
+
+
 def plot_sensitivity(results: dict[str, pd.DataFrame], out_path: str,
                      num_households: int):
-    """Plot key metrics across all memory length configurations."""
+    """Plot key metrics across all memory length configurations.
+
+    Panels match the main timeseries figure layout:
+      Production, Capital, Liquidity (real), Consumption, Wage (real), Price
+    """
+    # (column, title, ylabel, normalisation mode)
     metrics = [
-        ("Firm_Production", "Mean Firm Production", "Units", "firm_mean"),
-        ("Household_Labor_Sold", "Employment Rate", "Fraction", "employment"),
-        ("Firm_Capital", "Mean Firm Capital", "Units", "firm_mean"),
-        ("Firm_Wealth", "Mean Firm Liquidity", "$", "firm_mean"),
-        ("Mean_Wage", "Mean Wage", "$ / Unit of Labour", "raw"),
+        ("Firm_Production", "Mean Firm Production", "Units of Goods", "firm_mean"),
+        ("Firm_Capital", "Mean Firm Capital", "Units of Capital", "firm_mean"),
+        ("Firm_Wealth", "Mean Firm Liquidity", "Real Units ($ / Mean Price)", "firm_mean_real"),
+        ("Household_Consumption", "Household Consumption", "Units of Goods", "hh_mean"),
+        ("Mean_Wage", "Mean Wage", "Real Units ($ / Mean Price)", "real"),
         ("Mean_Price", "Mean Price", "$ / Unit of Goods", "raw"),
     ]
 
@@ -128,12 +172,19 @@ def plot_sensitivity(results: dict[str, pd.DataFrame], out_path: str,
     for idx, (col, title, ylabel, norm_mode) in enumerate(metrics):
         ax = axes[idx]
         for (label, df), color in zip(results.items(), colors):
+            if col not in df.columns:
+                continue
             x = df["Year"] if "Year" in df.columns else df.index
             n_firms = df["Total_Firms"]
+            price = df["Mean_Price"].replace(0, np.nan)
 
             if norm_mode == "firm_mean":
                 y = df[col] / n_firms
-            elif norm_mode == "employment":
+            elif norm_mode == "firm_mean_real":
+                y = (df[col] / n_firms) / price
+            elif norm_mode == "real":
+                y = df[col] / price
+            elif norm_mode == "hh_mean":
                 y = df[col] / num_households
             else:
                 y = df[col]
@@ -166,21 +217,23 @@ def make_summary_table(results: dict[str, pd.DataFrame],
     for label, df in results.items():
         last_decade = df.tail(steps_per_year * 10)
         n_firms = last_decade["Total_Firms"].mean()
-
-        prod = last_decade["Firm_Production"] / n_firms
-        empl = last_decade["Household_Labor_Sold"] / num_households
-        cap = last_decade["Firm_Capital"] / n_firms
-        wage = last_decade["Mean_Wage"]
         price = last_decade["Mean_Price"]
 
-        rows.append({
+        prod = last_decade["Firm_Production"] / n_firms
+        cap = last_decade["Firm_Capital"] / n_firms
+        wage_nominal = last_decade["Mean_Wage"]
+        wage_real = wage_nominal / price
+        consumption = last_decade["Household_Consumption"] / num_households
+
+        row = {
             "Memory Window": label,
             "Production": f"{prod.mean():.1f} ± {prod.std():.1f}",
-            "Employment": f"{empl.mean():.2f} ± {empl.std():.2f}",
             "Capital": f"{cap.mean():.1f} ± {cap.std():.1f}",
-            "Wage": f"{wage.mean():.2f} ± {wage.std():.2f}",
+            "Real Wage": f"{wage_real.mean():.2f} ± {wage_real.std():.2f}",
+            "Consumption": f"{consumption.mean():.2f} ± {consumption.std():.2f}",
             "Price": f"{price.mean():.1f} ± {price.std():.1f}",
-        })
+        }
+        rows.append(row)
 
     return pd.DataFrame(rows)
 
@@ -188,21 +241,34 @@ def make_summary_table(results: dict[str, pd.DataFrame],
 def main():
     args = _parse_args()
     params = _load_params(args.param_file)
-    events = _parse_events(params.get("rp_files", []))
-
-    seed = args.seed if args.seed is not None else int(params.get("seed", 42))
-    n_steps = 50 if args.quick else int(params.get("steps", 300))
     steps_per_year = int(params.get("steps_per_year", 4))
     num_households = int(params.get("num_households", 100))
 
-    results: dict[str, pd.DataFrame] = {}
+    if args.from_csv:
+        # Re-plot from existing timeseries data
+        csv_path = Path(args.from_csv)
+        if not csv_path.exists():
+            raise SystemExit(f"Timeseries CSV not found: {csv_path}")
+        print(f"Loading timeseries from {csv_path}")
+        results = load_timeseries(str(csv_path))
+    else:
+        # Run simulations
+        events = _parse_events(params.get("rp_files", []))
+        seed = args.seed if args.seed is not None else int(params.get("seed", 42))
+        n_steps = 50 if args.quick else int(params.get("steps", 300))
 
-    for label, mem_len in MEMORY_CONFIGS.items():
-        print(f"\n{'='*60}")
-        print(f"Running: {label}  memory_length={mem_len}")
-        print(f"{'='*60}")
-        df = run_scenario(params, events, mem_len, n_steps, seed)
-        results[label] = df
+        results: dict[str, pd.DataFrame] = {}
+
+        for label, mem_len in MEMORY_CONFIGS.items():
+            print(f"\n{'='*60}")
+            print(f"Running: {label}  memory_length={mem_len}")
+            print(f"{'='*60}")
+            df = run_scenario(params, events, mem_len, n_steps, seed)
+            results[label] = df
+
+        # Save full timeseries for future re-plotting
+        ts_path = Path(args.out).with_name("sensitivity_timeseries.csv")
+        save_timeseries(results, str(ts_path))
 
     plot_sensitivity(results, args.out, num_households)
 
