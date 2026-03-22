@@ -9,6 +9,7 @@ __pycache__/
 # system files
 .DS_Store
 CLAUDE.md
+AGENTS.md
 
 # data
 data/
@@ -21,6 +22,9 @@ data/
 *.mov
 network_topology_*.json
 *.pdf
+
+JASSS0
+*.tex
 
 # Distribution / packaging
 .Python

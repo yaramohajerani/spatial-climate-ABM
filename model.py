@@ -15,8 +15,6 @@ from mesa.space import MultiGrid
 
 from agents import FirmAgent, HouseholdAgent
 from hazard_utils import lazy_hazard_from_geotiffs, LazyHazard
-from trophic_utils import compute_trophic_levels
-
 from damage_functions import get_damage_functions, get_region_from_coords
 
 Coords = Tuple[int, int]
@@ -24,6 +22,16 @@ Coords = Tuple[int, int]
 
 class EconomyModel(Model):
     """Spatial ABM of an economy subject to climate risk."""
+
+    FINAL_CONSUMPTION_SECTORS = {"retail", "wholesale", "services"}
+    SECTOR_ORDER = {
+        "commodity": 0,
+        "agriculture": 0,
+        "manufacturing": 1,
+        "retail": 2,
+        "wholesale": 2,
+        "services": 2,
+    }
 
     def __init__(
         self,
@@ -66,12 +74,12 @@ class EconomyModel(Model):
         self.min_money_survival: float = self.learning_config.get('min_money_survival', 1.0)
         self.replacement_frequency: int = self.learning_config.get('replacement_frequency', 10)
 
-        # Household consumption ratios by sector (configurable)
-        # Default: 30% commodity, 70% manufacturing - ensures demand for full supply chain
+        # Household consumption ratios across final-good sectors.
+        # Upstream sectors sell to firms, not directly to households.
         self.consumption_ratios: dict = consumption_ratios or {
-            'commodity': 0.3,
-            'manufacturing': 0.7,
+            'retail': 1.0,
         }
+        self.final_consumption_sectors = set(self.FINAL_CONSUMPTION_SECTORS)
 
         # -------------------- Performance optimization caches -------------------- #
         # Cached agent lists by type (updated when agents added/removed)
@@ -191,6 +199,7 @@ class EconomyModel(Model):
                 "Labor_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "labor"),
                 "Capital_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "capital"),
                 "Input_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "input"),
+                "Demand_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "demand"),
                 "Average_Firm_Fitness": lambda m: np.mean([f.fitness_score for f in m._firms]) if m._firms else 0.0,
                 "Firm_Replacements": lambda m: getattr(m, 'total_firm_replacements', 0),
                 "Total_Sales": lambda m: sum(f.sales_last_step for f in m._firms),
@@ -214,6 +223,7 @@ class EconomyModel(Model):
                 "fitness": lambda a: getattr(a, "fitness_score", np.nan),
                 "survival_time": lambda a: getattr(a, "survival_time", 0),
                 "sales_last_step": lambda a: getattr(a, "sales_last_step", np.nan),
+                "household_sales_last_step": lambda a: getattr(a, "household_sales_last_step", np.nan),
             },
         )
 
@@ -243,28 +253,8 @@ class EconomyModel(Model):
         # NOTE: With LazyHazard, we no longer need CLIMADA exposures/centroids.
         # Hazard sampling is done directly from GeoTIFF files at agent locations.
 
-        # ------------------ Pre-compute trophic levels ------------------- #
-        firm_adj_init = {
-            ag.unique_id: [s.unique_id for s in ag.connected_firms]
-            for ag in self.agents if isinstance(ag, FirmAgent)
-        }
-        self._firm_levels: dict[int, float] = compute_trophic_levels(firm_adj_init)
-
-        # ------------------------------------------------------------ #
-        #  Give firms an initial stock of finished goods so downstream
-        #  sectors can begin purchasing inputs right away.  We assign a
-        #  larger buffer to low-trophic (root) firms because they have
-        #  no material suppliers and thus seed the whole production chain.
-        # ------------------------------------------------------------ #
-        for ag in self.agents:
-            if isinstance(ag, FirmAgent):
-                lvl = self._firm_levels.get(ag.unique_id, 1.0)
-                if lvl <= 1.0:
-                    ag.inventory_output = 20  # root suppliers
-                elif lvl <= 2.0:
-                    ag.inventory_output = 10  # near-root suppliers
-                else:
-                    ag.inventory_output = 5   # downstream firms
+        # Demand-based initial inventories and working capital.
+        self._initialize_firm_operating_state()
 
         # --- Step counter --- #
         self.current_step: int = 0
@@ -308,6 +298,133 @@ class EconomyModel(Model):
                 self._firms.remove(agent)
             if agent in self._firms_by_sector.get(agent.sector, []):
                 self._firms_by_sector[agent.sector].remove(agent)
+
+    def get_final_consumption_ratios(self) -> Dict[str, float]:
+        """Return household demand shares over final-good sectors only."""
+
+        ratios = {
+            sector: float(weight)
+            for sector, weight in self.consumption_ratios.items()
+            if sector in self.final_consumption_sectors and float(weight) > 0
+        }
+        if not ratios:
+            available_final = {
+                firm.sector
+                for firm in self._firms
+                if firm.sector in self.final_consumption_sectors
+            }
+            if not available_final:
+                return {}
+            equal_share = 1.0 / len(available_final)
+            return {sector: equal_share for sector in sorted(available_final)}
+
+        total = sum(ratios.values())
+        if total <= 0:
+            return {}
+        return {sector: weight / total for sector, weight in ratios.items()}
+
+    def _sector_priority(self, firm: FirmAgent) -> tuple[int, float]:
+        """Sort firms by broad supply-chain tier with random tie breaks."""
+
+        return (self.SECTOR_ORDER.get(firm.sector, 1), self.random.random())
+
+    def _solve_initial_expected_sales(self) -> Dict[int, float]:
+        """Bootstrap firm demand from final-demand shares scaled to labour supply."""
+
+        expected_sales = {firm.unique_id: 0.0 for firm in self._firms}
+        final_ratios = self.get_final_consumption_ratios()
+        total_ratio = sum(final_ratios.values())
+        if total_ratio <= 0:
+            return expected_sales
+
+        # Start from one unit of household expenditure distributed by the
+        # configured final-demand shares, then scale the resulting economy-wide
+        # flow so the implied labour demand matches the available workforce.
+        for sector, ratio in final_ratios.items():
+            sector_firms = [f for f in self._firms if f.sector == sector]
+            if not sector_firms:
+                continue
+            mean_price = float(np.mean([max(f.price, 0.5) for f in sector_firms]))
+            if mean_price <= 0:
+                continue
+            sector_units = (ratio / total_ratio) / mean_price
+            per_firm_units = sector_units / len(sector_firms)
+            for firm in sector_firms:
+                expected_sales[firm.unique_id] += per_firm_units
+
+        base_demand = expected_sales.copy()
+
+        # Iterate q = d + A q, where A propagates intermediate-input demand upstream.
+        for _ in range(200):
+            updated = base_demand.copy()
+            for buyer in self._firms:
+                if buyer.INPUT_COEFF <= 0 or not buyer.connected_firms:
+                    continue
+                supplier_share = buyer.INPUT_COEFF / len(buyer.connected_firms)
+                if supplier_share <= 0:
+                    continue
+                buyer_sales = expected_sales.get(buyer.unique_id, 0.0)
+                if buyer_sales <= 0:
+                    continue
+                for supplier in buyer.connected_firms:
+                    updated[supplier.unique_id] += supplier_share * buyer_sales
+
+            max_delta = max(abs(updated[uid] - expected_sales[uid]) for uid in expected_sales) if expected_sales else 0.0
+            expected_sales = updated
+            if max_delta < 1e-6:
+                break
+
+        labour_per_unit_expenditure = sum(
+            expected_sales[firm.unique_id] * firm.LABOR_COEFF
+            for firm in self._firms
+        )
+        available_labour = float(len(self._households))
+        if labour_per_unit_expenditure > 0 and available_labour > 0:
+            scale = available_labour / labour_per_unit_expenditure
+            expected_sales = {
+                uid: sales * scale
+                for uid, sales in expected_sales.items()
+            }
+
+        return expected_sales
+
+    def _seed_firm_operating_state(
+        self,
+        firm: FirmAgent,
+        *,
+        expected_sales: float,
+        inventory_coverage: float = 1.0,
+        capital_coverage: float = 1.0,
+    ) -> None:
+        """Set initial demand expectations, stock buffers, and productive capacity."""
+
+        expected_sales = max(1.0, float(expected_sales))
+        inventory_target = max(1.0, expected_sales * inventory_coverage)
+        capital_target = max(1.0, expected_sales * firm.capital_coeff * capital_coverage)
+        avg_input_price = float(np.mean([s.price for s in firm.connected_firms])) if firm.connected_firms else 0.0
+        unit_variable_cost = (
+            firm.wage_offer * firm.LABOR_COEFF
+            + avg_input_price * firm.INPUT_COEFF
+        )
+        working_capital = max(10.0, expected_sales * unit_variable_cost * 1.25)
+
+        firm.expected_sales = expected_sales
+        firm.base_inventory_target = inventory_target
+        firm.base_capital_target = capital_target
+        firm.target_capital_stock = capital_target
+        firm.inventory_output = max(firm.inventory_output, inventory_target)
+        firm.capital_stock = max(firm.capital_stock, capital_target)
+        firm.money = max(firm.money, working_capital)
+
+    def _initialize_firm_operating_state(self) -> None:
+        """Initialize firms from demand-consistent inventories and working capital."""
+
+        expected_sales = self._solve_initial_expected_sales()
+        for firm in self._firms:
+            self._seed_firm_operating_state(
+                firm,
+                expected_sales=expected_sales.get(firm.unique_id, 1.0),
+            )
 
     # --------------------------------------------------------------------- #
     #                             INITIALISERS                               #
@@ -510,28 +627,37 @@ class EconomyModel(Model):
         # Each year: sample hazard independently for every cell based on RP
         self._sample_pixelwise_hazard()
 
-        # ---------------- Budget planning phase --------------------- #
+        # ---------------- Demand planning phase --------------------- #
         for firm in self._firms:
-            firm.prepare_budget()
+            firm.plan_operations()
 
-        # Agent actions – households then firms ---------------------- #
-        # This ensures labour contracts are settled before firms attempt
-        # to produce, preventing upstream sectors from perpetually running
-        # without inputs due to timing randomness.
+        # Agent actions are phased so labour is hired before production and
+        # households consume after firms have produced in the same period.
 
-        # 1. Households – labour supply & consumption decisions
+        # 1. Households – labour supply only
         households = self._households.copy()  # copy to allow shuffle without affecting cache
         self.random.shuffle(households)
         for hh in households:
-            hh.step()
+            hh.supply_labor()
 
         # 2. Firms – hire labour accumulated in phase 1, purchase inputs,
         #    produce goods, and adjust prices/wages.
         firms = self._firms.copy()
-        # Sort by trophic level so upstream suppliers act before downstream buyers
-        firms.sort(key=lambda f: (self._firm_levels.get(f.unique_id, 1.0), self.random.random()))
+        # Sort by broad supply-chain tier so upstream sectors replenish before downstream buyers.
+        firms.sort(key=self._sector_priority)
         for firm in firms:
             firm.step()
+
+        # 3. Households consume the goods produced in the current period.
+        households = self._households.copy()
+        self.random.shuffle(households)
+        for hh in households:
+            hh.consume_goods()
+
+        # 4. Close the accounting period after all firm-to-firm and
+        #    household transactions have been recorded.
+        for firm in firms:
+            firm.close_step()
 
         # ---------------- Record average wage for data collection ----- #
         if self._firms:
@@ -597,9 +723,10 @@ class EconomyModel(Model):
             # Store the position before any modifications
             failed_pos = failed_firm.pos
 
-            # New firm starts with fixed capital
-            new_money = 100.0
-            new_capital_stock = 100.0
+            # New firms are reseeded from current demand conditions below, so
+            # start with a minimal balance sheet rather than an arbitrary size.
+            new_money = 10.0
+            new_capital_stock = 1.0
             
             # Create new firm with inherited strategy
             new_firm = FirmAgent(
@@ -645,26 +772,16 @@ class EconomyModel(Model):
             self.agents.remove(failed_firm)  # CRITICAL: Also remove from model's agent list
             self.grid.place_agent(new_firm, failed_pos)
             self._register_agent(new_firm)  # Update caches
+            self._seed_firm_operating_state(
+                new_firm,
+                expected_sales=max(failed_firm.expected_sales, parent.expected_sales * 0.5, 1.0),
+            )
             new_firms.append(new_firm)
             
             self.total_firm_replacements += 1
             print(f"[EVOLUTION] Step {self.current_step}: Replaced failed firm {failed_firm.unique_id} with offspring {new_firm.unique_id} (total: {self.total_firm_replacements})")
 
-        # Refresh trophic levels and seed inventory for replacements to keep supply chains running
-        if new_firms:
-            firm_adj = {
-                f.unique_id: [s.unique_id for s in f.connected_firms]
-                for f in self.agents if isinstance(f, FirmAgent)
-            }
-            self._firm_levels = compute_trophic_levels(firm_adj)
-            for nf in new_firms:
-                lvl = self._firm_levels.get(nf.unique_id, 1.0)
-                if lvl <= 1.0:
-                    nf.inventory_output = max(nf.inventory_output, 20)
-                elif lvl <= 2.0:
-                    nf.inventory_output = max(nf.inventory_output, 10)
-                else:
-                    nf.inventory_output = max(nf.inventory_output, 5)
+        # Replacement firms are already reseeded with demand expectations and working capital.
 
     # --------------------------------------------------------------------- #
     #                            EXPORT HELPERS                              #

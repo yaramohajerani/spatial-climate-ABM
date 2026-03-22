@@ -4,9 +4,13 @@
   ],
   "steps": 180,
   "seed": 42,
-  "topology": "small_firm_topology.json",
+  "topology": "sample_firm_topology.json",
   "start_year": 2020,
   "steps_per_year": 4,
+  "consumption_ratios": {
+    "services": 0.70,
+    "retail": 0.30
+  },
   "learning": {
     "enabled": true,
     "memory_length": 10,

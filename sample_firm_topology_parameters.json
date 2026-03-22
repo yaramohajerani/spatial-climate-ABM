@@ -16,10 +16,8 @@
   "start_year": 2025,
   "steps_per_year": 4,
   "consumption_ratios": {
-    "agriculture": 0.20,
-    "manufacturing": 0.30,
-    "services": 0.35,
-    "retail": 0.15
+    "services": 0.70,
+    "retail": 0.30
   },
   "learning": {
     "enabled": true,

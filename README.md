@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
 [![NeurIPS 2025 CCAI](https://img.shields.io/badge/NeurIPS%202025-Climate%20Change%20AI-green.svg)](https://www.climatechange.ai/papers/neurips2025/19)
 
-This is a spatial agent-based model (ABM) for simulating climate-economy interactions. The model couples economic behavior with climate hazard impacts using Mesa for agent-based modeling. As an eaxmple, we assess the impact of acute flooding using JRC flood depth-damage functions for impact assessment.
+This is a spatial agent-based model (ABM) for simulating climate-economy interactions. The model couples economic behavior with climate hazard impacts using Mesa for agent-based modeling. As an example, we assess the impact of acute flooding using JRC flood depth-damage functions for impact assessment.
 
 ## Citation
 
@@ -32,20 +32,21 @@ The model simulates economic agents (households and firms) on a spatial grid whi
 
 - **Spatial Environment**: Configurable resolution global grid (default 1°, supports 0.5°, 0.25°) with agents placed based on topology files
 - **Agent Types**: Households (labor suppliers) and firms (producers with Leontief technology)
-- **Economic Markets**: Endogenous wages, dynamic pricing, labor mobility, and supply chain networks
+- **Economic Markets**: Endogenous wages, dynamic pricing, labor mobility, demand-driven production, and supply chain networks
 - **Climate Integration**: Lazy hazard sampling from full-resolution GeoTIFF rasters with JRC region-specific damage curves
 - **Adaptive Behaviors**: Risk-based household migration and firm capital adjustments
 - **Liquidity-Dependent Recovery**: Post-disaster recovery speed scales with firm liquidity (firms with more capital can afford faster repairs)
 - **Minimum Wage Floor**: Wage offers bounded below at 40% of initial wage, a proxy consistent with ILO (2016) observations on minimum wages in high-income economies
-- **Firm Learning System**: Evolutionary strategy-based learning for budget allocation, pricing, wage setting, and risk adaptation
-- **Multiple Sectors**: Commodity, manufacturing, and retail sectors with sector-specific production coefficients and configurable consumption ratios
+- **Firm Learning System**: Evolutionary strategy-based learning for liquidity buffering, inventory buffering, reinvestment, wage responsiveness, and hazard sensitivity
+- **Multiple Sectors**: Commodity, manufacturing, and retail sectors with sector-specific production coefficients and configurable household final-demand ratios over final-good sectors
 
 ### Model Highlights
 
 - **Memory-efficient hazard loading**: Samples hazard values only at agent locations using `rasterio.sample()`, avoiding loading full rasters into memory
 - **Region-specific damage functions**: JRC depth-damage curves for Europe, Asia, Africa, North America, South America, and Oceania
 - **No preprocessing required**: Works directly with full-resolution Aqueduct flood rasters (~90MB each)
-- **Distance-soft labor and goods markets**: Households consider all firms; distance is a disutility but there is no hard radius
+- **Distance-soft labor market**: Households consider all firms; distance is a disutility but there is no hard radius
+- **Final-goods market discipline**: Households buy only from final-good sectors; upstream sectors sell to firms rather than directly to households
 - **Learning System**: Evolutionary strategy learning with fitness-based replacement of weak firms
 
 ## Core Architecture
@@ -59,8 +60,8 @@ The model uses a `mesa.space.MultiGrid` with configurable resolution (default 1�
 #### HouseholdAgent
 - **Labor Supply**: Each household supplies 1 unit of labor per step
 - **Employment Choice**: Maximizes `wage - distance_cost × distance` utility across all firms (cross-sector employment allowed)
-- **Consumption**: Allocates budget across sectors based on configurable ratios; supports fractional purchases when budget < unit price
-- **Risk Behavior**: Monitors hazard within random radius (1-50 cells), relocates when max hazard > 0.1
+- **Consumption**: Allocates budget across final-good sectors based on configurable ratios; supports fractional purchases when budget < unit price
+- **Risk Behavior**: Monitors local hazard and relocates when flood depth exceeds 0.5 m
 
 #### FirmAgent
 - **Production Technology**: Leontief production function with labor, material inputs, and capital
@@ -72,8 +73,8 @@ The model uses a `mesa.space.MultiGrid` with configurable resolution (default 1�
 - **Wage Setting**: Revenue-based wage targeting — wages track revenue per worker × labor share, with smooth adjustment (10% toward target per step); minimum wage floor at 40% of initial wage
 - **Dynamic Pricing**: Markup pricing — price = unit cost × (1 + markup), where markup is set by sell-through rate; prices track costs bidirectionally with no cost-floor ratchet
 - **Damage Recovery**: Liquidity-dependent recovery rate (20%–50% per step) so stressed firms recover more slowly
-- **Input Procurement**: Inputs from connected suppliers are substitutable (sum-based)
-- **Budget Allocation**: Pure technical coefficient-based allocation ensures stable budget splits across labor, inputs, and capital regardless of nominal price levels; evolutionary strategy weights provide learned adjustments
+- **Input Procurement**: Inputs from connected suppliers are treated as substitutable units and are purchased from the cheapest available suppliers first
+- **Production Planning**: Firms plan output from expected sales plus inventory buffers, hire only up to planned vacancies, seed startup inventories/capacity from labour-scaled final demand, expand capital only from residual cash above a working-capital buffer, and operate in phased within-step order (labour, production, then household consumption)
 
 ### Climate Hazard System
 
@@ -96,12 +97,13 @@ Damage is calculated using JRC Global Flood Depth-Damage Functions:
 - **Region detection**: Automatic based on agent coordinates (Europe, Asia, Africa, etc.)
 - **Sector mapping**:
   - `residential` → Residential buildings
-  - `commodity`, `manufacturing`, `retail` → Industrial buildings
+  - `commodity`, `manufacturing` → Industrial buildings
+  - `retail` → Commercial buildings
 - **Interpolation**: Linear interpolation between depth-damage points
 
 ### Firm Learning System
-- **Strategy Parameters**: Budget allocation weights, risk sensitivity, price aggressiveness, wage responsiveness (controls labor share of revenue)
-- **Performance Tracking**: 10-step rolling window (2.5 years at quarterly resolution) of money, production, and capital stock
+- **Strategy Parameters**: Liquidity-buffer multiplier, inventory-buffer multiplier, reinvestment multiplier, risk sensitivity, wage responsiveness (controls labor share of revenue)
+- **Performance Tracking**: 10-step rolling window (2.5 years at quarterly resolution) of realized production used for fitness averaging
 - **Fitness Evaluation**: Time-averaged production over the memory window — a single metric that implicitly captures all aspects of firm health. Robustness verified via sensitivity analysis across 5 memory window lengths.
 - **Population Dynamics**: Bankrupt firms (money below survival threshold) replaced by mutated offspring of successful firms; no persistent-decline trigger to avoid procyclical wealth destruction during systemic crises
 
@@ -136,9 +138,7 @@ python run_simulation.py --param-file aqueduct_riverine_parameters.json
   "start_year": 2020,
   "steps_per_year": 4,
   "consumption_ratios": {
-    "commodity": 0.25,
-    "manufacturing": 0.45,
-    "retail": 0.30
+    "retail": 1.0
   },
   "learning": {
     "enabled": true,
@@ -170,12 +170,12 @@ This runs the hazard+learning scenario across 5 memory window lengths (1.25–5.
 For resampling rasters to model grid resolution (optional - model works with full-resolution files):
 
 ```bash
-# Resample to 0.25° model grid with max aggregation (preserves peak flood depths)
+# Resample to 0.25° model grid with mean aggregation (represents cell-average flood depth)
 python prepare_hazard/preprocess_geotiff.py \
     --input data/raw/*.tif \
     --model-grid \
     --resolution 0.25 \
-    --resampling max \
+    --resampling mean \
     --output-dir data/model_grid/
 
 # Or crop and scale for testing
@@ -204,11 +204,13 @@ Specify firm locations and supply chains via JSON:
 }
 ```
 
+Include at least one final-good sector (`retail`, `wholesale`, or `services`) in a custom topology. Households only buy from those sectors; topologies with only upstream sectors will have no final demand. Optional topology `capital` values act as a floor on seeded installed capacity, but the startup operating state is then rescaled from labour-consistent expected sales, so these values are not the sole determinant of initial production scale.
+
 ## Output Files
 
-- **simulation_*.csv**: Model-level time series (production, wealth, wages, prices, risk)
-- **simulation_*_agents.csv**: Agent-level panel data (money, capital, production, sector, type)
-- **simulation_*_timeseries.png**: Multi-panel plots of key metrics
+- **simulation_*.csv**: Model-level time series (production, wealth, wages, prices, risk, bottleneck counts)
+- **simulation_*_agents.csv**: Agent-level panel data (money, capital, production, sector, type, and firm-level `household_sales_last_step` for true seller-sector final demand). Household `sector` values in this file are initialization/placement cohort tags, not purchased-good categories.
+- **simulation_*_timeseries.png**: Multi-panel plots of key metrics. Household consumption panels use actual household purchases, and any sector breakdown of final demand is derived from seller sectors rather than household cohort labels.
 - **simulation_*_sector_bottlenecks.png**: Sector-level bottleneck analysis
 
 ## Model Parameters
@@ -227,9 +229,10 @@ Specify firm locations and supply chains via JSON:
   | Manufacturing | 0.3 | 0.6 | 0.6 | Automated, capital & input intensive |
   | Retail | 0.5 | 0.4 | 0.2 | Moderate labor, low capital needs |
 - **Depreciation Rate**: 0.2% per step
-- **Consumption Ratios**: Configurable household spending by sector (default: 25% commodity, 45% manufacturing, 30% retail)
+- **Consumption Ratios**: Configurable household spending by final-good sector only. For the current 100-firm riverine topology the relevant setting is `{"retail": 1.0}`.
 - **Wage Mechanism**: Revenue-based targeting — firms set wages at `revenue_per_worker × labor_share` (default labor share 0.5, modulated by learned `wage_responsiveness`), with 10% smooth adjustment per step. Wages are structurally bounded by revenue and self-correct during downturns.
 - **Minimum Wage Floor**: 40% of initial mean wage, a proxy consistent with ILO (2016) observations (40–60% of median)
+- **Production Planning**: Firms target expected sales plus an inventory buffer, translate that into vacancies and input demand, preserve a working-capital buffer, initialize inventories and capital from labour-consistent demand, treat capital spending as retained-earnings capacity expansion rather than a separate capital-goods market, and clear household demand after the current period's production is complete
 
 ### Learning Parameters
 - `learning.enabled`: Enable/disable firm learning (default: true)
@@ -250,10 +253,10 @@ Specify firm locations and supply chains via JSON:
 ├── model.py              # Main EconomyModel class
 ├── agents.py             # HouseholdAgent and FirmAgent classes
 ├── run_simulation.py     # CLI runner with parameter file support
-├── sensitivity_analysis.py # Fitness weight sensitivity analysis
+├── sensitivity_analysis.py # Memory-window sensitivity analysis
 ├── hazard_utils.py       # LazyHazard class for memory-efficient sampling
 ├── damage_functions.py   # JRC damage functions from Excel
-├── trophic_utils.py      # Network topology analysis
+├── trophic_utils.py      # Network topology analysis utilities (not used in core runtime logic)
 ├── visualization.py      # Solara interactive dashboard
 ├── prepare_hazard/       # Data preprocessing utilities (optional)
 ├── data/                 # Hazard rasters and damage function Excel

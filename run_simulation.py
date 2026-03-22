@@ -299,6 +299,7 @@ def main() -> None:  # noqa: D401
     firm_df["Level"] = firm_df["AgentID"].map(lvl_map)
 
     household_df = agent_df[agent_df["type"] == "HouseholdAgent"].copy()
+    household_counts_by_step = household_df.groupby("Step").size() if not household_df.empty else None
 
     # Sector palette
     unique_sectors = sorted(firm_df["sector"].dropna().unique())
@@ -310,7 +311,11 @@ def main() -> None:  # noqa: D401
         for idx, sector in enumerate(unique_sectors)
     }
 
-    unique_hh_sectors = sorted(household_df["sector"].dropna().unique())
+    final_demand_sectors = [
+        sector
+        for sector in model.get_final_consumption_ratios().keys()
+        if sector in unique_sectors
+    ]
 
     # ---------------- Metric selection --------------------------- #
     metrics_left = [
@@ -390,6 +395,43 @@ def main() -> None:  # noqa: D401
         "Household_Labor_Sold": "labor_sold",
         "Household_Consumption": "consumption",
     }
+    household_title_map = {
+        "Household_Wealth": "Mean Household Wealth",
+        "Household_Labor_Sold": "Mean Household Labor Sold",
+        "Household_Consumption": "Mean Household Consumption",
+    }
+
+    def _plot_final_demand_by_sector(ax):
+        if not final_demand_sectors or household_counts_by_step is None:
+            return
+        if "household_sales_last_step" not in firm_df.columns:
+            return
+
+        for sector in final_demand_sectors:
+            sector_sales = (
+                firm_df[firm_df["sector"] == sector]
+                .groupby("Step")["household_sales_last_step"]
+                .sum()
+            )
+            if sector_sales.empty:
+                continue
+
+            aligned_households = household_counts_by_step.reindex(sector_sales.index)
+            per_household_sales = (
+                sector_sales / aligned_households.replace(0, np.nan)
+            ).dropna()
+            if per_household_sales.empty:
+                continue
+
+            x_vals = per_household_sales.index if not args.start_year else args.start_year + per_household_sales.index.astype(int) / args.steps_per_year
+            ax.plot(
+                x_vals,
+                per_household_sales.values,
+                color=color_by_sector.get(sector, "grey"),
+                linestyle="--",
+                alpha=0.8,
+                label=f"final demand: {sector}",
+            )
 
     def _plot_household(col, ax):
         hh_col = household_metric_map.get(col, None)
@@ -397,19 +439,14 @@ def main() -> None:  # noqa: D401
             # Add mean line for all households
             mean_grp = household_df.groupby("Step")[hh_col].mean()
             x_vals = mean_grp.index if not args.start_year else args.start_year + mean_grp.index.astype(int) / args.steps_per_year
-            ax.plot(x_vals, mean_grp.values, color="black", linewidth=2, label="Mean")
-            # Sector breakdown
-            for idx_sec, sector in enumerate(unique_hh_sectors):
-                grp = household_df[household_df["sector"] == sector].groupby("Step")[hh_col].mean()
-                if grp.empty:
-                    continue
-                x_vals = grp.index if not args.start_year else args.start_year + grp.index.astype(int) / args.steps_per_year
-                ax.plot(x_vals, grp.values, color=color_by_sector.get(sector, "grey"), linestyle="--", alpha=0.8, label=sector)
+            ax.plot(x_vals, mean_grp.values, color="black", linewidth=2, label="Mean household")
+            if col == "Household_Consumption":
+                _plot_final_demand_by_sector(ax)
         else:
             # Fallback: plot aggregate series from df (e.g., Average_Risk)
             ax.plot(df[x_col], df[col], color="black", linewidth=2, label=col.replace("_", " "))
 
-        ax.set_title(col.replace("_", " "), fontsize=10)
+        ax.set_title(household_title_map.get(col, col.replace("_", " ")), fontsize=10)
         ylabel = units.get(col, "")
         if ylabel:
             ax.set_ylabel(ylabel)

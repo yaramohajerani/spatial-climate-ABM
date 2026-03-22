@@ -103,8 +103,8 @@ class HouseholdAgent(Agent):
         self._update_nearby_firms()
 
     # ---------------- Mesa API ---------------- #
-    def step(self) -> None:  # noqa: D401, N802
-        """Provide labour and consume goods each tick."""
+    def supply_labor(self) -> None:
+        """Reset household state, optionally relocate, and sell labour."""
 
         # Reset per-step statistics
         self.production = 0.0
@@ -138,8 +138,11 @@ class HouseholdAgent(Agent):
                     self.labor_sold += 1
                     break
 
-        # 2. Buy goods based on wealth and needs (no proximity restriction) -------------------------- #
-        # Households need goods from different sectors in fixed ratios (configurable)
+    def consume_goods(self) -> None:
+        """Buy final goods after firms have completed the current production cycle."""
+
+        # Buy final goods based on wealth and needs (no proximity restriction).
+        # Households only buy final-consumption goods. Upstream sectors sell to firms, not households.
         # Base consumption on recent wages earned plus a small fraction of savings
         base_consumption = self.labor_sold * self.model.mean_wage  # spend what we earned
         savings_consumption = max(0, self.money - 50) * 0.1  # plus 10% of savings above $50
@@ -149,44 +152,42 @@ class HouseholdAgent(Agent):
             # Cap at what we can actually afford
             consumption_budget = min(consumption_budget, self.money * 0.8)
 
-            # Get consumption ratios from model (configurable via parameter file)
-            # Default: 30% commodities, 70% manufacturing
-            consumption_ratios = getattr(self.model, 'consumption_ratios', {
-                'commodity': 0.3,
-                'manufacturing': 0.7,
-            })
+            # Only final-good sectors are eligible for household demand.
+            consumption_ratios = self.model.get_final_consumption_ratios()
+            if consumption_ratios:
+                # Group firms by sector
+                firms_by_sector: dict[str, list] = {}
+                for f in self.model._firms:
+                    if f.inventory_output > 0 and f.sector in consumption_ratios:
+                        sector = f.sector
+                        if sector not in firms_by_sector:
+                            firms_by_sector[sector] = []
+                        firms_by_sector[sector].append(f)
 
-            # Group firms by sector
-            firms_by_sector: dict[str, list] = {}
-            for f in self.model._firms:
-                if f.inventory_output > 0:
-                    sector = f.sector
-                    if sector not in firms_by_sector:
-                        firms_by_sector[sector] = []
-                    firms_by_sector[sector].append(f)
+                total_ratio = sum(consumption_ratios.values())
+                if total_ratio > 0:
+                    # Allocate budget to each final-good sector and buy
+                    for sector, ratio in consumption_ratios.items():
+                        if sector not in firms_by_sector:
+                            continue  # no firms in this sector with inventory
 
-            # Allocate budget to each sector and buy
-            for sector, ratio in consumption_ratios.items():
-                if sector not in firms_by_sector:
-                    continue  # no firms in this sector with inventory
+                        sector_budget = consumption_budget * (ratio / total_ratio)
+                        if sector_budget <= 0:
+                            continue
 
-                sector_budget = consumption_budget * ratio
-                if sector_budget <= 0:
-                    continue
+                        # Sort firms in this sector by price (cheapest first)
+                        sector_firms = sorted(firms_by_sector[sector], key=lambda f: f.price)
 
-                # Sort firms in this sector by price (cheapest first)
-                sector_firms = sorted(firms_by_sector[sector], key=lambda f: f.price)
-
-                remaining_sector_budget = sector_budget
-                for seller in sector_firms:
-                    if remaining_sector_budget <= 0:
-                        break
-                    # Allow fractional purchases - buy whatever we can afford
-                    max_quantity = remaining_sector_budget / seller.price
-                    qty_bought = seller.sell_goods_to_household(self, quantity=max_quantity)
-                    if qty_bought > 0:
-                        self.consumption += qty_bought
-                        remaining_sector_budget -= qty_bought * seller.price
+                        remaining_sector_budget = sector_budget
+                        for seller in sector_firms:
+                            if remaining_sector_budget <= 0:
+                                break
+                            # Allow fractional purchases - buy whatever we can afford
+                            max_quantity = remaining_sector_budget / seller.price
+                            qty_bought = seller.sell_goods_to_household(self, quantity=max_quantity)
+                            if qty_bought > 0:
+                                self.consumption += qty_bought
+                                remaining_sector_budget -= qty_bought * seller.price
 
         # ---------------- End-of-step unemployment tracking ------------- #
         if self.labor_sold == 0:
@@ -198,6 +199,13 @@ class HouseholdAgent(Agent):
             # Could not find work for 3 consecutive steps → move closer to another firm of same sector
             self._relocate_for_job()
             self._no_work_steps = 0  # reset after relocation
+
+    # ---------------- Mesa API ---------------- #
+    def step(self) -> None:  # noqa: D401, N802
+        """Compatibility wrapper for one-shot scheduling."""
+
+        self.supply_labor()
+        self.consume_goods()
 
     def _get_local_hazard(self) -> float:
         """Return the hazard value at the agent's current cell."""
@@ -220,6 +228,11 @@ class HouseholdAgent(Agent):
 
 class FirmAgent(Agent):
     """A firm with a simple Leontief production function and local trade."""
+
+    # Productive capacity is a reduced-form balance-sheet stock rather than a
+    # separate modeled capital-goods market. One unit of retained earnings can
+    # therefore finance one unit of installed capacity.
+    CAPITAL_INSTALLATION_COST: float = 1.0
 
     # Sector-specific Leontief technical coefficients (units required per unit output)
     # Lower coefficient = higher productivity (less input needed per output)
@@ -285,9 +298,9 @@ class FirmAgent(Agent):
 
         self.last_hired_labor: int = 0  # employees hired in previous step
 
-        # Input inventory keyed by supplier AgentID (or None for generic labour)
-        self.inventory_inputs: dict[int, int] = defaultdict(int)  # per-supplier stock
-        self.inventory_output: int = 0  # finished goods
+        # Input inventory keyed by supplier AgentID
+        self.inventory_inputs: dict[int, float] = defaultdict(float)
+        self.inventory_output: float = 0.0  # finished goods
 
         # Links to other agents (filled by model)
         self.connected_firms: List["FirmAgent"] = []
@@ -305,6 +318,8 @@ class FirmAgent(Agent):
         self.revenue_last_step: float = 0.0
         self.sales_this_step: float = 0.0
         self.revenue_this_step: float = 0.0
+        self.household_sales_last_step: float = 0.0
+        self.household_sales_this_step: float = 0.0
 
         # ---------------- Risk behaviour parameters ------------------- #
         # Capital coefficient parameters
@@ -313,10 +328,15 @@ class FirmAgent(Agent):
         # Firm-specific relaxation ratio (0.2 → 20 % decay each step, etc.)
         self.relaxation_ratio: float = self.random.uniform(0.2, 0.5)
 
-        # Budget reservation placeholders (set each step by prepare_budget)
-        self._budget_capital: float = 0.0
-        self._budget_labor: float = 0.0
-        self._budget_input_per_supplier: dict[int, float] = {} # New placeholder for independent input budgets
+        # Demand-planning state set each step by plan_operations()
+        self.target_output: float = 0.0
+        self.target_labor: int = 0
+        self.target_input_units: float = 0.0
+        self.expected_sales: float = 0.0
+        self.base_inventory_target: float = 1.0
+        self.base_capital_target: float = self.capital_stock
+        self.target_capital_stock: float = self.capital_stock
+        self._liquidity_buffer: float = 0.0
         
         # Learning system components
         learning_config = getattr(model, 'learning_config', {})
@@ -335,9 +355,9 @@ class FirmAgent(Agent):
     def _initialize_strategy(self) -> dict[str, float]:
         """Initialize evolvable strategy parameters with small random variations."""
         return {
-            'budget_labor_weight': self.random.uniform(0.8, 1.2),      # multiplier for labor budget allocation
-            'budget_input_weight': self.random.uniform(0.8, 1.2),      # multiplier for input budget allocation
-            'budget_capital_weight': self.random.uniform(0.8, 1.2),    # multiplier for capital budget allocation
+            'budget_labor_weight': self.random.uniform(0.8, 1.2),      # liquidity buffer multiplier
+            'budget_input_weight': self.random.uniform(0.8, 1.2),      # inventory buffer multiplier
+            'budget_capital_weight': self.random.uniform(0.8, 1.2),    # reinvestment multiplier
             'risk_sensitivity': self.random.uniform(0.5, 1.5),         # hazard response aggressiveness
             'wage_responsiveness': self.random.uniform(0.5, 1.5),      # wage adjustment responsiveness
         }
@@ -393,21 +413,21 @@ class FirmAgent(Agent):
 
     # ---------------- Interaction helpers ----------------------------- #
     def hire_labor(self, household: HouseholdAgent, wage: float) -> bool:
-        # Reject hire if paying the wage would dip into funds reserved for inputs/capital
-        if self._budget_labor < wage:
-            return False
         """Attempt to hire one unit of labour from *household*.
 
         Returns True if the contract succeeded (wage transferred),
         False otherwise (insufficient funds).
         """
 
-        if self.money < wage:
+        # Firms hire up to the vacancy count implied by planned output, not until cash is exhausted.
+        if len(self.employees) >= self.target_labor:
             return False
 
-        # Transfer wage and update reservation tracking
+        if self.money - wage < self._liquidity_buffer:
+            return False
+
+        # Transfer wage and preserve the working-capital buffer.
         self.money -= wage
-        self._budget_labor -= wage
         household.money += wage
 
         # Register labour for this production cycle
@@ -441,116 +461,88 @@ class FirmAgent(Agent):
         self.inventory_output -= qty
         # Track sales for demand-based pricing
         self.sales_this_step += qty
+        self.household_sales_this_step += qty
         self.revenue_this_step += total_cost
         return qty
 
-    def sell_goods_to_firm(self, buyer: "FirmAgent", quantity: int = 1) -> int:
-        """Inter-firm sale of intermediate goods (generic price=1)."""
+    def sell_goods_to_firm(self, buyer: "FirmAgent", quantity: float = 1.0) -> float:
+        """Sell intermediate goods to another firm."""
         if quantity <= 0 or self.inventory_output <= 0:
-            return 0
+            return 0.0
 
         qty = min(quantity, self.inventory_output)
-        cost = qty * self.price
-        
-        # Use independent input budget per supplier for all firms
-        budget_per_supplier = getattr(buyer, "_budget_input_per_supplier", {})
-        supplier_budget = budget_per_supplier.get(self.unique_id, 0.0)
-        budget_cap = getattr(buyer, "_budget_capital", 0.0)
+        available_cash = max(0.0, buyer.money - getattr(buyer, "_liquidity_buffer", 0.0))
+        if available_cash <= 0 or self.price <= 0:
+            return 0.0
 
-        if cost > (supplier_budget + budget_cap):
-            return 0  # Not enough dedicated funds for this supplier
-            
-        if buyer.money < cost:
-            return 0
+        max_affordable = available_cash / self.price
+        qty = min(qty, max_affordable)
+        if qty <= 0:
+            return 0.0
+
+        cost = qty * self.price
 
         # Transfer money & inventory
         buyer.money -= cost
-
-        # Deduct from supplier-specific budget first, then capital
-        use_supplier = min(cost, supplier_budget)
-        # Safely decrement supplier‐specific budget; initialise key if missing
-        current_alloc = buyer._budget_input_per_supplier.get(self.unique_id, 0.0)
-        buyer._budget_input_per_supplier[self.unique_id] = current_alloc - use_supplier
-        buyer._budget_capital -= (cost - use_supplier)  # type: ignore[attr-defined]
-        
         self.money += cost
         self.inventory_output -= qty
+
         # Register under this supplier's id inside buyer
         buyer.inventory_inputs[self.unique_id] += qty
+
         # Track sales for demand-based pricing
         self.sales_this_step += qty
         self.revenue_this_step += cost
         return qty
 
-    # ---------------- Budgeting helper ---------------------------------- #
-    def prepare_budget(self) -> None:
-        """Allocate current cash across labour, inputs and capital reserves.
+    # ---------------- Demand-planning helper ---------------------------- #
+    def plan_operations(self) -> None:
+        """Set output, vacancy, and liquidity targets from expected demand."""
 
-        The allocation is guided by the previous step's limiting factor so the
-        firm directs more budget towards whichever input was scarce last time.
-        For non-retail sectors, each input good from connected firms is treated
-        as independent and gets separate budget allocation.
-        """
+        # Apply the hazard-driven capital requirement before planning vacancies.
+        local_hazard = self._get_local_hazard()
+        risk_sensitivity = self.strategy.get("risk_sensitivity", 1.0)
+        if local_hazard > 0.1:
+            self.capital_coeff *= 1.0 + (0.2 * risk_sensitivity)
+        elif self.capital_coeff > self.original_capital_coeff:
+            adjusted_relaxation = self.relaxation_ratio * (2.0 - risk_sensitivity)
+            decay = (self.capital_coeff - self.original_capital_coeff) * adjusted_relaxation
+            self.capital_coeff = max(self.original_capital_coeff, self.capital_coeff - decay)
 
-        # Budget allocation uses pure technical coefficients (Leontief shares)
-        # so that nominal price changes cannot distort the allocation.
-        # The evolutionary strategy weights still allow learned adjustments.
-        lim = getattr(self, "limiting_factor", "")
+        # Firms produce to expected sales plus a modest inventory buffer.
+        inventory_buffer_ratio = max(0.0, 0.25 * self.strategy.get("budget_input_weight", 1.0))
+        liquidity_buffer_ratio = min(0.5, max(0.05, 0.15 * self.strategy.get("budget_labor_weight", 1.0)))
+        self._liquidity_buffer = max(10.0, self.money * liquidity_buffer_ratio)
 
-        # Capital weight: full coefficient when capital-limited or stressed,
-        # reduced weight otherwise to avoid over-investment in calm periods.
-        cap_weight = 0.0
-        if lim == "capital":
-            cap_weight = self.capital_coeff
-        else:
-            if (self.capital_stock < self.original_capital_coeff * 5) or (self.damage_factor < 0.99) or (self.capital_coeff > self.original_capital_coeff * 1.05):
-                cap_weight = self.capital_coeff * 0.3
+        inventory_target = max(1.0, self.expected_sales * inventory_buffer_ratio)
+        demand_driven_output = max(0.0, self.expected_sales + inventory_target - self.inventory_output)
+        desired_output = demand_driven_output
 
-        # Input weights: equal share per supplier based on INPUT_COEFF
-        num_suppliers = max(1, len(self.connected_firms))
-        per_supplier_coeff = self.INPUT_COEFF / num_suppliers
-
-        input_weights = {}
-        for supplier in self.connected_firms:
-            input_weights[supplier.unique_id] = per_supplier_coeff
-        if not input_weights:
-            input_weights["generic"] = self.INPUT_COEFF
-        total_input_weight = sum(input_weights.values())
-
-        weights = {
-            "labor": self.LABOR_COEFF * self.strategy.get('budget_labor_weight', 1.0),
-            "input_total": total_input_weight * self.strategy.get('budget_input_weight', 1.0),
-            "capital": cap_weight * self.strategy.get('budget_capital_weight', 1.0),
-        }
-
-        # Prioritise last limiting factor (learned response)
-        if lim in weights and weights[lim] > 0:
-            priority_multiplier = 1.0 + 0.3 * self.strategy.get('budget_' + lim + '_weight', 1.0)
-            weights[lim] *= priority_multiplier
-
-        total_w = sum(weights.values())
-        if total_w <= 0:
-            total_w = 1.0
-
-        # Cash to be allocated
-        liquid = max(0, self.money)
-        liquid_alloc = liquid * 0.9
-        reserve_labor = liquid_alloc * weights["labor"] / total_w
-        # Guarantee enough for multiple hires so labour is not starved by budgeting
-        reserve_labor = max(reserve_labor, self.wage_offer * 3)
-        reserve_input_total = liquid_alloc * weights["input_total"] / total_w
-        reserve_cap = liquid_alloc * weights["capital"] / total_w
-
-        # Set budgets
-        self._budget_labor = reserve_labor
-        self._budget_capital = reserve_cap
-
-        # Allocate input budget per supplier (equal shares from technical coefficients)
-        self._budget_input_per_supplier = {}
+        avg_input_price = 0.0
         if self.connected_firms:
-            for supplier in self.connected_firms:
-                supplier_share = input_weights[supplier.unique_id] / total_input_weight
-                self._budget_input_per_supplier[supplier.unique_id] = reserve_input_total * supplier_share
+            avg_input_price = float(np.mean([s.price for s in self.connected_firms]))
+
+        effective_damage = max(self.damage_factor, 1e-6)
+        capital_limit = self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf")
+        self.target_capital_stock = max(
+            self.base_capital_target,
+            (demand_driven_output / effective_damage) * self.capital_coeff,
+        )
+        desired_output = min(desired_output, capital_limit * self.damage_factor)
+        unit_variable_cost = (
+            self.wage_offer * self.LABOR_COEFF
+            + avg_input_price * self.INPUT_COEFF
+        ) / effective_damage
+
+        available_operating_cash = max(0.0, self.money - self._liquidity_buffer)
+        if unit_variable_cost > 0:
+            desired_output = min(desired_output, available_operating_cash / unit_variable_cost)
+
+        self.target_output = max(0.0, desired_output)
+
+        required_pre_damage_output = self.target_output / effective_damage
+        self.target_labor = int(np.ceil(required_pre_damage_output * self.LABOR_COEFF - 1e-9))
+        self.target_input_units = required_pre_damage_output * self.INPUT_COEFF
 
     # -------------------------------------------------------------------- #
 
@@ -605,11 +597,10 @@ class FirmAgent(Agent):
             + avg_input_price * self.INPUT_COEFF
         )
 
-        # Sell-through rate: fraction of available goods that were sold this step.
-        # Available = current inventory (post-sale) + what was just sold.
-        available = self.inventory_output + self.sales_this_step
-        if available > 0 and self.sales_this_step > 0:
-            sell_through = min(1.0, self.sales_this_step / available)
+        # Sell-through is based on realised demand from the previous full period.
+        available = self.inventory_output + self.sales_last_step
+        if available > 0 and self.sales_last_step > 0:
+            sell_through = min(1.0, self.sales_last_step / available)
         else:
             sell_through = 0.0
 
@@ -628,52 +619,46 @@ class FirmAgent(Agent):
         self.production = 0.0
         self.consumption = 0.0
 
-        # ---------------- Hazard-driven capital adjustment (learned response) ------------ #
-        local_hazard = self._get_local_hazard()
-        risk_sensitivity = self.strategy.get('risk_sensitivity', 1.0)
-        
-        if local_hazard > 0.1:
-            # Increase capital requirement based on learned risk sensitivity
-            capital_increase = 1.0 + (0.2 * risk_sensitivity)
-            self.capital_coeff *= capital_increase
-        else:
-            # Gradually relax back towards original coefficient (faster if less risk-sensitive)
-            if self.capital_coeff > self.original_capital_coeff:
-                adjusted_relaxation = self.relaxation_ratio * (2.0 - risk_sensitivity)  # less sensitive = faster relaxation
-                decay = (self.capital_coeff - self.original_capital_coeff) * adjusted_relaxation
-                self.capital_coeff = max(self.original_capital_coeff, self.capital_coeff - decay)
-
         labour_units = self._labor_available()
+        effective_damage = max(self.damage_factor, 1e-6)
 
         # ----------------------------------------------------------------
-        # 1. Ensure each required input type has enough stock to match labour
+        # 1. Purchase the aggregate intermediate input needed for planned output
         # ----------------------------------------------------------------
-        
-        # Estimate feasible output given capital and damage to avoid over-ordering inputs
-        cap_limit = self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf")
-        target_output = min(labour_units / self.LABOR_COEFF, cap_limit) * self.damage_factor
-        target_output = max(0.0, target_output)
-        
-        # Each input good from connected firms is independent
-        # Need INPUT_COEFF units from EACH supplier for maximum production
-        for supplier in self.connected_firms:
-            target_per_supplier = int(np.ceil(target_output * self.INPUT_COEFF))
-            current_from_supplier = self.inventory_inputs.get(supplier.unique_id, 0)
-            required_from_supplier = max(0, target_per_supplier - current_from_supplier)
-            
-            if required_from_supplier > 0:
-                supplier.sell_goods_to_firm(self, required_from_supplier)
+        desired_pre_damage_output = self.target_output / effective_damage
+        desired_pre_damage_output = min(
+            desired_pre_damage_output,
+            labour_units / self.LABOR_COEFF if self.LABOR_COEFF else float("inf"),
+            self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf"),
+        )
+        desired_input_units = desired_pre_damage_output * self.INPUT_COEFF
 
-        # ----------------------------------------------------------------
-        # 2. Compute possible output per Leontief: min(labour, material, capital)
-        # ----------------------------------------------------------------
-
-        # Sum inputs from all suppliers (they are substitutable, not complementary)
-        # This allows production even if one supplier is out of stock, as long as
-        # total inputs from all suppliers meet the requirement.
+        current_input_units = 0.0
         if self.connected_firms:
+            current_input_units = sum(
+                self.inventory_inputs.get(supplier.unique_id, 0.0)
+                for supplier in self.connected_firms
+            )
+
+        remaining_inputs_needed = max(0.0, desired_input_units - current_input_units)
+        if remaining_inputs_needed > 0 and self.connected_firms and self.INPUT_COEFF > 0:
+            suppliers = sorted(
+                [supplier for supplier in self.connected_firms if supplier.inventory_output > 0],
+                key=lambda supplier: supplier.price,
+            )
+            for supplier in suppliers:
+                if remaining_inputs_needed <= 1e-9 or self.money <= self._liquidity_buffer:
+                    break
+                bought = supplier.sell_goods_to_firm(self, remaining_inputs_needed)
+                if bought > 0:
+                    remaining_inputs_needed -= bought
+
+        # ----------------------------------------------------------------
+        # 2. Compute possible output: demand target capped by technical limits
+        # ----------------------------------------------------------------
+        if self.connected_firms and self.INPUT_COEFF > 0:
             total_input_units = sum(
-                self.inventory_inputs.get(supplier.unique_id, 0)
+                self.inventory_inputs.get(supplier.unique_id, 0.0)
                 for supplier in self.connected_firms
             )
             max_output_from_inputs = total_input_units / self.INPUT_COEFF
@@ -681,26 +666,26 @@ class FirmAgent(Agent):
             max_output_from_inputs = float("inf")
 
         max_output_from_capital = self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf")
+        max_output_from_labor = labour_units / self.LABOR_COEFF if self.LABOR_COEFF else float("inf")
 
-        max_possible = min(labour_units / self.LABOR_COEFF, max_output_from_inputs, max_output_from_capital)
-        possible_output = max_possible * self.damage_factor
-
-        # Determine primary limiting factor for diagnostic plotting
-        # Compare theoretical maxima before damage factor applied
-        labor_capacity = labour_units / self.LABOR_COEFF
-        limits = {
-            "labor": labor_capacity,
-            "input": max_output_from_inputs,
-            "capital": max_output_from_capital,
+        actual_limits = {
+            "labor": max_output_from_labor * self.damage_factor,
+            "input": max_output_from_inputs * self.damage_factor,
+            "capital": max_output_from_capital * self.damage_factor,
         }
-        min_limit_val = min(limits.values())
-        # Pick first factor that equals the min within small tolerance
-        self.limiting_factor: str = next(k for k, v in limits.items() if abs(v - min_limit_val) < 1e-6)
+        technical_output_limit = min(actual_limits.values())
+        possible_output = min(self.target_output, technical_output_limit)
+
+        if self.target_output + 1e-9 < technical_output_limit:
+            self.limiting_factor = "demand"
+        else:
+            self.limiting_factor = min(actual_limits, key=actual_limits.get)
 
         self.production = possible_output
         if possible_output > 0:
-            # Total inputs needed = output * INPUT_COEFF (consumed proportionally from all suppliers)
-            total_inputs_needed = possible_output * self.INPUT_COEFF
+            # Damage lowers effective output per unit input, so input use scales with
+            # the pre-damage quantity required to achieve the realised output.
+            total_inputs_needed = (possible_output / effective_damage) * self.INPUT_COEFF
             remaining_to_consume = total_inputs_needed
 
             for supplier in self.connected_firms:
@@ -737,46 +722,39 @@ class FirmAgent(Agent):
         DEPR = 0.002  # 0.2 % per step (quarterly), roughly 0.8 % annually - reduced to prevent wealth drain
         self.capital_stock *= (1 - DEPR)
 
-        # ---------------- Capital purchase stage ----------------------- #
-        # Purchase additional capital whenever it is the current bottleneck
-        if self.limiting_factor == "capital" and self._budget_capital > 0 and self.money > 0:
-            # Only attempt capital purchase if we have actual money and dedicated budget
-            available_funds = min(self._budget_capital, self.money * 0.5)  # Don't spend all money on capital
+        # ---------------- Capital formation stage --------------------- #
+        # Retained earnings finance maintenance and expansion of installed
+        # productive capacity after operating needs and the liquidity buffer.
+        if self.money > self._liquidity_buffer:
+            investable_cash = max(0.0, self.money - self._liquidity_buffer)
+            investment_share = min(1.0, 0.5 * self.strategy.get("budget_capital_weight", 1.0))
+            available_funds = investable_cash * investment_share
+            capital_gap = max(0.0, self.target_capital_stock - self.capital_stock)
 
-            if available_funds > 0:
-                # Find cheapest available capital goods
-                # Use cached firm list from model for efficiency
-                sellers = [f for f in self.model._firms if f is not self and f.inventory_output > 0]
-                if sellers:
-                    # Sort by price to buy from cheapest first
-                    sellers.sort(key=lambda f: f.price)
-                    
-                    remaining_budget = available_funds
-                    for seller in sellers:
-                        if remaining_budget <= 0:
-                            break
-                        
-                        # Calculate how much we can afford from this seller
-                        max_affordable = int(remaining_budget / seller.price)
-                        if max_affordable <= 0:
-                            continue
-                            
-                        qty = min(max_affordable, seller.inventory_output)
-                        bought = seller.sell_goods_to_firm(self, qty)
-                        if bought:
-                            self.capital_stock += bought
-                            remaining_budget -= bought * seller.price
-
-        # Persist sales metrics for next step's pricing and wage decisions
-        self.sales_last_step = self.sales_this_step
-        self.revenue_last_step = self.revenue_this_step
-        self.sales_this_step = 0.0
-        self.revenue_this_step = 0.0
+            if available_funds > 0 and capital_gap > 0:
+                installable_capital = min(
+                    capital_gap,
+                    available_funds / self.CAPITAL_INSTALLATION_COST,
+                )
+                if installable_capital > 0:
+                    self.money -= installable_capital * self.CAPITAL_INSTALLATION_COST
+                    self.capital_stock += installable_capital
 
     # ---------------- Internal helpers -------------------------------- #
     def _labor_available(self) -> int:
         """Return integer labour units hired for this tick."""
         return len(self.employees) 
+
+    def close_step(self) -> None:
+        """Persist realised sales after all market transactions for the period."""
+
+        self.expected_sales = 0.7 * self.expected_sales + 0.3 * self.sales_this_step
+        self.sales_last_step = self.sales_this_step
+        self.household_sales_last_step = self.household_sales_this_step
+        self.revenue_last_step = self.revenue_this_step
+        self.sales_this_step = 0.0
+        self.household_sales_this_step = 0.0
+        self.revenue_this_step = 0.0
 
     # ------------------------------------------------------------------ #
     #                        INTERNAL HELPERS                           #

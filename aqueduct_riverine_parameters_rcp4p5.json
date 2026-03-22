@@ -12,9 +12,7 @@
   "start_year": 2025,
   "steps_per_year": 4,
   "consumption_ratios": {
-    "commodity": 0.25,
-    "manufacturing": 0.45,
-    "retail": 0.30
+    "retail": 1.0
   },
   "learning": {
     "enabled": true,
