@@ -31,7 +31,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--param-file", type=str, required=True, help="JSON parameter file")
     parser.add_argument("--steps", type=int, default=None, help="Override step count from parameter file")
     parser.add_argument("--no-hazards", action="store_true", help="Disable hazard impacts")
-    parser.add_argument("--no-learning", action="store_true", help="Disable evolutionary learning/replacement")
+    parser.add_argument("--no-adaptation", action="store_true", help="Disable hazard-conditional adaptation/reorganization")
+    parser.add_argument("--no-learning", action="store_true", help="Deprecated alias for --no-adaptation")
     parser.add_argument("--tail-window", type=int, default=20, help="Window for tail activity summaries")
     parser.add_argument(
         "--money-tolerance",
@@ -65,9 +66,9 @@ def parse_args() -> argparse.Namespace:
 
 def build_model(args: argparse.Namespace) -> tuple[EconomyModel, int]:
     params = json.loads(Path(args.param_file).read_text())
-    learning_config = dict(params.get("learning", {}))
-    if args.no_learning:
-        learning_config["enabled"] = False
+    adaptation_config = dict(params.get("adaptation", params.get("learning", {})))
+    if args.no_adaptation or args.no_learning:
+        adaptation_config["enabled"] = False
 
     steps = int(args.steps if args.steps is not None else params.get("steps", 50))
     model = EconomyModel(
@@ -78,7 +79,7 @@ def build_model(args: argparse.Namespace) -> tuple[EconomyModel, int]:
         steps_per_year=int(params.get("steps_per_year", 4)),
         firm_topology_path=params.get("topology"),
         apply_hazard_impacts=not args.no_hazards,
-        learning_params=learning_config,
+        adaptation_params=adaptation_config,
         consumption_ratios=params.get("consumption_ratios"),
         grid_resolution=float(params.get("grid_resolution", 1.0)),
         household_relocation=bool(params.get("household_relocation", True)),
@@ -117,17 +118,21 @@ def main() -> int:
     max_capital_income_mismatch = float(
         np.abs(df["Household_Capital_Income"] - df["Firm_Investment_Spending"]).max()
     )
+    max_adaptation_income_mismatch = float(
+        np.abs(df["Household_Adaptation_Income"] - df["Firm_Adaptation_Spending"]).max()
+    )
 
     print("Consistency summary")
     print(f"  steps: {steps}")
     print(f"  hazards_enabled: {not args.no_hazards}")
-    print(f"  learning_enabled: {bool(model.firm_learning_enabled)}")
+    print(f"  adaptation_enabled: {bool(model.firm_adaptation_enabled)}")
     print(f"  household_relocation_enabled: {bool(model.household_relocation_enabled)}")
     print(f"  initial_total_money: {model.initial_total_money:.12f}")
     print(f"  final_total_money: {model.total_money():.12f}")
     print(f"  max_abs_money_drift: {max_abs_money_drift:.12g}")
     print(f"  max_dividend_mismatch: {max_dividend_mismatch:.12g}")
     print(f"  max_capital_income_mismatch: {max_capital_income_mismatch:.12g}")
+    print(f"  max_adaptation_income_mismatch: {max_adaptation_income_mismatch:.12g}")
     if "Firm_Replacements" in df.columns:
         print(f"  final_replacements: {int(df['Firm_Replacements'].iloc[-1])}")
     if "Flooded_Firms" in df.columns:
@@ -157,6 +162,10 @@ def main() -> int:
     if max_capital_income_mismatch > args.income_tolerance:
         failures.append(
             f"capital-income mismatch {max_capital_income_mismatch:.12g} exceeds tolerance {args.income_tolerance:.12g}"
+        )
+    if max_adaptation_income_mismatch > args.income_tolerance:
+        failures.append(
+            f"adaptation-income mismatch {max_adaptation_income_mismatch:.12g} exceeds tolerance {args.income_tolerance:.12g}"
         )
     if args.min_tail_production is not None and float(tail["Firm_Production"].mean()) < args.min_tail_production:
         failures.append(

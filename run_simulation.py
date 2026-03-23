@@ -32,7 +32,8 @@ def _parse():
         help="Path to a JSON file containing parameter overrides. Keys can include rp_files (list), viz (bool), seed (int), topology (str).",
     )
     p.add_argument("--no-hazards", action="store_true", help="Run baseline scenario without hazard impacts")
-    p.add_argument("--no-learning", action="store_true", help="Disable evolutionary learning in firms")
+    p.add_argument("--no-adaptation", action="store_true", help="Disable hazard-conditional adaptation in firms")
+    p.add_argument("--no-learning", action="store_true", help="Deprecated alias for --no-adaptation")
     return p.parse_args()
 
 def main() -> None:  # noqa: D401
@@ -85,8 +86,8 @@ def main() -> None:  # noqa: D401
         if not args.topology and param_data.get("topology"):
             args.topology = str(param_data["topology"])
         
-        # 5. Learning parameters --------------------------------------------
-        args.learning_params = param_data.get("learning", {})
+        # 5. Adaptation parameters ------------------------------------------
+        args.adaptation_params = param_data.get("adaptation", param_data.get("learning", {}))
 
         # 6. Consumption ratios by sector -----------------------------------
         args.consumption_ratios = param_data.get("consumption_ratios", None)
@@ -145,9 +146,9 @@ def main() -> None:  # noqa: D401
     if not hasattr(args, "steps_per_year"):
         args.steps_per_year = 4
     
-    # Ensure learning_params exists even if no param file
-    if not hasattr(args, "learning_params"):
-        args.learning_params = {}
+    # Ensure adaptation_params exists even if no param file
+    if not hasattr(args, "adaptation_params"):
+        args.adaptation_params = {}
 
     # Ensure consumption_ratios exists even if no param file
     if not hasattr(args, "consumption_ratios"):
@@ -167,11 +168,12 @@ def main() -> None:  # noqa: D401
 
     # Configure scenario settings
     apply_hazards = not args.no_hazards
-    if args.no_learning:
-        learning_config = {**args.learning_params, "enabled": False}
+    disable_adaptation = bool(args.no_adaptation or args.no_learning)
+    if disable_adaptation:
+        adaptation_config = {**args.adaptation_params, "enabled": False}
     else:
-        learning_config = args.learning_params
-    learning_enabled = bool(learning_config.get("enabled", True))
+        adaptation_config = args.adaptation_params
+    adaptation_enabled = bool(adaptation_config.get("enabled", True))
 
     # Generate scenario label for output files
     scenario_parts = []
@@ -180,10 +182,10 @@ def main() -> None:  # noqa: D401
     else:
         scenario_parts.append("baseline")
     
-    if learning_enabled:
-        scenario_parts.append("learning")
+    if adaptation_enabled:
+        scenario_parts.append("adaptation")
     else:
-        scenario_parts.append("nolearning")
+        scenario_parts.append("noadaptation")
     
     scenario_label = "_".join(scenario_parts)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -213,7 +215,7 @@ def main() -> None:  # noqa: D401
         firm_topology_path=args.topology,
         start_year=args.start_year,
         steps_per_year=args.steps_per_year,
-        learning_params=learning_config,
+        adaptation_params=adaptation_config,
         consumption_ratios=args.consumption_ratios,
         grid_resolution=args.grid_resolution,
         household_relocation=args.household_relocation,
@@ -231,7 +233,7 @@ def main() -> None:  # noqa: D401
     else:
         scenario_display = "Baseline"
     
-    scenario_display += " + No Learning" if not learning_enabled else " + Learning"
+    scenario_display += " + No Adaptation" if not adaptation_enabled else " + Adaptation"
     
     df["Scenario"] = scenario_display
     df["Step"] = df.index

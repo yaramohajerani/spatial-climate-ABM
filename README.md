@@ -37,7 +37,7 @@ The model simulates economic agents (households and firms) on a spatial grid whi
 - **Adaptive Behaviors**: Risk-based household migration and firm capital adjustments
 - **Liquidity-Dependent Recovery**: Post-disaster recovery speed scales with firm liquidity (firms with more capital can afford faster repairs)
 - **Minimum Wage Floor**: Wage offers bounded below at 40% of initial wage, a proxy consistent with ILO (2016) observations on minimum wages in high-income economies
-- **Firm Learning System**: Evolutionary strategy-based learning for liquidity buffering, inventory buffering, reinvestment, and hazard sensitivity, with a fixed labor share in wage setting
+- **Firm Adaptation System**: Hazard-conditional resilience capital with adaptive expectations and a contextual-bandit policy over discrete adaptation investments
 - **Multiple Sectors**: Commodity, manufacturing, and retail sectors with sector-specific production coefficients and configurable household final-demand ratios over final-good sectors
 - **Circular-Flow Closure**: Households receive wages plus firm payouts, and total money is tracked explicitly so the household-firm system remains stock-flow closed in no-entry/no-exit runs
 
@@ -48,7 +48,7 @@ The model simulates economic agents (households and firms) on a spatial grid whi
 - **No preprocessing required**: Works directly with full-resolution Aqueduct flood rasters (~90MB each)
 - **Distance-soft labor market**: Households consider all firms; distance is a disutility but there is no hard radius
 - **Final-goods market discipline**: Households buy only from final-good sectors; upstream sectors sell to firms rather than directly to households
-- **Learning System**: Evolutionary strategy learning with same-sector peer imitation, bounded exploration, and stock-flow-consistent bankruptcy reorganization
+- **Adaptation System**: Hazard-conditional resilience learning with explicit adaptation spending, avoided-loss rewards, and stock-flow-consistent firm reorganization
 
 ## Core Architecture
 
@@ -70,14 +70,14 @@ The model uses a `mesa.space.MultiGrid` with configurable resolution (default 1�
   - Commodity: labor=0.6, input=0.0, capital=0.7 (capital-intensive extraction, no upstream inputs)
   - Manufacturing: labor=0.3, input=0.6, capital=0.6 (automated, capital & input intensive)
   - Retail: labor=0.5, input=0.4, capital=0.2 (moderate labor, low capital needs)
-- **Learning System**: Evolutionary strategy learning with 4 adaptive parameters, fitter-peer imitation, and bankruptcy-based selection
+- **Adaptation System**: A resilience-capital stock, hazard-context state, tabular UCB action selection, and bankruptcy reorganization with parent-state inheritance
 - **Wage Setting**: Revenue-based wage targeting — wages track revenue per worker × a fixed labor share of 0.5, with smooth adjustment (10% toward target per step); minimum wage floor at 40% of initial wage
 - **Dynamic Pricing**: Markup pricing — price = unit cost × (1 + markup), where markup is set by sell-through rate; prices track costs bidirectionally with no cost-floor ratchet
 - **Damage Recovery**: Liquidity-dependent recovery rate (20%–50% per step) so stressed firms recover more slowly
 - **Input Procurement**: Inputs from connected suppliers are treated as substitutable units and are purchased from the cheapest available suppliers first
 - **Production Planning**: Firms plan output from expected sales plus inventory buffers, hire only up to planned vacancies, seed startup inventories/capacity from labour-scaled final demand, expand capital only from residual cash above a working-capital buffer, and operate in phased within-step order (labour, production, then household consumption)
 - **Profit Distribution**: Positive profits above the operating buffer are split between retained-earnings capital expansion and household payouts; because there is no explicit capital-goods sector, investment spending is recycled to households as reduced-form investment income to preserve monetary closure
-- **Learning-Time Reorganization**: Failed firms are reorganized in place under a new strategy and, if needed, recapitalized by household equity contributions; replacements do not mint new firm cash, capital, or inventories
+- **Adaptation-State Reorganization**: Failed firms are reorganized in place under inherited same-sector adaptation state and, if needed, recapitalized by household equity contributions; replacements do not mint new firm cash, capital, or inventories
 
 ### Climate Hazard System
 
@@ -104,13 +104,13 @@ Damage is calculated using JRC Global Flood Depth-Damage Functions:
   - `retail` → Commercial buildings
 - **Interpolation**: Linear interpolation between depth-damage points
 
-### Firm Learning System
-- **Strategy Parameters**: Liquidity-buffer multiplier, inventory-buffer multiplier, reinvestment multiplier, and risk sensitivity
-- **Performance Tracking**: 10-step rolling window (2.5 years at quarterly resolution) of realized production used for fitness averaging
-- **Fitness Evaluation**: Time-averaged production over the memory window — a single metric that implicitly captures all aspects of firm health. Robustness verified via sensitivity analysis across 5 memory window lengths.
-- **Individual Adaptation**: Every 5 steps, firms compare their recent fitness with fitter same-sector peers, partially imitate the chosen role model, and add only bounded exploratory mutation around that anchor
-- **Population Dynamics**: Bankrupt firms (money below survival threshold) are reorganized in place using successful firms as strategy templates; no persistent-decline trigger to avoid procyclical wealth destruction during systemic crises
-- **Diagnostics**: Model and agent CSV outputs now include the four learned parameters plus the fixed labor share so strategy paths can be inspected directly during scenario analysis
+### Firm Adaptation System
+- **Adaptation Stock**: Each firm carries a `resilience_capital` stock in `[0, 1]` that attenuates direct hazard losses and speeds recovery
+- **Hazard Context**: Firms maintain EWMAs of expected direct loss, realized direct loss, and supplier disruption, plus current resilience stock
+- **Action Set**: Every 4 steps, firms choose among `maintain`, `small`, and `large` resilience investments
+- **Bandit Policy**: A tabular contextual-UCB rule selects the action when the hazard state is active; baseline no-hazard runs remain dormant
+- **Reward Signal**: Annualized avoided direct loss minus adaptation cost, normalized by direct value at risk
+- **Population Dynamics**: Bankrupt firms are reorganized in place, preserving stock-flow closure while inheriting adaptation state from successful same-sector parents
 
 ## Usage
 
@@ -145,11 +145,16 @@ python run_simulation.py --param-file aqueduct_riverine_parameters.json
   "consumption_ratios": {
     "retail": 1.0
   },
-  "learning": {
+  "adaptation": {
     "enabled": true,
-    "memory_length": 10,
-    "mutation_rate": 0.05,
-    "adaptation_frequency": 5,
+    "decision_interval": 4,
+    "reward_window": 4,
+    "ewma_alpha": 0.2,
+    "ucb_c": 1.0,
+    "action_increments": [0.0, 0.05, 0.1],
+    "resilience_decay": 0.01,
+    "maintenance_cost_rate": 0.005,
+    "loss_reduction_max": 0.6,
     "min_money_survival": 1.0,
     "replacement_frequency": 10
   }
@@ -158,7 +163,7 @@ python run_simulation.py --param-file aqueduct_riverine_parameters.json
 
 ### Sensitivity Analysis
 
-Run memory window sensitivity analysis to verify robustness of evolutionary learning results across different production averaging windows:
+Run a UCB exploration sweep to verify robustness of the hazard-conditional adaptation results:
 
 ```bash
 # Full sensitivity analysis
@@ -168,7 +173,7 @@ python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.
 python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --quick
 ```
 
-This runs the hazard+learning scenario across 5 memory window lengths (1.25–5.0 years) and produces a comparison plot and summary CSV table.
+This runs the hazard+adaptation scenario across four UCB exploration strengths (`c = 0.25, 0.5, 1.0, 2.0`) and produces a comparison plot and summary CSV table.
 
 ### Data Preprocessing (Optional)
 
@@ -245,16 +250,21 @@ Include at least one final-good sector (`retail`, `wholesale`, or `services`) in
 
 - **Stock-flow closure regression**: `PYTHONPYCACHEPREFIX=/tmp/codex-pycache /Users/yaramohajerani/mamba/envs/climada_env/bin/python -m pytest tests/test_stock_flow_closure.py -q`
 - **What it checks**: Total money stays constant to floating-point tolerance in a closed no-hazard economy, household-side payout income matches firm-side payout spending, the fixed labor-share wage rule behaves as expected, and the small sample economy remains economically active over the last 10 steps rather than collapsing to zero output.
-- **Scenario preflight check**: `PYTHONPYCACHEPREFIX=/tmp/codex-pycache /Users/yaramohajerani/mamba/envs/climada_env/bin/python check_consistency.py --param-file aqueduct_riverine_parameters_rcp8p5.json --no-hazards --no-learning --steps 80 --min-tail-production 1200 --min-tail-consumption 700 --min-tail-labor 700 --min-tail-active-firms 30`
+- **Scenario preflight check**: `PYTHONPYCACHEPREFIX=/tmp/codex-pycache /Users/yaramohajerani/mamba/envs/climada_env/bin/python check_consistency.py --param-file aqueduct_riverine_parameters_rcp8p5.json --no-hazards --no-adaptation --steps 80 --min-tail-production 1200 --min-tail-consumption 700 --min-tail-labor 600 --min-tail-active-firms 30`
 - **What it checks**: Money drift, household-firm payout mismatches, replacements, flooding counts, tail activity levels, and active-versus-dormant firm counts on the full configured topology before you commit to a long scenario batch.
 
-### Learning Parameters
-- `learning.enabled`: Enable/disable firm learning (default: true)
-- `learning.memory_length`: Steps of performance history for fitness averaging (default: 10, i.e. 2.5 years at quarterly resolution)
-- `learning.mutation_rate`: Exploratory mutation standard deviation around the current or imitated strategy anchor (default: 0.05)
-- `learning.adaptation_frequency`: Steps between strategy evaluations (default: 5)
-- `learning.min_money_survival`: Minimum money before firm failure (default: 1.0)
-- `learning.replacement_frequency`: Steps between replacement cycles (default: 10)
+### Adaptation Parameters
+- `adaptation.enabled`: Enable/disable hazard-conditional firm adaptation (default: true)
+- `adaptation.decision_interval`: Steps between bandit decisions (default: 4)
+- `adaptation.reward_window`: Steps used to evaluate each action (default: 4)
+- `adaptation.ewma_alpha`: Smoothing parameter for hazard-state expectations (default: 0.2)
+- `adaptation.ucb_c`: Contextual-bandit exploration coefficient (default: 1.0)
+- `adaptation.action_increments`: Resilience-capital increments for maintain/small/large actions (default: `[0.0, 0.05, 0.1]`)
+- `adaptation.resilience_decay`: Per-step depreciation of resilience capital (default: 0.01)
+- `adaptation.maintenance_cost_rate`: Per-step carrying cost on resilience capital (default: 0.005)
+- `adaptation.loss_reduction_max`: Maximum fraction of direct loss that resilience can attenuate at full stock (default: 0.6)
+- `adaptation.min_money_survival`: Minimum money before firm failure (default: 1.0)
+- `adaptation.replacement_frequency`: Steps between replacement cycles (default: 10)
 
 ### Climate Parameters
 - **Recovery Rate**: Liquidity-dependent; 20% (money≈0) to 50% (money≥200) of remaining damage recovered per step
@@ -268,7 +278,7 @@ Include at least one final-good sector (`retail`, `wholesale`, or `services`) in
 ├── model.py              # Main EconomyModel class
 ├── agents.py             # HouseholdAgent and FirmAgent classes
 ├── run_simulation.py     # CLI runner with parameter file support
-├── sensitivity_analysis.py # Memory-window sensitivity analysis
+├── sensitivity_analysis.py # UCB exploration sensitivity analysis
 ├── hazard_utils.py       # LazyHazard class for memory-efficient sampling
 ├── damage_functions.py   # JRC damage functions from Excel
 ├── trophic_utils.py      # Network topology analysis utilities (not used in core runtime logic)

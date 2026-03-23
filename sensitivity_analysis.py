@@ -1,8 +1,8 @@
-"""Sensitivity analysis for evolutionary learning memory window.
+"""Sensitivity analysis for hazard-conditional adaptation exploration.
 
-Runs the hazard+learning scenario across a range of memory_length
-values to verify that qualitative conclusions are robust to the
-choice of production averaging window.
+Runs the hazard+adaptation scenario across a range of UCB exploration
+coefficients to verify that qualitative conclusions are robust to the
+bandit's exploration intensity.
 
 Usage:
     # Full run (saves timeseries + summary CSVs and plot)
@@ -27,23 +27,20 @@ from model import EconomyModel
 
 
 # ------------------------------------------------------------------ #
-#                   Memory length configurations                      #
+#                   UCB exploration configurations                    #
 # ------------------------------------------------------------------ #
 
-# At steps_per_year=4, memory_length in steps maps to years as:
-#   5 → 1.25 yr, 8 → 2 yr, 10 → 2.5 yr, 15 → 3.75 yr, 20 → 5 yr
-MEMORY_CONFIGS = {
-    "5 steps (1.25 yr)": 5,
-    "8 steps (2.0 yr)": 8,
-    "10 steps (2.5 yr, default)": 10,
-    "15 steps (3.75 yr)": 15,
-    "20 steps (5.0 yr)": 20,
+UCB_CONFIGS = {
+    "UCB c=0.25": 0.25,
+    "UCB c=0.50": 0.50,
+    "UCB c=1.00 (default)": 1.00,
+    "UCB c=2.00": 2.00,
 }
 
 
 def _parse_args():
     p = argparse.ArgumentParser(
-        description="Memory window sensitivity analysis for evolutionary learning.",
+        description="Sensitivity analysis for contextual-bandit exploration strength.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument(
@@ -91,11 +88,11 @@ def _parse_events(rp_files: list[str]):
     return events
 
 
-def run_scenario(params: dict, events: list, memory_length: int,
+def run_scenario(params: dict, events: list, ucb_c: float,
                  n_steps: int, seed: int) -> pd.DataFrame:
-    """Run a single hazard+learning scenario with the given memory window."""
-    learning_config = params.get("learning", {})
-    learning_config = {**learning_config, "enabled": True, "memory_length": memory_length}
+    """Run a single hazard+adaptation scenario with the given UCB coefficient."""
+    adaptation_config = params.get("adaptation", params.get("learning", {}))
+    adaptation_config = {**adaptation_config, "enabled": True, "ucb_c": ucb_c}
 
     model = EconomyModel(
         num_households=int(params.get("num_households", 100)),
@@ -106,7 +103,7 @@ def run_scenario(params: dict, events: list, memory_length: int,
         firm_topology_path=params.get("topology"),
         start_year=int(params.get("start_year", 0)),
         steps_per_year=int(params.get("steps_per_year", 4)),
-        learning_params=learning_config,
+        adaptation_params=adaptation_config,
         consumption_ratios=params.get("consumption_ratios"),
         grid_resolution=float(params.get("grid_resolution", 1.0)),
         household_relocation=bool(params.get("household_relocation", True)),
@@ -127,11 +124,11 @@ TIMESERIES_COLS = [
 
 
 def save_timeseries(results: dict[str, pd.DataFrame], out_path: str):
-    """Save per-step timeseries data for all memory configs to a single CSV."""
+    """Save per-step timeseries data for all UCB configs to a single CSV."""
     frames = []
     for label, df in results.items():
         kept = df[[c for c in TIMESERIES_COLS if c in df.columns]].copy()
-        kept.insert(0, "Memory_Window", label)
+        kept.insert(0, "UCB_Exploration", label)
         frames.append(kept)
     combined = pd.concat(frames, ignore_index=True)
     combined.to_csv(out_path, index=False)
@@ -139,17 +136,17 @@ def save_timeseries(results: dict[str, pd.DataFrame], out_path: str):
 
 
 def load_timeseries(csv_path: str) -> dict[str, pd.DataFrame]:
-    """Load timeseries CSV back into a dict keyed by memory window label."""
+    """Load timeseries CSV back into a dict keyed by UCB exploration label."""
     df = pd.read_csv(csv_path)
     results = {}
-    for label, grp in df.groupby("Memory_Window", sort=False):
-        results[label] = grp.drop(columns=["Memory_Window"]).reset_index(drop=True)
+    for label, grp in df.groupby("UCB_Exploration", sort=False):
+        results[label] = grp.drop(columns=["UCB_Exploration"]).reset_index(drop=True)
     return results
 
 
 def plot_sensitivity(results: dict[str, pd.DataFrame], out_path: str,
                      num_households: int):
-    """Plot key metrics across all memory length configurations.
+    """Plot key metrics across all UCB exploration configurations.
 
     Panels match the main timeseries figure layout:
       Production, Capital, Liquidity (real), Consumption, Wage (real), Price
@@ -200,8 +197,8 @@ def plot_sensitivity(results: dict[str, pd.DataFrame], out_path: str,
     fig.legend(handles, labels, loc="lower center", ncol=3, fontsize=9,
                bbox_to_anchor=(0.5, -0.02))
 
-    fig.suptitle("Sensitivity of Outcomes to Fitness Memory Window Length\n"
-                 "(Hazard + Learning scenario)",
+    fig.suptitle("Sensitivity of Outcomes to UCB Exploration Strength\n"
+                 "(Hazard + Adaptation scenario)",
                  fontsize=13, y=1.02)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
@@ -226,7 +223,7 @@ def make_summary_table(results: dict[str, pd.DataFrame],
         consumption = last_decade["Household_Consumption"] / num_households
 
         row = {
-            "Memory Window": label,
+            "UCB Exploration": label,
             "Production": f"{prod.mean():.1f} ± {prod.std():.1f}",
             "Capital": f"{cap.mean():.1f} ± {cap.std():.1f}",
             "Real Wage": f"{wage_real.mean():.2f} ± {wage_real.std():.2f}",
@@ -259,11 +256,11 @@ def main():
 
         results: dict[str, pd.DataFrame] = {}
 
-        for label, mem_len in MEMORY_CONFIGS.items():
+        for label, ucb_c in UCB_CONFIGS.items():
             print(f"\n{'='*60}")
-            print(f"Running: {label}  memory_length={mem_len}")
+            print(f"Running: {label}  ucb_c={ucb_c}")
             print(f"{'='*60}")
-            df = run_scenario(params, events, mem_len, n_steps, seed)
+            df = run_scenario(params, events, ucb_c, n_steps, seed)
             results[label] = df
 
         # Save full timeseries for future re-plotting

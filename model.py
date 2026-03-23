@@ -48,6 +48,7 @@ class EconomyModel(Model):
         steps_per_year: int = 4,
         firm_topology_path: str | None = None,
         apply_hazard_impacts: bool = True,
+        adaptation_params: dict | None = None,
         learning_params: dict | None = None,
         consumption_ratios: dict | None = None,
         grid_resolution: float = 1.0,
@@ -68,11 +69,16 @@ class EconomyModel(Model):
         # If False, households stay in place regardless of hazards or employment.
         self.household_relocation_enabled: bool = household_relocation
 
-        # Learning system parameters
-        self.learning_config = learning_params or {}
-        self.firm_learning_enabled: bool = self.learning_config.get('enabled', True)
-        self.min_money_survival: float = self.learning_config.get('min_money_survival', 1.0)
-        self.replacement_frequency: int = self.learning_config.get('replacement_frequency', 10)
+        # Adaptation system parameters. ``learning_params`` remains as a compatibility
+        # alias while callers migrate to the hazard-conditional adaptation module.
+        if adaptation_params is None and learning_params is not None:
+            adaptation_params = learning_params
+        self.adaptation_config = adaptation_params or {}
+        self.learning_config = self.adaptation_config
+        self.firm_adaptation_enabled: bool = self.adaptation_config.get("enabled", True)
+        self.firm_learning_enabled: bool = self.firm_adaptation_enabled
+        self.min_money_survival: float = self.adaptation_config.get("min_money_survival", 1.0)
+        self.replacement_frequency: int = self.adaptation_config.get("replacement_frequency", 10)
 
         # Household consumption ratios across final-good sectors.
         # Upstream sectors sell to firms, not directly to households.
@@ -199,6 +205,7 @@ class EconomyModel(Model):
                 "Household_Labor_Income": lambda m: sum(h.labor_income_this_step for h in m._households),
                 "Household_Dividend_Income": lambda m: sum(h.dividend_income_this_step for h in m._households),
                 "Household_Capital_Income": lambda m: sum(h.capital_income_this_step for h in m._households),
+                "Household_Adaptation_Income": lambda m: sum(h.adaptation_income_last_step for h in m._households),
                 "Average_Risk": lambda m: np.mean(list(m.hazard_map.values())),
                 "Mean_Wage": lambda m: m.mean_wage,
                 "Mean_Price": lambda m: np.mean([f.price for f in m._firms]) if m._firms else 0.0,
@@ -208,11 +215,12 @@ class EconomyModel(Model):
                 "Capital_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "capital"),
                 "Input_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "input"),
                 "Demand_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "demand"),
-                "Average_Firm_Fitness": lambda m: np.mean([f.fitness_score for f in m._firms]) if m._firms else 0.0,
-                "Average_Labor_Buffer_Weight": lambda m: np.mean([f.strategy.get("budget_labor_weight", 1.0) for f in m._firms]) if m._firms else 0.0,
-                "Average_Input_Buffer_Weight": lambda m: np.mean([f.strategy.get("budget_input_weight", 1.0) for f in m._firms]) if m._firms else 0.0,
-                "Average_Capital_Buffer_Weight": lambda m: np.mean([f.strategy.get("budget_capital_weight", 1.0) for f in m._firms]) if m._firms else 0.0,
-                "Average_Risk_Sensitivity": lambda m: np.mean([f.strategy.get("risk_sensitivity", 1.0) for f in m._firms]) if m._firms else 0.0,
+                "Firm_Adaptation_Spending": lambda m: sum(f.adaptation_spending_this_step for f in m._firms),
+                "Average_Resilience_Capital": lambda m: np.mean([f.resilience_capital for f in m._firms]) if m._firms else 0.0,
+                "Average_Expected_Direct_Loss": lambda m: np.mean([f.expected_direct_loss_ewma for f in m._firms]) if m._firms else 0.0,
+                "Average_Realized_Direct_Loss": lambda m: np.mean([f.realized_direct_loss_ewma for f in m._firms]) if m._firms else 0.0,
+                "Average_Supplier_Disruption": lambda m: np.mean([f.supplier_disruption_ewma for f in m._firms]) if m._firms else 0.0,
+                "Average_Adaptation_Reward": lambda m: float(np.nanmean([f.last_adaptation_reward for f in m._firms])) if any(np.isfinite(f.last_adaptation_reward) for f in m._firms) else 0.0,
                 "Fixed_Labor_Share": lambda m: np.mean([getattr(f, "LABOR_SHARE", np.nan) for f in m._firms]) if m._firms else 0.0,
                 "Firm_Replacements": lambda m: getattr(m, 'total_firm_replacements', 0),
                 "Total_Sales": lambda m: sum(f.sales_last_step for f in m._firms),
@@ -233,20 +241,26 @@ class EconomyModel(Model):
                 "wage": lambda a: getattr(a, "wage_offer", np.nan),
                 "sector": lambda a: getattr(a, "sector", ""),
                 "type": lambda a: type(a).__name__,
-                "fitness": lambda a: getattr(a, "fitness_score", np.nan),
                 "survival_time": lambda a: getattr(a, "survival_time", 0),
                 "sales_last_step": lambda a: getattr(a, "sales_last_step", np.nan),
                 "household_sales_last_step": lambda a: getattr(a, "household_sales_last_step", np.nan),
                 "labor_income": lambda a: getattr(a, "labor_income_this_step", np.nan),
                 "dividend_income": lambda a: getattr(a, "dividend_income_this_step", np.nan),
                 "capital_income": lambda a: getattr(a, "capital_income_this_step", np.nan),
+                "adaptation_income": lambda a: getattr(a, "adaptation_income_last_step", np.nan),
                 "profit": lambda a: getattr(a, "profit_this_step", np.nan),
                 "dividends_paid": lambda a: getattr(a, "dividends_paid_this_step", np.nan),
                 "investment_spending": lambda a: getattr(a, "investment_spending_this_step", np.nan),
-                "budget_labor_weight": lambda a: getattr(a, "strategy", {}).get("budget_labor_weight", np.nan),
-                "budget_input_weight": lambda a: getattr(a, "strategy", {}).get("budget_input_weight", np.nan),
-                "budget_capital_weight": lambda a: getattr(a, "strategy", {}).get("budget_capital_weight", np.nan),
-                "risk_sensitivity": lambda a: getattr(a, "strategy", {}).get("risk_sensitivity", np.nan),
+                "adaptation_spending": lambda a: getattr(a, "adaptation_spending_this_step", np.nan),
+                "resilience_capital": lambda a: getattr(a, "resilience_capital", np.nan),
+                "expected_direct_loss": lambda a: getattr(a, "expected_direct_loss_ewma", np.nan),
+                "realized_direct_loss": lambda a: getattr(a, "realized_direct_loss_ewma", np.nan),
+                "supplier_disruption": lambda a: getattr(a, "supplier_disruption_ewma", np.nan),
+                "adaptation_reward": lambda a: getattr(a, "last_adaptation_reward", np.nan),
+                "adaptation_action": lambda a: getattr(a, "last_adaptation_action", ""),
+                "counterfactual_direct_loss": lambda a: getattr(a, "counterfactual_direct_loss_this_step", np.nan),
+                "realized_direct_loss_value": lambda a: getattr(a, "realized_direct_loss_this_step", np.nan),
+                "adaptation_updates": lambda a: getattr(a, "adaptation_update_count", np.nan),
                 "labor_share": lambda a: getattr(a, "LABOR_SHARE", np.nan),
             },
         )
@@ -364,6 +378,8 @@ class EconomyModel(Model):
                 household.dividend_income_this_step += per_household
             elif income_kind == "capital":
                 household.capital_income_this_step += per_household
+            elif income_kind == "adaptation":
+                household.adaptation_income_this_step += per_household
             else:
                 raise ValueError(f"Unknown household income kind: {income_kind}")
 
@@ -689,6 +705,10 @@ class EconomyModel(Model):
         """Advance model by one timestep (representing one year)."""
         self.current_step += 1
 
+        # Firms update resilience decisions before the new hazard state is sampled.
+        for firm in self._firms:
+            firm.begin_period_adaptation()
+
         # Each year: sample hazard independently for every cell based on RP
         self._sample_pixelwise_hazard()
 
@@ -728,72 +748,59 @@ class EconomyModel(Model):
         if self._firms:
             self.mean_wage = float(np.mean([f.wage_offer for f in self._firms]))
 
-        # Collect data BEFORE evolutionary pressure so we capture firms that
+        # Collect data BEFORE reorganization so we capture firms that
         # have already produced (and thus have limiting_factor set). New
         # replacement firms haven't stepped yet and would skew bottleneck counts.
         self.datacollector.collect(self)
 
-        # ---------------- Evolutionary pressure (learning system) ---- #
+        # ---------------- Firm reorganization ------------------------ #
         self.steps_since_replacement += 1
-        if self.firm_learning_enabled and self.steps_since_replacement >= self.replacement_frequency:
-            self._apply_evolutionary_pressure()
+        if self.firm_adaptation_enabled and self.steps_since_replacement >= self.replacement_frequency:
+            self._apply_firm_reorganization()
             self.steps_since_replacement = 0
 
     # --------------------------------------------------------------------- #
-    #                         LEARNING SYSTEM METHODS                        #
+    #                      FIRM REORGANIZATION METHODS                       #
     # --------------------------------------------------------------------- #
-    def _apply_evolutionary_pressure(self) -> None:
-        """Replace failed firms with mutated versions of successful ones."""
+    def _apply_firm_reorganization(self) -> None:
+        """Reorganize failed firms in place and inherit adaptation state."""
         if len(self._firms) < 2:
-            return  # need at least 2 firms for evolution
+            return
 
-        # Skip early in simulation when firms don't have enough history
         if self.current_step < 5:
             return
 
-        # Identify failed firms (bankrupt only — money below survival threshold).
-        # No "persistent decline" check: during systemic crises all firms decline,
-        # and replacing solvent-but-declining firms destroys accumulated wealth.
         failed_firms = []
         for firm in self._firms:
             if firm.money < self.min_money_survival:
                 failed_firms.append(firm)
-        
-        if not failed_firms:
-            return  # no firms to replace
 
-        # Limit replacements per step to prevent excessive processing
-        max_replacements = max(1, len(self._firms) // 4)  # replace at most 25% of firms per step
+        if not failed_firms:
+            return
+
+        max_replacements = max(1, len(self._firms) // 4)
         failed_firms = failed_firms[:max_replacements]
 
-        # Identify successful firms (any positive production)
-        successful_firms = [f for f in self._firms if f not in failed_firms and f.fitness_score > 0]
+        successful_firms = [
+            f for f in self._firms
+            if f not in failed_firms and f.money >= self.min_money_survival
+        ]
         if not successful_firms:
-            successful_firms = [f for f in self._firms if f not in failed_firms]  # fallback to non-failed
-        
-        if not successful_firms:
-            return  # pathological case
-        
-        # Replace failed firms with reorganized versions of successful ones.
-        # The establishment shell, assets, and money stay inside the model; only
-        # strategy and working-capital finance are refreshed.
-        for failed_firm in failed_firms:
-            # Choose parent based on fitness (weighted selection)
-            if len(successful_firms) == 1:
-                parent = successful_firms[0]
-            else:
-                weights = [f.fitness_score + 0.1 for f in successful_firms]  # add small baseline
-                parent = self.random.choices(successful_firms, weights=weights, k=1)[0]
+            successful_firms = [f for f in self._firms if f not in failed_firms]
 
-            # Reorganization is an ownership/strategy reset, not ex nihilo
-            # firm creation. Preserve the failed firm's location, inventories,
-            # capital stock, and supplier links.
-            failed_firm.strategy = parent.strategy.copy()
-            for key in failed_firm.strategy:
-                if self.random.random() < 0.5:  # 50% chance to mutate each parameter
-                    mutation = self.random.gauss(0, 0.1)  # 10% std deviation
-                    failed_firm.strategy[key] *= (1.0 + mutation)
-                    failed_firm.strategy[key] = max(0.1, min(3.0, failed_firm.strategy[key]))
+        if not successful_firms:
+            return
+
+        for failed_firm in failed_firms:
+            sector_candidates = [f for f in successful_firms if f.sector == failed_firm.sector]
+            if not sector_candidates:
+                sector_candidates = successful_firms
+
+            if len(sector_candidates) == 1:
+                parent = sector_candidates[0]
+            else:
+                weights = [max(f.money, 0.0) + max(f.production, 0.0) + 1.0 for f in sector_candidates]
+                parent = self.random.choices(sector_candidates, weights=weights, k=1)[0]
 
             target_expected_sales = max(failed_firm.expected_sales, parent.expected_sales * 0.5, 1.0)
             inventory_target = max(1.0, float(target_expected_sales))
@@ -812,12 +819,11 @@ class EconomyModel(Model):
             failed_firm.base_inventory_target = inventory_target
             failed_firm.base_capital_target = max(failed_firm.capital_stock, capital_target)
             failed_firm.target_capital_stock = failed_firm.base_capital_target
-            failed_firm.performance_history.clear()
-            failed_firm.fitness_score = 0.0
-            failed_firm.steps_since_adaptation = 0
+            failed_firm.copy_adaptation_state_from(parent)
             failed_firm.survival_time = 0
             failed_firm.sales_last_step = 0.0
             failed_firm.revenue_last_step = 0.0
+            failed_firm.counterfactual_damage_factor = failed_firm.damage_factor
 
             equity_needed = max(0.0, working_capital_target - failed_firm.money)
             self.transfer_household_equity_to_firm(failed_firm, equity_needed)
@@ -828,10 +834,14 @@ class EconomyModel(Model):
 
             self.total_firm_replacements += 1
             print(
-                f"[EVOLUTION] Step {self.current_step}: Reorganized failed firm "
+                f"[REORGANIZATION] Step {self.current_step}: Reorganized failed firm "
                 f"{failed_firm.unique_id} using parent {parent.unique_id} "
                 f"(total: {self.total_firm_replacements})"
             )
+
+    def _apply_evolutionary_pressure(self) -> None:
+        """Compatibility alias for older tests and scripts."""
+        self._apply_firm_reorganization()
 
     # --------------------------------------------------------------------- #
     #                            EXPORT HELPERS                              #
@@ -996,11 +1006,17 @@ class EconomyModel(Model):
 
             # Apply damage to firms (households not directly affected by flood damage)
             if is_firm:
-                ag.capital_stock *= 1 - combined_loss_agent
-                ag.damage_factor *= 1 - combined_loss_agent
-                ag.inventory_output = int(ag.inventory_output * (1 - combined_loss_agent))
+                adapted_loss_fraction = ag.get_adapted_loss_fraction(combined_loss_agent)
+                ag.record_direct_losses(
+                    raw_loss_fraction=combined_loss_agent,
+                    adapted_loss_fraction=adapted_loss_fraction,
+                )
+                ag.capital_stock *= 1 - adapted_loss_fraction
+                ag.damage_factor *= 1 - adapted_loss_fraction
+                ag.counterfactual_damage_factor *= 1 - combined_loss_agent
+                ag.inventory_output *= 1 - adapted_loss_fraction
                 for k in list(ag.inventory_inputs.keys()):
-                    ag.inventory_inputs[k] = int(ag.inventory_inputs[k] * (1 - combined_loss_agent))
+                    ag.inventory_inputs[k] *= 1 - adapted_loss_fraction
 
         # Process firms only (households affected indirectly via employment/prices)
         for firm in self._firms:

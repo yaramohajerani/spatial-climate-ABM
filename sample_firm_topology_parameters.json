@@ -19,11 +19,16 @@
     "services": 0.70,
     "retail": 0.30
   },
-  "learning": {
+  "adaptation": {
     "enabled": true,
-    "memory_length": 10,
-    "mutation_rate": 0.05,
-    "adaptation_frequency": 5,
+    "decision_interval": 4,
+    "reward_window": 4,
+    "ewma_alpha": 0.2,
+    "ucb_c": 1.0,
+    "action_increments": [0.0, 0.05, 0.1],
+    "resilience_decay": 0.01,
+    "maintenance_cost_rate": 0.005,
+    "loss_reduction_max": 0.6,
     "min_money_survival": 1.0,
     "replacement_frequency": 10
   },
