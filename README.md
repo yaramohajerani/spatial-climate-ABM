@@ -37,7 +37,7 @@ The model simulates economic agents (households and firms) on a spatial grid whi
 - **Adaptive Behaviors**: Risk-based household migration and firm capital adjustments
 - **Liquidity-Dependent Recovery**: Post-disaster recovery speed scales with firm liquidity (firms with more capital can afford faster repairs)
 - **Minimum Wage Floor**: Wage offers bounded below at 40% of initial wage, a proxy consistent with ILO (2016) observations on minimum wages in high-income economies
-- **Firm Learning System**: Evolutionary strategy-based learning for liquidity buffering, inventory buffering, reinvestment, wage responsiveness, and hazard sensitivity
+- **Firm Learning System**: Evolutionary strategy-based learning for liquidity buffering, inventory buffering, reinvestment, and hazard sensitivity, with a fixed labor share in wage setting
 - **Multiple Sectors**: Commodity, manufacturing, and retail sectors with sector-specific production coefficients and configurable household final-demand ratios over final-good sectors
 - **Circular-Flow Closure**: Households receive wages plus firm payouts, and total money is tracked explicitly so the household-firm system remains stock-flow closed in no-entry/no-exit runs
 
@@ -70,8 +70,8 @@ The model uses a `mesa.space.MultiGrid` with configurable resolution (default 1�
   - Commodity: labor=0.6, input=0.0, capital=0.7 (capital-intensive extraction, no upstream inputs)
   - Manufacturing: labor=0.3, input=0.6, capital=0.6 (automated, capital & input intensive)
   - Retail: labor=0.5, input=0.4, capital=0.2 (moderate labor, low capital needs)
-- **Learning System**: Evolutionary strategy learning with 5 adaptive parameters, fitter-peer imitation, and bankruptcy-based selection
-- **Wage Setting**: Revenue-based wage targeting — wages track revenue per worker × labor share, with smooth adjustment (10% toward target per step); minimum wage floor at 40% of initial wage
+- **Learning System**: Evolutionary strategy learning with 4 adaptive parameters, fitter-peer imitation, and bankruptcy-based selection
+- **Wage Setting**: Revenue-based wage targeting — wages track revenue per worker × a fixed labor share of 0.5, with smooth adjustment (10% toward target per step); minimum wage floor at 40% of initial wage
 - **Dynamic Pricing**: Markup pricing — price = unit cost × (1 + markup), where markup is set by sell-through rate; prices track costs bidirectionally with no cost-floor ratchet
 - **Damage Recovery**: Liquidity-dependent recovery rate (20%–50% per step) so stressed firms recover more slowly
 - **Input Procurement**: Inputs from connected suppliers are treated as substitutable units and are purchased from the cheapest available suppliers first
@@ -105,12 +105,12 @@ Damage is calculated using JRC Global Flood Depth-Damage Functions:
 - **Interpolation**: Linear interpolation between depth-damage points
 
 ### Firm Learning System
-- **Strategy Parameters**: Liquidity-buffer multiplier, inventory-buffer multiplier, reinvestment multiplier, risk sensitivity, wage responsiveness (controls labor share of revenue)
+- **Strategy Parameters**: Liquidity-buffer multiplier, inventory-buffer multiplier, reinvestment multiplier, and risk sensitivity
 - **Performance Tracking**: 10-step rolling window (2.5 years at quarterly resolution) of realized production used for fitness averaging
 - **Fitness Evaluation**: Time-averaged production over the memory window — a single metric that implicitly captures all aspects of firm health. Robustness verified via sensitivity analysis across 5 memory window lengths.
 - **Individual Adaptation**: Every 5 steps, firms compare their recent fitness with fitter same-sector peers, partially imitate the chosen role model, and add only bounded exploratory mutation around that anchor
 - **Population Dynamics**: Bankrupt firms (money below survival threshold) are reorganized in place using successful firms as strategy templates; no persistent-decline trigger to avoid procyclical wealth destruction during systemic crises
-- **Diagnostics**: Model and agent CSV outputs now include the five learning parameters so strategy paths can be inspected directly during scenario analysis
+- **Diagnostics**: Model and agent CSV outputs now include the four learned parameters plus the fixed labor share so strategy paths can be inspected directly during scenario analysis
 
 ## Usage
 
@@ -237,14 +237,14 @@ Include at least one final-good sector (`retail`, `wholesale`, or `services`) in
 - **Depreciation Rate**: 0.2% per step
 - **Consumption Ratios**: Configurable household spending by final-good sector only. For the current 100-firm riverine topology the relevant setting is `{"retail": 1.0}`.
 - **Household Consumption Rule**: `0.9 × disposable_income + 0.02 × max(0, money - 50)`, where disposable income is current labor income plus the previous period's dividends and reduced-form investment income
-- **Wage Mechanism**: Revenue-based targeting — firms set wages at `revenue_per_worker × labor_share` (default labor share 0.5, modulated by learned `wage_responsiveness`), with 10% smooth adjustment per step. Wages are structurally bounded by revenue and self-correct during downturns.
+- **Wage Mechanism**: Revenue-based targeting — firms set wages at `revenue_per_worker × labor_share`, with a fixed labour-share parameter of `0.5` and 10% smooth adjustment per step. Wages are structurally bounded by revenue and self-correct during downturns.
 - **Minimum Wage Floor**: 40% of initial mean wage, a proxy consistent with ILO (2016) observations (40–60% of median)
 - **Production Planning**: Firms target expected sales plus an inventory buffer, translate that into vacancies and input demand, preserve a working-capital buffer, initialize inventories and capital from labour-consistent demand, clear household demand after the current period's production is complete, and close the period by splitting positive profits between dividends and internally financed capital expansion subject to liquidity constraints
 
 ## Validation
 
 - **Stock-flow closure regression**: `PYTHONPYCACHEPREFIX=/tmp/codex-pycache /Users/yaramohajerani/mamba/envs/climada_env/bin/python -m pytest tests/test_stock_flow_closure.py -q`
-- **What it checks**: Total money stays constant to floating-point tolerance in a closed no-hazard economy, household-side payout income matches firm-side payout spending, and the small sample economy remains economically active over the last 10 steps rather than collapsing to zero output.
+- **What it checks**: Total money stays constant to floating-point tolerance in a closed no-hazard economy, household-side payout income matches firm-side payout spending, the fixed labor-share wage rule behaves as expected, and the small sample economy remains economically active over the last 10 steps rather than collapsing to zero output.
 - **Scenario preflight check**: `PYTHONPYCACHEPREFIX=/tmp/codex-pycache /Users/yaramohajerani/mamba/envs/climada_env/bin/python check_consistency.py --param-file aqueduct_riverine_parameters_rcp8p5.json --no-hazards --no-learning --steps 80 --min-tail-production 1200 --min-tail-consumption 700 --min-tail-labor 700 --min-tail-active-firms 30`
 - **What it checks**: Money drift, household-firm payout mismatches, replacements, flooding counts, tail activity levels, and active-versus-dormant firm counts on the full configured topology before you commit to a long scenario batch.
 

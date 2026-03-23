@@ -108,5 +108,24 @@ def test_learning_moves_toward_fitter_same_sector_peer() -> None:
 
     expected_value = (1.0 - learner.IMITATION_RATE) * 0.5 + learner.IMITATION_RATE * 2.0
     assert np.isclose(learner.fitness_score, 1.0, atol=1e-9)
+    assert "wage_responsiveness" not in learner.strategy
     for key, value in learner.strategy.items():
         assert np.isclose(value, expected_value, atol=1e-9), key
+
+
+def test_wage_target_uses_fixed_labor_share() -> None:
+    """Wage targeting should use the fixed labor share rather than a learned parameter."""
+    model = build_closed_economy_model()
+    firm = model._firms[0]
+    firm.wage_offer = 1.0
+    firm.last_hired_labor = 2
+    firm.revenue_last_step = 20.0
+    starting_wage = firm.wage_offer
+    expected_workers = firm.last_hired_labor
+    expected_revenue = firm.revenue_last_step
+
+    firm.step()
+
+    target_wage = (expected_revenue / expected_workers) * firm.LABOR_SHARE
+    expected_wage = starting_wage + 0.1 * (target_wage - starting_wage)
+    assert np.isclose(firm.wage_offer, expected_wage, atol=1e-9)

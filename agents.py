@@ -276,6 +276,7 @@ class FirmAgent(Agent):
     MUTATION_RATE: float = 0.05  # standard deviation for exploratory strategy mutations
     ADAPTATION_FREQUENCY: int = 5  # steps between strategy evaluations
     IMITATION_RATE: float = 0.35  # weight placed on a fitter same-sector peer
+    LABOR_SHARE: float = 0.5  # fixed labour share of revenue in wage targeting
 
     def __init__(
         self,
@@ -385,7 +386,6 @@ class FirmAgent(Agent):
             'budget_input_weight': self.random.uniform(0.8, 1.2),      # inventory buffer multiplier
             'budget_capital_weight': self.random.uniform(0.8, 1.2),    # reinvestment multiplier
             'risk_sensitivity': self.random.uniform(0.5, 1.5),         # hazard response aggressiveness
-            'wage_responsiveness': self.random.uniform(0.5, 1.5),      # wage adjustment responsiveness
         }
 
     def _bounded_mutation(
@@ -644,7 +644,7 @@ class FirmAgent(Agent):
         # This replaces ad-hoc shortage-signal heuristics with a single economic principle:
         # firms pay workers a fraction of what they produce, so wages are structurally
         # bounded by firm revenue and self-correct during downturns.
-        labor_share = 0.5 * self.strategy.get('wage_responsiveness', 1.0)
+        labor_share = self.LABOR_SHARE
         if self.last_hired_labor > 0 and self.revenue_last_step > 0:
             revenue_per_worker = self.revenue_last_step / self.last_hired_labor
             target_wage = revenue_per_worker * labor_share
