@@ -406,6 +406,7 @@ class FirmAgent(Agent):
         self.window_raw_direct_loss: float = 0.0
         self.window_adapted_direct_loss: float = 0.0
         self.window_adaptation_cost: float = 0.0
+        self.window_peak_raw_loss_signal: float = 0.0
         self.adaptation_update_count: int = 0
         self._adaptation_policy_initialized: bool = False
 
@@ -451,6 +452,9 @@ class FirmAgent(Agent):
         if self.window_raw_direct_loss <= 0:
             self.last_adaptation_reward = np.nan
             return
+        if self.window_peak_raw_loss_signal <= self.LOSS_STATE_THRESHOLDS[0]:
+            self.last_adaptation_reward = np.nan
+            return
 
         reward = (
             (self.window_raw_direct_loss - self.window_adapted_direct_loss)
@@ -477,6 +481,7 @@ class FirmAgent(Agent):
         self.window_raw_direct_loss = 0.0
         self.window_adapted_direct_loss = 0.0
         self.window_adaptation_cost = 0.0
+        self.window_peak_raw_loss_signal = 0.0
 
     def _adaptation_should_activate(self) -> bool:
         return bool(
@@ -801,7 +806,7 @@ class FirmAgent(Agent):
         unit_cost = (
             self.wage_offer * self.LABOR_COEFF
             + avg_input_price * self.INPUT_COEFF
-        )
+        ) / max(self.damage_factor, 1e-6)
 
         # Sell-through is based on realised demand from the previous full period.
         available = self.inventory_output + self.sales_last_step
@@ -810,11 +815,12 @@ class FirmAgent(Agent):
         else:
             sell_through = 0.0
 
-        # Target markup scales linearly with sell-through:
-        #   sell_through = 1.0  →  markup = +0.5  (strong demand, 50% margin)
-        #   sell_through = 0.5  →  markup =  0.0  (break-even)
-        #   sell_through = 0.0  →  markup = -0.5  (weak demand, sell below cost)
-        target_markup = sell_through - 0.5
+        # Target markup stays positive but scales with sell-through:
+        #   sell_through = 1.0  →  markup = +0.50
+        #   sell_through = 0.5  →  markup = +0.275
+        #   sell_through = 0.0  →  markup = +0.05
+        # This avoids persistent below-cost clearance pricing in depressed states.
+        target_markup = 0.05 + 0.45 * sell_through
         target_price = unit_cost * (1.0 + target_markup)
 
         # Smooth adjustment: 20% toward target each step
@@ -999,6 +1005,7 @@ class FirmAgent(Agent):
         alpha = self.ewma_alpha
         observed_raw_loss = max(self.raw_direct_loss_fraction_this_step, raw_recovery_drag)
         observed_adapted_loss = max(self.adapted_direct_loss_fraction_this_step, adapted_recovery_drag)
+        self.window_peak_raw_loss_signal = max(self.window_peak_raw_loss_signal, observed_raw_loss)
         self.expected_direct_loss_ewma = (1.0 - alpha) * self.expected_direct_loss_ewma + alpha * observed_raw_loss
         self.realized_direct_loss_ewma = (1.0 - alpha) * self.realized_direct_loss_ewma + alpha * observed_adapted_loss
         self.supplier_disruption_ewma = (

@@ -196,8 +196,28 @@ def test_bandit_explores_unseen_actions_then_prefers_higher_reward_action() -> N
         firm.window_raw_direct_loss = 10.0
         firm.window_adapted_direct_loss = 10.0 * (1.0 - reward)
         firm.window_adaptation_cost = 0.0
+        firm.window_peak_raw_loss_signal = 0.2
         firm._finalize_adaptation_window()
 
     firm.ucb_action_counts[context] = [6, 6, 6]
     firm.ucb_action_values[context] = [0.15, 0.75, 0.25]
     assert firm._choose_ucb_action(context) == 1
+
+
+def test_bandit_skips_uninformative_low_loss_windows() -> None:
+    """Tiny-loss windows should not update the adaptation bandit."""
+    model = build_closed_economy_model(adaptation_enabled=True)
+    firm = model._firms[0]
+    context = (1, 1, 0, 0)
+
+    firm.current_policy_context = context
+    firm.current_action_index = 1
+    firm.window_raw_direct_loss = 10.0
+    firm.window_adapted_direct_loss = 6.0
+    firm.window_adaptation_cost = 0.0
+    firm.window_peak_raw_loss_signal = 0.01
+    firm._finalize_adaptation_window()
+
+    assert firm.last_adaptation_reward != firm.last_adaptation_reward
+    assert firm.adaptation_update_count == 0
+    assert firm.ucb_action_counts.get(context) is None

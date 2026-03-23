@@ -755,7 +755,7 @@ class EconomyModel(Model):
 
         # ---------------- Firm reorganization ------------------------ #
         self.steps_since_replacement += 1
-        if self.firm_adaptation_enabled and self.steps_since_replacement >= self.replacement_frequency:
+        if self.steps_since_replacement >= self.replacement_frequency:
             self._apply_firm_reorganization()
             self.steps_since_replacement = 0
 
