@@ -51,7 +51,7 @@ class EconomyModel(Model):
         learning_params: dict | None = None,
         consumption_ratios: dict | None = None,
         grid_resolution: float = 1.0,
-        household_relocation: bool = True,
+        household_relocation: bool = False,
     ) -> None:  # noqa: D401
         super().__init__(seed=seed)
 
@@ -189,13 +189,21 @@ class EconomyModel(Model):
                 "Firm_Consumption": lambda m: sum(f.consumption for f in m._firms),
                 "Firm_Wealth": lambda m: sum(f.money for f in m._firms),
                 "Firm_Capital": lambda m: sum(f.capital_stock for f in m._firms),
+                "Firm_Profits": lambda m: sum(f.profit_this_step for f in m._firms),
+                "Firm_Dividends_Paid": lambda m: sum(f.dividends_paid_this_step for f in m._firms),
+                "Firm_Investment_Spending": lambda m: sum(f.investment_spending_this_step for f in m._firms),
                 "Firm_Inventory": lambda m: sum(f.inventory_output for f in m._firms),
                 "Household_Wealth": lambda m: sum(h.money for h in m._households),
                 "Household_Labor_Sold": lambda m: sum(h.labor_sold for h in m._households),
                 "Household_Consumption": lambda m: sum(h.consumption for h in m._households),
+                "Household_Labor_Income": lambda m: sum(h.labor_income_this_step for h in m._households),
+                "Household_Dividend_Income": lambda m: sum(h.dividend_income_this_step for h in m._households),
+                "Household_Capital_Income": lambda m: sum(h.capital_income_this_step for h in m._households),
                 "Average_Risk": lambda m: np.mean(list(m.hazard_map.values())),
                 "Mean_Wage": lambda m: m.mean_wage,
                 "Mean_Price": lambda m: np.mean([f.price for f in m._firms]) if m._firms else 0.0,
+                "Total_Money": lambda m: m.total_money(),
+                "Money_Drift": lambda m: m.total_money() - getattr(m, "initial_total_money", 0.0),
                 "Labor_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "labor"),
                 "Capital_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "capital"),
                 "Input_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "input"),
@@ -224,6 +232,12 @@ class EconomyModel(Model):
                 "survival_time": lambda a: getattr(a, "survival_time", 0),
                 "sales_last_step": lambda a: getattr(a, "sales_last_step", np.nan),
                 "household_sales_last_step": lambda a: getattr(a, "household_sales_last_step", np.nan),
+                "labor_income": lambda a: getattr(a, "labor_income_this_step", np.nan),
+                "dividend_income": lambda a: getattr(a, "dividend_income_this_step", np.nan),
+                "capital_income": lambda a: getattr(a, "capital_income_this_step", np.nan),
+                "profit": lambda a: getattr(a, "profit_this_step", np.nan),
+                "dividends_paid": lambda a: getattr(a, "dividends_paid_this_step", np.nan),
+                "investment_spending": lambda a: getattr(a, "investment_spending_this_step", np.nan),
             },
         )
 
@@ -255,6 +269,7 @@ class EconomyModel(Model):
 
         # Demand-based initial inventories and working capital.
         self._initialize_firm_operating_state()
+        self.initial_total_money: float = self.total_money()
 
         # --- Step counter --- #
         self.current_step: int = 0
@@ -322,6 +337,46 @@ class EconomyModel(Model):
         if total <= 0:
             return {}
         return {sector: weight / total for sector, weight in ratios.items()}
+
+    def total_money(self) -> float:
+        """Return the total financial money held by firms and households."""
+        return sum(f.money for f in self._firms) + sum(h.money for h in self._households)
+
+    def distribute_household_income(self, amount: float, *, income_kind: str) -> None:
+        """Distribute firm payouts evenly across the household sector."""
+        if amount <= 0 or not self._households:
+            return
+
+        per_household = amount / len(self._households)
+        for household in self._households:
+            household.money += per_household
+            if income_kind == "dividend":
+                household.dividend_income_this_step += per_household
+            elif income_kind == "capital":
+                household.capital_income_this_step += per_household
+            else:
+                raise ValueError(f"Unknown household income kind: {income_kind}")
+
+    def transfer_household_equity_to_firm(self, firm: FirmAgent, amount: float) -> float:
+        """Recapitalize a firm by drawing cash proportionally from households.
+
+        This models households providing equity finance to a reorganized firm
+        without creating or destroying money inside the closed economy.
+        """
+        if amount <= 0 or not self._households:
+            return 0.0
+
+        total_household_money = sum(h.money for h in self._households)
+        if total_household_money <= 0:
+            return 0.0
+
+        funded_amount = min(amount, total_household_money)
+        for household in self._households:
+            contribution = funded_amount * (household.money / total_household_money)
+            household.money -= contribution
+
+        firm.money += funded_amount
+        return funded_amount
 
     def _sector_priority(self, firm: FirmAgent) -> tuple[int, float]:
         """Sort firms by broad supply-chain tier with random tie breaks."""
@@ -709,9 +764,9 @@ class EconomyModel(Model):
         if not successful_firms:
             return  # pathological case
         
-        new_firms: list[FirmAgent] = []
-
-        # Replace failed firms with mutated versions of successful ones
+        # Replace failed firms with reorganized versions of successful ones.
+        # The establishment shell, assets, and money stay inside the model; only
+        # strategy and working-capital finance are refreshed.
         for failed_firm in failed_firms:
             # Choose parent based on fitness (weighted selection)
             if len(successful_firms) == 1:
@@ -719,69 +774,54 @@ class EconomyModel(Model):
             else:
                 weights = [f.fitness_score + 0.1 for f in successful_firms]  # add small baseline
                 parent = self.random.choices(successful_firms, weights=weights, k=1)[0]
-            
-            # Store the position before any modifications
-            failed_pos = failed_firm.pos
 
-            # New firms are reseeded from current demand conditions below, so
-            # start with a minimal balance sheet rather than an arbitrary size.
-            new_money = 10.0
-            new_capital_stock = 1.0
-            
-            # Create new firm with inherited strategy
-            new_firm = FirmAgent(
-                model=self,
-                pos=failed_pos,  # Mesa will ignore this, but keeping for consistency
-                sector=failed_firm.sector,
-                capital_stock=new_capital_stock
-            )
-            
-            # Set the money after creation (since money is not a constructor parameter)
-            new_firm.money = new_money
-            
-            # Inherit parent's strategy with mutations
-            new_firm.strategy = parent.strategy.copy()
-            for key in new_firm.strategy:
+            # Reorganization is an ownership/strategy reset, not ex nihilo
+            # firm creation. Preserve the failed firm's location, inventories,
+            # capital stock, and supplier links.
+            failed_firm.strategy = parent.strategy.copy()
+            for key in failed_firm.strategy:
                 if self.random.random() < 0.5:  # 50% chance to mutate each parameter
                     mutation = self.random.gauss(0, 0.1)  # 10% std deviation
-                    new_firm.strategy[key] *= (1.0 + mutation)
-                    new_firm.strategy[key] = max(0.1, min(3.0, new_firm.strategy[key]))
-            
-            # Inherit connections from failed firm
-            new_firm.connected_firms = failed_firm.connected_firms.copy()
+                    failed_firm.strategy[key] *= (1.0 + mutation)
+                    failed_firm.strategy[key] = max(0.1, min(3.0, failed_firm.strategy[key]))
 
-            # Update all agent references BEFORE removing failed_firm from grid
-            # Use cached lists for efficiency
-            for hh in self._households:
-                if failed_firm in hh.nearby_firms:
-                    hh.nearby_firms.remove(failed_firm)
-                    hh.nearby_firms.append(new_firm)
-            for f in self._firms:
-                if f is not failed_firm and failed_firm in f.connected_firms:
-                    f.connected_firms.remove(failed_firm)
-                    f.connected_firms.append(new_firm)
-            
-            # Track replacement for debugging
+            target_expected_sales = max(failed_firm.expected_sales, parent.expected_sales * 0.5, 1.0)
+            inventory_target = max(1.0, float(target_expected_sales))
+            capital_target = max(1.0, float(target_expected_sales) * failed_firm.capital_coeff)
+            avg_input_price = (
+                float(np.mean([s.price for s in failed_firm.connected_firms]))
+                if failed_firm.connected_firms else 0.0
+            )
+            unit_variable_cost = (
+                failed_firm.wage_offer * failed_firm.LABOR_COEFF
+                + avg_input_price * failed_firm.INPUT_COEFF
+            )
+            working_capital_target = max(10.0, target_expected_sales * unit_variable_cost * 1.25)
+
+            failed_firm.expected_sales = target_expected_sales
+            failed_firm.base_inventory_target = inventory_target
+            failed_firm.base_capital_target = max(failed_firm.capital_stock, capital_target)
+            failed_firm.target_capital_stock = failed_firm.base_capital_target
+            failed_firm.performance_history.clear()
+            failed_firm.fitness_score = 0.0
+            failed_firm.steps_since_adaptation = 0
+            failed_firm.survival_time = 0
+            failed_firm.sales_last_step = 0.0
+            failed_firm.revenue_last_step = 0.0
+
+            equity_needed = max(0.0, working_capital_target - failed_firm.money)
+            self.transfer_household_equity_to_firm(failed_firm, equity_needed)
+
             self._debug_recent_replacements.append(failed_firm.unique_id)
             if len(self._debug_recent_replacements) > 20:
                 self._debug_recent_replacements = self._debug_recent_replacements[-20:]
 
-            # Now safely remove from grid AND model, then place new agent
-            self._unregister_agent(failed_firm)  # Update caches
-            self.grid.remove_agent(failed_firm)
-            self.agents.remove(failed_firm)  # CRITICAL: Also remove from model's agent list
-            self.grid.place_agent(new_firm, failed_pos)
-            self._register_agent(new_firm)  # Update caches
-            self._seed_firm_operating_state(
-                new_firm,
-                expected_sales=max(failed_firm.expected_sales, parent.expected_sales * 0.5, 1.0),
-            )
-            new_firms.append(new_firm)
-            
             self.total_firm_replacements += 1
-            print(f"[EVOLUTION] Step {self.current_step}: Replaced failed firm {failed_firm.unique_id} with offspring {new_firm.unique_id} (total: {self.total_firm_replacements})")
-
-        # Replacement firms are already reseeded with demand expectations and working capital.
+            print(
+                f"[EVOLUTION] Step {self.current_step}: Reorganized failed firm "
+                f"{failed_firm.unique_id} using parent {parent.unique_id} "
+                f"(total: {self.total_firm_replacements})"
+            )
 
     # --------------------------------------------------------------------- #
     #                            EXPORT HELPERS                              #

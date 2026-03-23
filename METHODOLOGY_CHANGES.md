@@ -120,3 +120,51 @@ Tracking changes to the model methodology that need to be reflected in the manus
 - **Why**: Quantitative scenario results and figure narratives from pre-refactor runs are no longer representative of the current implementation. Keeping those numbers in the manuscript would misdescribe both the methodology and the model's repaired behaviour.
 - **Where**: `JASSS0/TemplateJASSS.tex`, figure captions, results text, discussion, and conclusions.
 - **Manuscript impact**: Regenerate the four-scenario time-series figures, bottleneck plots, and numerical summaries from the current implementation before submission. Remove or neutralize legacy claims that relied on the pre-refactor anomaly, especially statements that hazard scenarios systematically outperformed baseline or that sectoral household demand could be read from household cohort labels.
+
+## 20. Circular-flow closure between households and firms
+- **What**: Added an explicit macro closure for the reduced-form economy. Households now receive not only wages but also firm payouts. Household consumption is based on current labour income plus the previous period's dividends and reduced-form investment income, alongside a small draw from money holdings above a target cash buffer. On the firm side, positive profits above the operating reserve are split between dividends and retained-earnings capital expansion.
+- **Why**: The previous model had endogenous wages and household consumption but no ownership or payout channel returning firm surpluses to households. That caused household purchasing power to collapse while firm cash accumulated, and hazard scenarios could outperform baseline by slowing this cash extraction. The circular-flow closure restores the minimal macro mechanism used in standard toy macro ABMs: households earn wages and ownership income, then spend part of that disposable income back into the goods market.
+- **Where**: `agents.py`, `HouseholdAgent.consume_goods()`, household income bookkeeping, `FirmAgent.close_step()`, and firm payroll/profit accounting; `model.py`, household-income distribution helpers and additional data collection fields.
+- **Manuscript impact**: Rewrite the household budget equation and related text to describe a disposable-income consumption rule rather than `labour_sold × mean_wage`. State explicitly that households are the residual owners of firms and receive firm payouts in addition to wages.
+
+## 21. Reduced-form investment spending no longer destroys money
+- **What**: Investment spending is now recirculated to households as reduced-form investment income while increasing firms' productive-capacity stock. This keeps the model stock-flow closed even though there is no explicit capital-goods-producing sector.
+- **Why**: The previous retained-earnings capital update still subtracted cash from firms without paying any modeled counterparty, so investment acted as a pure money sink. In a closed economy that breaks the monetary circuit. Recycling the spending is the minimal reduced-form closure until an explicit capital-goods sector is introduced.
+- **Where**: `agents.py`, investment block in `FirmAgent.close_step()`; `model.py`, `distribute_household_income()` and stock-flow reporters.
+- **Manuscript impact**: Clarify that capital accumulation is reduced-form. Either describe the investment-income recycling explicitly, or more generally state that the reduced model preserves monetary closure by returning investment spending to the household sector in the absence of a modeled capital-goods producer.
+
+## 22. Per-period accounting reset moved ahead of the labour market
+- **What**: Firm flow-accounting variables (`wage_bill_this_step`, `input_spend_this_step`, profits, dividends, investment spending) are now reset at the planning stage before households sell labour, rather than inside the production step after wages have already been paid.
+- **Why**: Resetting those counters after the labour market erased payroll from profit accounting, overstated profits, and caused excessive payouts. The issue became visible only after adding dividend-based circular-flow closure, because profit accounting now directly governs household income.
+- **Where**: `agents.py`, `FirmAgent.plan_operations()` and `FirmAgent.step()`.
+- **Manuscript impact**: No conceptual change to the published algorithm, but the implementation description should be explicit that payroll is part of the current-period accounting before profits are distributed.
+
+## 23. Stock-flow closure diagnostics and regression tests
+- **What**: Added explicit reporters for `Total_Money`, `Money_Drift`, household labour/dividend/investment income, and firm-side dividend/investment payouts. Added regression tests that verify monetary conservation and that a closed no-hazard economy remains economically active rather than converging to zero output.
+- **Why**: Once the model was repaired at the systemic level, we needed an equally systemic validation check. The new diagnostics make stock-flow closure observable in every run, and the regression tests guard against future changes reintroducing money sinks or dead-economy artefacts.
+- **Where**: `model.py`, `DataCollector`; `tests/test_stock_flow_closure.py`.
+- **Manuscript impact**: Add a short validation note that aggregate money is tracked as an accounting diagnostic and remains constant to numerical tolerance in closed-economy test runs, while production, consumption, and employment remain positive.
+
+## 24. Household relocation no longer destroys money
+- **What**: Removed the direct monetary haircut on household relocation. Households may still relocate for hazard or job-search reasons, but relocation itself no longer deletes a fraction of household money.
+- **Why**: In a closed economy with only households and firms, relocation costs had no modeled counterparty and therefore acted as a money sink. This became visible in baseline runs as a gradual fall in `Total_Money` even when hazards and learning were off. Until an explicit housing/transport service sector is modeled, the cleaner reduced-form choice is to treat relocation as a positional/frictional change rather than a cash destruction mechanism.
+- **Where**: `agents.py`, `HouseholdAgent._relocate_for_job()` and `HouseholdAgent._relocate()`.
+- **Manuscript impact**: If relocation costs are discussed, they should no longer be described as monetary losses. Relocation remains behavioral but not a source of nominal money destruction.
+
+## 25. Learning-time replacement is now stock-flow-consistent reorganization
+- **What**: Replaced ex nihilo firm entry with in-place firm reorganization. When a firm fails under the learning system, the productive unit remains in place, inherits a mutated strategy from a successful parent, and can receive recapitalization from households as equity finance. Existing cash, inventories, capital, links, and location remain inside the modeled economy.
+- **Why**: The previous replacement logic removed a failed firm and instantiated a new one with fresh working capital, inventories, and capacity. That violated stock-flow consistency by creating new balance-sheet resources during learning runs. Reorganization preserves the closed-economy accounting while retaining the intended evolutionary-selection mechanism.
+- **Where**: `model.py`, `_apply_evolutionary_pressure()` and the new household-to-firm equity-transfer helper; `tests/test_stock_flow_closure.py`, replacement regression.
+- **Manuscript impact**: Describe firm replacement as bankruptcy reorganization or ownership/management turnover rather than literal entry of a fully reseeded new establishment. Note that recapitalization is funded by the household sector, preserving the monetary circuit.
+
+## 26. Household relocation disabled in the core scenarios
+- **What**: Set `household_relocation` to `false` in the main parameter files and changed the model/CLI default to relocation-off. The relocation code remains available as an optional exploratory feature.
+- **Why**: Under the current model, households are not directly flood-damaged and already search across all firms with only a soft distance penalty. The existing relocation rule therefore adds behavioral noise more than a well-identified climate-migration channel. Keeping it on in the main scenarios would add complexity without a correspondingly clear mechanism or interpretation.
+- **Where**: `model.py`, `run_simulation.py`, `aqueduct_riverine_parameters_rcp8p5.json`, `aqueduct_riverine_parameters_rcp4p5.json`, `quick_test_parameters.json`, and `sample_firm_topology_parameters.json`.
+- **Manuscript impact**: Update the methodology and scenario description to state that household relocation is currently disabled in the core reported experiments. If migration is discussed as future work, frame it as a feature that would need a better-founded residential-risk and labor-access mechanism.
+
+## 27. Active-versus-dormant firm diagnostics
+- **What**: Added active/dormant firm diagnostics to the scenario consistency checker. Firms are classified as active when production exceeds a configurable threshold and dormant otherwise; the checker now reports final active/dormant counts and tail-window means, with an optional minimum-active-firms gate.
+- **Why**: Monetary consistency alone is not enough. A run can conserve money while collapsing into a highly concentrated or dormant economy. Active-versus-dormant counts provide a compact structural diagnostic that complements production, consumption, and labour aggregates.
+- **Where**: `check_consistency.py`.
+- **Manuscript impact**: No direct manuscript change required, but this diagnostic is useful when validating the reported scenario runs and could be mentioned in supplementary validation notes if needed.

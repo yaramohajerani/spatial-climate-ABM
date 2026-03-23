@@ -163,7 +163,7 @@ def main() -> None:  # noqa: D401
 
     # Ensure household_relocation exists even if no param file
     if not hasattr(args, "household_relocation"):
-        args.household_relocation = True  # default enabled
+        args.household_relocation = False  # default disabled
 
     # Configure scenario settings
     apply_hazards = not args.no_hazards

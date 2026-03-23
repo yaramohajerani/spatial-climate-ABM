@@ -39,6 +39,7 @@ The model simulates economic agents (households and firms) on a spatial grid whi
 - **Minimum Wage Floor**: Wage offers bounded below at 40% of initial wage, a proxy consistent with ILO (2016) observations on minimum wages in high-income economies
 - **Firm Learning System**: Evolutionary strategy-based learning for liquidity buffering, inventory buffering, reinvestment, wage responsiveness, and hazard sensitivity
 - **Multiple Sectors**: Commodity, manufacturing, and retail sectors with sector-specific production coefficients and configurable household final-demand ratios over final-good sectors
+- **Circular-Flow Closure**: Households receive wages plus firm payouts, and total money is tracked explicitly so the household-firm system remains stock-flow closed in no-entry/no-exit runs
 
 ### Model Highlights
 
@@ -60,8 +61,8 @@ The model uses a `mesa.space.MultiGrid` with configurable resolution (default 1�
 #### HouseholdAgent
 - **Labor Supply**: Each household supplies 1 unit of labor per step
 - **Employment Choice**: Maximizes `wage - distance_cost × distance` utility across all firms (cross-sector employment allowed)
-- **Consumption**: Allocates budget across final-good sectors based on configurable ratios; supports fractional purchases when budget < unit price
-- **Risk Behavior**: Monitors local hazard and relocates when flood depth exceeds 0.5 m
+- **Consumption**: Uses a disposable-income rule based on current labor income, recently distributed firm payouts, and a small draw from money holdings above a target cash buffer; allocates that budget across final-good sectors with fractional purchases when budget < unit price
+- **Relocation**: Optional and disabled in the main scenario parameter files. The current relocation logic can still be toggled on for experiments, but it is not used in the reported core scenarios.
 
 #### FirmAgent
 - **Production Technology**: Leontief production function with labor, material inputs, and capital
@@ -75,6 +76,8 @@ The model uses a `mesa.space.MultiGrid` with configurable resolution (default 1�
 - **Damage Recovery**: Liquidity-dependent recovery rate (20%–50% per step) so stressed firms recover more slowly
 - **Input Procurement**: Inputs from connected suppliers are treated as substitutable units and are purchased from the cheapest available suppliers first
 - **Production Planning**: Firms plan output from expected sales plus inventory buffers, hire only up to planned vacancies, seed startup inventories/capacity from labour-scaled final demand, expand capital only from residual cash above a working-capital buffer, and operate in phased within-step order (labour, production, then household consumption)
+- **Profit Distribution**: Positive profits above the operating buffer are split between retained-earnings capital expansion and household payouts; because there is no explicit capital-goods sector, investment spending is recycled to households as reduced-form investment income to preserve monetary closure
+- **Learning-Time Reorganization**: Failed firms are reorganized in place under a new strategy and, if needed, recapitalized by household equity contributions; replacements do not mint new firm cash, capital, or inventories
 
 ### Climate Hazard System
 
@@ -209,6 +212,7 @@ Include at least one final-good sector (`retail`, `wholesale`, or `services`) in
 ## Output Files
 
 - **simulation_*.csv**: Model-level time series (production, wealth, wages, prices, risk, bottleneck counts)
+- **Stock-flow diagnostics in `simulation_*.csv`**: `Total_Money`, `Money_Drift`, `Firm_Dividends_Paid`, `Firm_Investment_Spending`, `Household_Labor_Income`, `Household_Dividend_Income`, and `Household_Capital_Income`
 - **simulation_*_agents.csv**: Agent-level panel data (money, capital, production, sector, type, and firm-level `household_sales_last_step` for true seller-sector final demand). Household `sector` values in this file are initialization/placement cohort tags, not purchased-good categories.
 - **simulation_*_timeseries.png**: Multi-panel plots of key metrics. Household consumption panels use actual household purchases, and any sector breakdown of final demand is derived from seller sectors rather than household cohort labels.
 - **simulation_*_sector_bottlenecks.png**: Sector-level bottleneck analysis
@@ -230,9 +234,17 @@ Include at least one final-good sector (`retail`, `wholesale`, or `services`) in
   | Retail | 0.5 | 0.4 | 0.2 | Moderate labor, low capital needs |
 - **Depreciation Rate**: 0.2% per step
 - **Consumption Ratios**: Configurable household spending by final-good sector only. For the current 100-firm riverine topology the relevant setting is `{"retail": 1.0}`.
+- **Household Consumption Rule**: `0.9 × disposable_income + 0.02 × max(0, money - 50)`, where disposable income is current labor income plus the previous period's dividends and reduced-form investment income
 - **Wage Mechanism**: Revenue-based targeting — firms set wages at `revenue_per_worker × labor_share` (default labor share 0.5, modulated by learned `wage_responsiveness`), with 10% smooth adjustment per step. Wages are structurally bounded by revenue and self-correct during downturns.
 - **Minimum Wage Floor**: 40% of initial mean wage, a proxy consistent with ILO (2016) observations (40–60% of median)
-- **Production Planning**: Firms target expected sales plus an inventory buffer, translate that into vacancies and input demand, preserve a working-capital buffer, initialize inventories and capital from labour-consistent demand, treat capital spending as retained-earnings capacity expansion rather than a separate capital-goods market, and clear household demand after the current period's production is complete
+- **Production Planning**: Firms target expected sales plus an inventory buffer, translate that into vacancies and input demand, preserve a working-capital buffer, initialize inventories and capital from labour-consistent demand, clear household demand after the current period's production is complete, and close the period by splitting positive profits between dividends and internally financed capital expansion subject to liquidity constraints
+
+## Validation
+
+- **Stock-flow closure regression**: `PYTHONPYCACHEPREFIX=/tmp/codex-pycache /Users/yaramohajerani/mamba/envs/climada_env/bin/python -m pytest tests/test_stock_flow_closure.py -q`
+- **What it checks**: Total money stays constant to floating-point tolerance in a closed no-hazard economy, household-side payout income matches firm-side payout spending, and the small sample economy remains economically active over the last 10 steps rather than collapsing to zero output.
+- **Scenario preflight check**: `PYTHONPYCACHEPREFIX=/tmp/codex-pycache /Users/yaramohajerani/mamba/envs/climada_env/bin/python check_consistency.py --param-file aqueduct_riverine_parameters_rcp8p5.json --no-hazards --no-learning --steps 80 --min-tail-production 1200 --min-tail-consumption 700 --min-tail-labor 700 --min-tail-active-firms 30`
+- **What it checks**: Money drift, household-firm payout mismatches, replacements, flooding counts, tail activity levels, and active-versus-dormant firm counts on the full configured topology before you commit to a long scenario batch.
 
 ### Learning Parameters
 - `learning.enabled`: Enable/disable firm learning (default: true)
@@ -246,6 +258,7 @@ Include at least one final-good sector (`retail`, `wholesale`, or `services`) in
 - **Recovery Rate**: Liquidity-dependent; 20% (money≈0) to 50% (money≥200) of remaining damage recovered per step
 - **Vulnerability**: JRC region-specific depth-damage curves
 - **Sampling**: Independent per-cell Poisson process based on return periods
+- **Household Relocation**: Optional but disabled by default in current parameter files and CLI defaults. Hazard transmission in the core scenarios runs through firms, prices, wages, and the supply chain rather than through household migration.
 
 ## File Organization
 

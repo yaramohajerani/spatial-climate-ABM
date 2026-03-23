@@ -21,6 +21,9 @@ class HouseholdAgent(Agent):
 
     # Fraction of wealth & capital lost when migrating to a new location
     RELOCATION_COST: float = 0.10
+    CONSUMPTION_PROPENSITY_INCOME: float = 0.9
+    CONSUMPTION_PROPENSITY_WEALTH: float = 0.02
+    TARGET_CASH_BUFFER: float = 50.0
 
     def __init__(
         self,
@@ -50,6 +53,11 @@ class HouseholdAgent(Agent):
         self.consumption: float = 0.0  # goods consumed (units)
         self.production: float = 0.0  # households don't produce goods but keep attr for consistency
         self.labor_sold: float = 0.0  # labour units sold this step
+        self.labor_income_this_step: float = 0.0
+        self.dividend_income_last_step: float = 0.0
+        self.dividend_income_this_step: float = 0.0
+        self.capital_income_last_step: float = 0.0
+        self.capital_income_this_step: float = 0.0
 
         # Filled by the model after all agents are created
         self.nearby_firms: List["FirmAgent"] = []
@@ -96,15 +104,20 @@ class HouseholdAgent(Agent):
 
         self.model.grid.move_agent(self, new_pos)
 
-        # Apply relocation cost similar to climate‐driven migration
-        self.money *= (1 - self.RELOCATION_COST)
-
         # Refresh nearby firms after moving
         self._update_nearby_firms()
 
     # ---------------- Mesa API ---------------- #
     def supply_labor(self) -> None:
         """Reset household state, optionally relocate, and sell labour."""
+
+        # Carry passive income distributed after last period's goods market into the
+        # current consumption decision, then reset current-period counters.
+        self.dividend_income_last_step = self.dividend_income_this_step
+        self.capital_income_last_step = self.capital_income_this_step
+        self.dividend_income_this_step = 0.0
+        self.capital_income_this_step = 0.0
+        self.labor_income_this_step = 0.0
 
         # Reset per-step statistics
         self.production = 0.0
@@ -141,16 +154,25 @@ class HouseholdAgent(Agent):
     def consume_goods(self) -> None:
         """Buy final goods after firms have completed the current production cycle."""
 
-        # Buy final goods based on wealth and needs (no proximity restriction).
-        # Households only buy final-consumption goods. Upstream sectors sell to firms, not households.
-        # Base consumption on recent wages earned plus a small fraction of savings
-        base_consumption = self.labor_sold * self.model.mean_wage  # spend what we earned
-        savings_consumption = max(0, self.money - 50) * 0.1  # plus 10% of savings above $50
-        consumption_budget = base_consumption + savings_consumption
+        # Closed-economy household demand is driven by current labour income,
+        # recently distributed firm payouts, and a small propensity to spend out
+        # of accumulated wealth. This is the minimal circular-flow closure:
+        # households buy goods from firms, but they also receive wages,
+        # dividends, and capital-service income from firms.
+        disposable_income = (
+            self.labor_income_this_step
+            + self.dividend_income_last_step
+            + self.capital_income_last_step
+        )
+        wealth_draw = max(0.0, self.money - self.TARGET_CASH_BUFFER)
+        consumption_budget = (
+            self.CONSUMPTION_PROPENSITY_INCOME * disposable_income
+            + self.CONSUMPTION_PROPENSITY_WEALTH * wealth_draw
+        )
 
         if consumption_budget > 0 and self.money > 0:
-            # Cap at what we can actually afford
-            consumption_budget = min(consumption_budget, self.money * 0.8)
+            # Cap at what we can actually afford.
+            consumption_budget = min(consumption_budget, self.money)
 
             # Only final-good sectors are eligible for household demand.
             consumption_ratios = self.model.get_final_consumption_ratios()
@@ -218,9 +240,6 @@ class HouseholdAgent(Agent):
             safe_cells = self.model.land_coordinates  # fall back to any land
         new_pos = self.random.choice(safe_cells)
         self.model.grid.move_agent(self, new_pos)
-
-        # Apply relocation cost: lose a share of money
-        self.money *= (1 - self.RELOCATION_COST)
 
 
     # ---------------- End of Household.step() bookkeeping -------- #
@@ -320,6 +339,12 @@ class FirmAgent(Agent):
         self.revenue_this_step: float = 0.0
         self.household_sales_last_step: float = 0.0
         self.household_sales_this_step: float = 0.0
+        self.wage_bill_this_step: float = 0.0
+        self.input_spend_this_step: float = 0.0
+        self.depreciation_this_step: float = 0.0
+        self.profit_this_step: float = 0.0
+        self.dividends_paid_this_step: float = 0.0
+        self.investment_spending_this_step: float = 0.0
 
         # ---------------- Risk behaviour parameters ------------------- #
         # Capital coefficient parameters
@@ -429,6 +454,8 @@ class FirmAgent(Agent):
         # Transfer wage and preserve the working-capital buffer.
         self.money -= wage
         household.money += wage
+        household.labor_income_this_step += wage
+        self.wage_bill_this_step += wage
 
         # Register labour for this production cycle
         self.employees.append(household)
@@ -486,6 +513,7 @@ class FirmAgent(Agent):
         buyer.money -= cost
         self.money += cost
         self.inventory_output -= qty
+        buyer.input_spend_this_step += cost
 
         # Register under this supplier's id inside buyer
         buyer.inventory_inputs[self.unique_id] += qty
@@ -498,6 +526,18 @@ class FirmAgent(Agent):
     # ---------------- Demand-planning helper ---------------------------- #
     def plan_operations(self) -> None:
         """Set output, vacancy, and liquidity targets from expected demand."""
+
+        # Reset per-period flow accounting before households enter the labour market.
+        # Wages are paid during ``supply_labor()``, before ``FirmAgent.step()``
+        # runs, so resetting here preserves payroll in profit calculations.
+        self.production = 0.0
+        self.consumption = 0.0
+        self.wage_bill_this_step = 0.0
+        self.input_spend_this_step = 0.0
+        self.depreciation_this_step = 0.0
+        self.profit_this_step = 0.0
+        self.dividends_paid_this_step = 0.0
+        self.investment_spending_this_step = 0.0
 
         # Apply the hazard-driven capital requirement before planning vacancies.
         local_hazard = self._get_local_hazard()
@@ -615,10 +655,6 @@ class FirmAgent(Agent):
         self.price += 0.2 * (target_price - self.price)
         self.price = float(max(0.5, self.price))  # absolute floor to prevent zero/negative
 
-        # Reset per-step statistics
-        self.production = 0.0
-        self.consumption = 0.0
-
         labour_units = self._labor_available()
         effective_damage = max(self.damage_factor, 1e-6)
 
@@ -720,25 +756,8 @@ class FirmAgent(Agent):
 
         # ---------------- Capital depreciation ------------------------ #
         DEPR = 0.002  # 0.2 % per step (quarterly), roughly 0.8 % annually - reduced to prevent wealth drain
+        self.depreciation_this_step = self.capital_stock * DEPR
         self.capital_stock *= (1 - DEPR)
-
-        # ---------------- Capital formation stage --------------------- #
-        # Retained earnings finance maintenance and expansion of installed
-        # productive capacity after operating needs and the liquidity buffer.
-        if self.money > self._liquidity_buffer:
-            investable_cash = max(0.0, self.money - self._liquidity_buffer)
-            investment_share = min(1.0, 0.5 * self.strategy.get("budget_capital_weight", 1.0))
-            available_funds = investable_cash * investment_share
-            capital_gap = max(0.0, self.target_capital_stock - self.capital_stock)
-
-            if available_funds > 0 and capital_gap > 0:
-                installable_capital = min(
-                    capital_gap,
-                    available_funds / self.CAPITAL_INSTALLATION_COST,
-                )
-                if installable_capital > 0:
-                    self.money -= installable_capital * self.CAPITAL_INSTALLATION_COST
-                    self.capital_stock += installable_capital
 
     # ---------------- Internal helpers -------------------------------- #
     def _labor_available(self) -> int:
@@ -747,6 +766,55 @@ class FirmAgent(Agent):
 
     def close_step(self) -> None:
         """Persist realised sales after all market transactions for the period."""
+
+        accounting_profit = (
+            self.revenue_this_step
+            - self.wage_bill_this_step
+            - self.input_spend_this_step
+            - self.depreciation_this_step
+        )
+        self.profit_this_step = accounting_profit
+
+        # Positive profits are either paid out to household owners as dividends
+        # or recycled into installed capital. Because the model has no explicit
+        # capital-goods firm, investment spending is transferred to households
+        # as capital-service income so money stays inside the closed economy.
+        operating_cash_reserve = max(
+            self._liquidity_buffer,
+            self.wage_bill_this_step + self.input_spend_this_step,
+        )
+        available_cash = max(0.0, self.money - operating_cash_reserve)
+        positive_profit = max(0.0, accounting_profit)
+        investment_share = min(1.0, 0.5 * self.strategy.get("budget_capital_weight", 1.0))
+        capital_gap = max(0.0, self.target_capital_stock - self.capital_stock)
+        desired_investment_spending = min(
+            positive_profit * investment_share,
+            capital_gap * self.CAPITAL_INSTALLATION_COST,
+            available_cash,
+        )
+
+        if desired_investment_spending > 0:
+            installable_capital = desired_investment_spending / self.CAPITAL_INSTALLATION_COST
+            self.money -= desired_investment_spending
+            self.capital_stock += installable_capital
+            self.investment_spending_this_step = desired_investment_spending
+            self.model.distribute_household_income(
+                desired_investment_spending,
+                income_kind="capital",
+            )
+
+        available_cash = max(0.0, self.money - operating_cash_reserve)
+        desired_dividends = min(
+            max(0.0, positive_profit - self.investment_spending_this_step),
+            available_cash,
+        )
+        if desired_dividends > 0:
+            self.money -= desired_dividends
+            self.dividends_paid_this_step = desired_dividends
+            self.model.distribute_household_income(
+                desired_dividends,
+                income_kind="dividend",
+            )
 
         self.expected_sales = 0.7 * self.expected_sales + 0.3 * self.sales_this_step
         self.sales_last_step = self.sales_this_step
