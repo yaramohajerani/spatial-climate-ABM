@@ -25,6 +25,9 @@ class HouseholdAgent(Agent):
     CONSUMPTION_PROPENSITY_INCOME: float = 0.9
     CONSUMPTION_PROPENSITY_WEALTH: float = 0.02
     TARGET_CASH_BUFFER: float = 50.0
+    SECTOR_MATCH_BONUS: float = 0.15
+    SECTOR_MISMATCH_PENALTY: float = 0.20
+    REMOTE_SEARCH_PENALTY: float = 0.10
 
     def __init__(
         self,
@@ -110,6 +113,44 @@ class HouseholdAgent(Agent):
         # Refresh nearby firms after moving
         self._update_nearby_firms()
 
+    def _score_firm(
+        self,
+        firm: "FirmAgent",
+        *,
+        nearby_ids: set[int],
+        remote_penalty: float = 0.0,
+    ) -> float:
+        """Return the household's utility from applying to a firm."""
+        dx = abs(self.pos[0] - firm.pos[0])
+        dy = abs(self.pos[1] - firm.pos[1])
+        dist = dx + dy
+        utility = firm.wage_offer - self.distance_cost * dist
+        if firm.sector == self.sector:
+            utility += self.SECTOR_MATCH_BONUS
+        else:
+            utility -= self.SECTOR_MISMATCH_PENALTY
+        if firm.unique_id not in nearby_ids:
+            utility -= remote_penalty
+        return utility
+
+    def _try_hire_from_ranked_list(self, firms: List["FirmAgent"], *, remote_penalty: float = 0.0) -> bool:
+        """Attempt to sell labour to the best-ranked firm in ``firms``."""
+        if not firms:
+            return False
+
+        nearby_ids = {firm.unique_id for firm in self.nearby_firms}
+        scored = [
+            (self._score_firm(firm, nearby_ids=nearby_ids, remote_penalty=remote_penalty), firm)
+            for firm in firms
+        ]
+        scored.sort(key=lambda item: item[0], reverse=True)
+
+        for _, firm in scored:
+            if firm.hire_labor(self, firm.wage_offer):
+                self.labor_sold += 1
+                return True
+        return False
+
     # ---------------- Mesa API ---------------- #
     def supply_labor(self) -> None:
         """Reset household state, optionally relocate, and sell labour."""
@@ -134,27 +175,24 @@ class HouseholdAgent(Agent):
         if self.model.household_relocation_enabled and self._get_local_hazard() > 0.5:
             self._relocate()
 
-        # 1. Choose employer based on wage–distance utility (remote work allowed) --------------- #
-        # Allow cross-sector employment to prevent labor market segmentation death spirals.
-        # When one sector struggles, its workers can find jobs in healthier sectors.
-        # Use all firms, not just same-sector firms.
+        # 1. Choose employer based on a staged search:
+        # prefer nearby same-sector firms first, then broaden to the full market.
+        # This keeps labor tied to the local production structure while preserving
+        # cross-sector fallback when the preferred market is weak.
         all_firms = self.model._firms
         if all_firms:
-            scored: list[tuple[float, "FirmAgent"]] = []
-            x0, y0 = self.pos
-            for firm in all_firms:
-                dx = abs(x0 - firm.pos[0])
-                dy = abs(y0 - firm.pos[1])
-                dist = dx + dy
-                utility = firm.wage_offer - self.distance_cost * dist
-                scored.append((utility, firm))
-
-            scored.sort(key=lambda t: t[0], reverse=True)
-
-            for _, firm in scored:
-                if firm.hire_labor(self, firm.wage_offer):
-                    self.labor_sold += 1
-                    break
+            primary_firms = self.nearby_firms if self.nearby_firms else [
+                firm for firm in all_firms if firm.sector == self.sector
+            ]
+            if not self._try_hire_from_ranked_list(primary_firms):
+                secondary_firms = [
+                    firm for firm in all_firms
+                    if firm not in primary_firms
+                ]
+                self._try_hire_from_ranked_list(
+                    secondary_firms,
+                    remote_penalty=self.REMOTE_SEARCH_PENALTY,
+                )
 
     def consume_goods(self) -> None:
         """Buy final goods after firms have completed the current production cycle."""
@@ -815,12 +853,12 @@ class FirmAgent(Agent):
         else:
             sell_through = 0.0
 
-        # Target markup stays positive but scales with sell-through:
-        #   sell_through = 1.0  →  markup = +0.50
-        #   sell_through = 0.5  →  markup = +0.275
-        #   sell_through = 0.0  →  markup = +0.05
-        # This avoids persistent below-cost clearance pricing in depressed states.
-        target_markup = 0.05 + 0.45 * sell_through
+        # Target markup stays positive but modest:
+        #   sell_through = 1.0  →  markup = +0.32
+        #   sell_through = 0.5  →  markup = +0.17
+        #   sell_through = 0.0  →  markup = +0.02
+        # This avoids below-cost pricing while limiting long-run markup compounding.
+        target_markup = 0.02 + 0.30 * sell_through
         target_price = unit_cost * (1.0 + target_markup)
 
         # Smooth adjustment: 20% toward target each step

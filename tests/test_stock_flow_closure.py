@@ -221,3 +221,33 @@ def test_bandit_skips_uninformative_low_loss_windows() -> None:
     assert firm.last_adaptation_reward != firm.last_adaptation_reward
     assert firm.adaptation_update_count == 0
     assert firm.ucb_action_counts.get(context) is None
+
+
+def test_households_try_nearby_same_sector_firms_before_remote_market() -> None:
+    """Sector-local staged search should fill nearby vacancies before remote fallback."""
+    model = build_closed_economy_model(adaptation_enabled=False)
+    household = model._households[0]
+    local_firm = next(f for f in model._firms if f.sector == "services")
+    remote_firm = next(f for f in model._firms if f.sector == "retail")
+
+    household.sector = local_firm.sector
+    household.pos = local_firm.pos
+    household.nearby_firms = [local_firm]
+
+    for firm in model._firms:
+        firm.money = 0.0
+        firm.target_labor = 0
+        firm.employees.clear()
+
+    local_firm.money = 100.0
+    local_firm.target_labor = 1
+    local_firm.wage_offer = 1.0
+    remote_firm.money = 100.0
+    remote_firm.target_labor = 1
+    remote_firm.wage_offer = 5.0
+
+    household.supply_labor()
+
+    assert household.labor_sold == 1.0
+    assert household in local_firm.employees
+    assert household not in remote_firm.employees
