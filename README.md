@@ -48,7 +48,7 @@ The model simulates economic agents (households and firms) on a spatial grid whi
 - **No preprocessing required**: Works directly with full-resolution Aqueduct flood rasters (~90MB each)
 - **Distance-soft labor market**: Households consider all firms; distance is a disutility but there is no hard radius
 - **Final-goods market discipline**: Households buy only from final-good sectors; upstream sectors sell to firms rather than directly to households
-- **Learning System**: Evolutionary strategy learning with fitness-based replacement of weak firms
+- **Learning System**: Evolutionary strategy learning with same-sector peer imitation, bounded exploration, and stock-flow-consistent bankruptcy reorganization
 
 ## Core Architecture
 
@@ -70,7 +70,7 @@ The model uses a `mesa.space.MultiGrid` with configurable resolution (default 1�
   - Commodity: labor=0.6, input=0.0, capital=0.7 (capital-intensive extraction, no upstream inputs)
   - Manufacturing: labor=0.3, input=0.6, capital=0.6 (automated, capital & input intensive)
   - Retail: labor=0.5, input=0.4, capital=0.2 (moderate labor, low capital needs)
-- **Learning System**: Evolutionary strategy learning with 5 adaptive parameters and fitness-based selection
+- **Learning System**: Evolutionary strategy learning with 5 adaptive parameters, fitter-peer imitation, and bankruptcy-based selection
 - **Wage Setting**: Revenue-based wage targeting — wages track revenue per worker × labor share, with smooth adjustment (10% toward target per step); minimum wage floor at 40% of initial wage
 - **Dynamic Pricing**: Markup pricing — price = unit cost × (1 + markup), where markup is set by sell-through rate; prices track costs bidirectionally with no cost-floor ratchet
 - **Damage Recovery**: Liquidity-dependent recovery rate (20%–50% per step) so stressed firms recover more slowly
@@ -108,7 +108,9 @@ Damage is calculated using JRC Global Flood Depth-Damage Functions:
 - **Strategy Parameters**: Liquidity-buffer multiplier, inventory-buffer multiplier, reinvestment multiplier, risk sensitivity, wage responsiveness (controls labor share of revenue)
 - **Performance Tracking**: 10-step rolling window (2.5 years at quarterly resolution) of realized production used for fitness averaging
 - **Fitness Evaluation**: Time-averaged production over the memory window — a single metric that implicitly captures all aspects of firm health. Robustness verified via sensitivity analysis across 5 memory window lengths.
-- **Population Dynamics**: Bankrupt firms (money below survival threshold) replaced by mutated offspring of successful firms; no persistent-decline trigger to avoid procyclical wealth destruction during systemic crises
+- **Individual Adaptation**: Every 5 steps, firms compare their recent fitness with fitter same-sector peers, partially imitate the chosen role model, and add only bounded exploratory mutation around that anchor
+- **Population Dynamics**: Bankrupt firms (money below survival threshold) are reorganized in place using successful firms as strategy templates; no persistent-decline trigger to avoid procyclical wealth destruction during systemic crises
+- **Diagnostics**: Model and agent CSV outputs now include the five learning parameters so strategy paths can be inspected directly during scenario analysis
 
 ## Usage
 
@@ -249,7 +251,7 @@ Include at least one final-good sector (`retail`, `wholesale`, or `services`) in
 ### Learning Parameters
 - `learning.enabled`: Enable/disable firm learning (default: true)
 - `learning.memory_length`: Steps of performance history for fitness averaging (default: 10, i.e. 2.5 years at quarterly resolution)
-- `learning.mutation_rate`: Strategy mutation standard deviation (default: 0.05)
+- `learning.mutation_rate`: Exploratory mutation standard deviation around the current or imitated strategy anchor (default: 0.05)
 - `learning.adaptation_frequency`: Steps between strategy evaluations (default: 5)
 - `learning.min_money_survival`: Minimum money before firm failure (default: 1.0)
 - `learning.replacement_frequency`: Steps between replacement cycles (default: 10)

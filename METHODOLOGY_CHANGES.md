@@ -168,3 +168,15 @@ Tracking changes to the model methodology that need to be reflected in the manus
 - **Why**: Monetary consistency alone is not enough. A run can conserve money while collapsing into a highly concentrated or dormant economy. Active-versus-dormant counts provide a compact structural diagnostic that complements production, consumption, and labour aggregates.
 - **Where**: `check_consistency.py`.
 - **Manuscript impact**: No direct manuscript change required, but this diagnostic is useful when validating the reported scenario runs and could be mentioned in supplementary validation notes if needed.
+
+## 28. Learning is now peer imitation with bounded exploration
+- **What**: Replaced the previous within-firm random mutation rule with a same-sector imitation rule. Every adaptation cycle, a firm evaluates its recent production-based fitness, looks for fitter peers in the same sector, partially moves its five strategy parameters toward a selected role model, and applies only small bounded exploratory mutation around that anchor. If no fitter peer is available, the firm makes only a very small local exploratory move around its incumbent strategy.
+- **Why**: The earlier rule was labelled hill-climbing but in practice always mutated randomly, with larger mutations exactly when fitness was weak or volatile. Under hazard this turned learning into a random walk that could depress wages, labour demand, and output relative to the no-learning case. Peer imitation is a simpler and more standard evolutionary-ABM mechanism: adaptation diffuses strategies that are currently performing better under the same sectoral environment instead of amplifying noise during stress.
+- **Where**: `agents.py`, `FirmAgent._adapt_strategy()` and the new helper methods for role-model selection and bounded mutation; `model.py` data collection now records firm strategy parameters for diagnostics.
+- **Manuscript impact**: Rewrite the learning subsection to describe imitation-based adaptation rather than adaptive mutation strength. Clarify that the learning outputs now report the five strategy parameters directly for debugging and result interpretation.
+
+## 29. Hazard preflight checks now parse parameter-file flood specifications correctly
+- **What**: Added explicit parsing of `rp_files` strings in `check_consistency.py` before constructing `EconomyModel`.
+- **Why**: The consistency checker previously passed raw parameter-file hazard strings straight into the model, which broke hazard scenario validation even though the main simulation runner parsed them correctly. The checker now supports the same hazard input format as `run_simulation.py`.
+- **Where**: `check_consistency.py`.
+- **Manuscript impact**: No manuscript text required, but this fixes a validation tool inconsistency that affected hazard scenario preflight checks.

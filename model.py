@@ -209,6 +209,11 @@ class EconomyModel(Model):
                 "Input_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "input"),
                 "Demand_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "demand"),
                 "Average_Firm_Fitness": lambda m: np.mean([f.fitness_score for f in m._firms]) if m._firms else 0.0,
+                "Average_Labor_Buffer_Weight": lambda m: np.mean([f.strategy.get("budget_labor_weight", 1.0) for f in m._firms]) if m._firms else 0.0,
+                "Average_Input_Buffer_Weight": lambda m: np.mean([f.strategy.get("budget_input_weight", 1.0) for f in m._firms]) if m._firms else 0.0,
+                "Average_Capital_Buffer_Weight": lambda m: np.mean([f.strategy.get("budget_capital_weight", 1.0) for f in m._firms]) if m._firms else 0.0,
+                "Average_Risk_Sensitivity": lambda m: np.mean([f.strategy.get("risk_sensitivity", 1.0) for f in m._firms]) if m._firms else 0.0,
+                "Average_Wage_Responsiveness": lambda m: np.mean([f.strategy.get("wage_responsiveness", 1.0) for f in m._firms]) if m._firms else 0.0,
                 "Firm_Replacements": lambda m: getattr(m, 'total_firm_replacements', 0),
                 "Total_Sales": lambda m: sum(f.sales_last_step for f in m._firms),
                 "Total_Firms": lambda m: len(m._firms),
@@ -238,6 +243,11 @@ class EconomyModel(Model):
                 "profit": lambda a: getattr(a, "profit_this_step", np.nan),
                 "dividends_paid": lambda a: getattr(a, "dividends_paid_this_step", np.nan),
                 "investment_spending": lambda a: getattr(a, "investment_spending_this_step", np.nan),
+                "budget_labor_weight": lambda a: getattr(a, "strategy", {}).get("budget_labor_weight", np.nan),
+                "budget_input_weight": lambda a: getattr(a, "strategy", {}).get("budget_input_weight", np.nan),
+                "budget_capital_weight": lambda a: getattr(a, "strategy", {}).get("budget_capital_weight", np.nan),
+                "risk_sensitivity": lambda a: getattr(a, "strategy", {}).get("risk_sensitivity", np.nan),
+                "wage_responsiveness": lambda a: getattr(a, "strategy", {}).get("wage_responsiveness", np.nan),
             },
         )
 

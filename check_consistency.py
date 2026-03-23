@@ -9,6 +9,21 @@ import numpy as np
 from model import EconomyModel
 
 
+def parse_rp_files(rp_files: list[str] | str | None) -> list[tuple[int, int, int, str, str]]:
+    """Parse CLI/JSON hazard specifications into EconomyModel event tuples."""
+
+    if not rp_files:
+        return []
+    if isinstance(rp_files, str):
+        rp_files = [rp_files]
+
+    events: list[tuple[int, int, int, str, str]] = []
+    for item in rp_files:
+        rp_str, start_str, end_str, type_str, path_str = item.split(":", 4)
+        events.append((int(rp_str), int(start_str), int(end_str), type_str, path_str))
+    return events
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run a short simulation and verify stock-flow consistency.",
@@ -57,7 +72,7 @@ def build_model(args: argparse.Namespace) -> tuple[EconomyModel, int]:
     steps = int(args.steps if args.steps is not None else params.get("steps", 50))
     model = EconomyModel(
         num_households=int(params.get("num_households", 100)),
-        hazard_events=[] if args.no_hazards else params.get("rp_files", []),
+        hazard_events=[] if args.no_hazards else parse_rp_files(params.get("rp_files", [])),
         seed=params.get("seed"),
         start_year=int(params.get("start_year", 0)),
         steps_per_year=int(params.get("steps_per_year", 4)),

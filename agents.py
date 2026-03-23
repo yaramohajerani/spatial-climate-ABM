@@ -273,8 +273,9 @@ class FirmAgent(Agent):
     # Learning parameters
     LEARNING_ENABLED: bool = True
     MEMORY_LENGTH: int = 10  # steps to track for performance evaluation
-    MUTATION_RATE: float = 0.05  # standard deviation for strategy mutations
+    MUTATION_RATE: float = 0.05  # standard deviation for exploratory strategy mutations
     ADAPTATION_FREQUENCY: int = 5  # steps between strategy evaluations
+    IMITATION_RATE: float = 0.35  # weight placed on a fitter same-sector peer
 
     def __init__(
         self,
@@ -386,6 +387,46 @@ class FirmAgent(Agent):
             'risk_sensitivity': self.random.uniform(0.5, 1.5),         # hazard response aggressiveness
             'wage_responsiveness': self.random.uniform(0.5, 1.5),      # wage adjustment responsiveness
         }
+
+    def _bounded_mutation(
+        self,
+        anchor_strategy: dict[str, float],
+        mutation_scale: float,
+        mutation_probability: float,
+    ) -> dict[str, float]:
+        """Return a bounded exploratory mutation around ``anchor_strategy``."""
+
+        candidate = anchor_strategy.copy()
+        for key in candidate:
+            if self.random.random() < mutation_probability:
+                candidate[key] *= (1.0 + self.random.gauss(0, mutation_scale))
+            candidate[key] = max(0.1, min(3.0, candidate[key]))
+        return candidate
+
+    def _select_role_model(self, current_fitness: float) -> "FirmAgent | None":
+        """Choose a fitter same-sector peer to imitate, if one exists."""
+
+        candidates: list[tuple["FirmAgent", float]] = []
+        for peer in getattr(self.model, "_firms", []):
+            if peer is self or peer.sector != self.sector:
+                continue
+            if len(getattr(peer, "performance_history", [])) < 2:
+                continue
+            peer_fitness = peer._evaluate_fitness()
+            if peer_fitness > current_fitness:
+                candidates.append((peer, peer_fitness))
+
+        if not candidates:
+            return None
+
+        weights = [fitness - current_fitness for _, fitness in candidates]
+        if sum(weights) <= 0:
+            return None
+        return self.random.choices(
+            [peer for peer, _ in candidates],
+            weights=weights,
+            k=1,
+        )[0]
     
     def _record_performance(self) -> None:
         """Track production for fitness evaluation."""
@@ -411,30 +452,37 @@ class FirmAgent(Agent):
         """Adjust strategy based on recent performance."""
         if not self.learning_enabled or len(self.performance_history) < 3:
             return
-        
+
         current_fitness = self._evaluate_fitness()
-        
-        # Simple hill-climbing: if fitness improved, reinforce recent changes
-        # If fitness declined, try random mutations
-        if hasattr(self, '_previous_fitness'):
-            if current_fitness > self._previous_fitness:
-                # Success: make smaller adjustments in same direction
-                mutation_strength = self.MUTATION_RATE * 0.5
-            else:
-                # Failure: try bigger random changes
-                mutation_strength = self.MUTATION_RATE * 2.0
-        else:
-            mutation_strength = self.MUTATION_RATE
-        
-        # Mutate strategy parameters using configured mutation rate
-        for key in self.strategy:
-            if self.random.random() < 0.3:  # 30% chance to mutate each parameter
-                self.strategy[key] *= (1.0 + self.random.gauss(0, mutation_strength))
-                # Keep within reasonable bounds
-                self.strategy[key] = max(0.1, min(3.0, self.strategy[key]))
-        
-        self._previous_fitness = current_fitness
         self.fitness_score = current_fitness
+
+        role_model = self._select_role_model(current_fitness)
+        if role_model is not None:
+            blended_strategy = {
+                key: (
+                    (1.0 - self.IMITATION_RATE) * self.strategy[key]
+                    + self.IMITATION_RATE * role_model.strategy[key]
+                )
+                for key in self.strategy
+            }
+            self.strategy = self._bounded_mutation(
+                blended_strategy,
+                mutation_scale=self.MUTATION_RATE * 0.5,
+                mutation_probability=0.2,
+            )
+        else:
+            previous_fitness = getattr(self, "_previous_fitness", current_fitness)
+            # Without a better peer, keep behavior near the incumbent strategy.
+            # Hazard shocks then trigger cautious local experimentation rather than
+            # a large random walk away from previously viable policies.
+            mutation_scale = self.MUTATION_RATE * (0.2 if current_fitness < previous_fitness else 0.1)
+            self.strategy = self._bounded_mutation(
+                self.strategy,
+                mutation_scale=mutation_scale,
+                mutation_probability=0.1,
+            )
+
+        self._previous_fitness = current_fitness
 
     # ---------------- Interaction helpers ----------------------------- #
     def hire_labor(self, household: HouseholdAgent, wage: float) -> bool:

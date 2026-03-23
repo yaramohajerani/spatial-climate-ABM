@@ -87,3 +87,26 @@ def test_firm_reorganization_preserves_total_money() -> None:
     assert model.total_firm_replacements >= 1
     assert len(model._firms) > 0
     assert np.isclose(model.total_money(), initial_total_money, atol=1e-6)
+
+
+def test_learning_moves_toward_fitter_same_sector_peer() -> None:
+    """Adaptive learning should imitate fitter peers rather than random-walk away from them."""
+    model = build_closed_economy_model()
+
+    retail_firms = [f for f in model._firms if f.sector == "retail"]
+    learner, peer = retail_firms[:2]
+    learner.learning_enabled = True
+    peer.learning_enabled = True
+    learner.MUTATION_RATE = 0.0
+
+    learner.strategy = {key: 0.5 for key in learner.strategy}
+    peer.strategy = {key: 2.0 for key in peer.strategy}
+    learner.performance_history = [{"production": 1.0}] * 3
+    peer.performance_history = [{"production": 10.0}] * 3
+
+    learner._adapt_strategy()
+
+    expected_value = (1.0 - learner.IMITATION_RATE) * 0.5 + learner.IMITATION_RATE * 2.0
+    assert np.isclose(learner.fitness_score, 1.0, atol=1e-9)
+    for key, value in learner.strategy.items():
+        assert np.isclose(value, expected_value, atol=1e-9), key
