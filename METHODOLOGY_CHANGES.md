@@ -216,3 +216,15 @@ Tracking changes to the model methodology that need to be reflected in the manus
 - **Why**: The previous timing let resilience spending directly crowd out same-period hiring and procurement, so adaptation could reduce direct hazard losses while still depressing production and employment. Deferring the cash outflow keeps the learning problem focused on resilience rather than on an artefact of pre-production liquidity depletion.
 - **Where**: `agents.py`, adaptation funding methods and `close_step()`; `model.py`, adaptation loop no longer applies maintenance before operations; `tests/test_stock_flow_closure.py` now verifies deferred funding and household-side income closure.
 - **Manuscript impact**: Update the methodology text so resilience actions are described as being financed from residual end-of-period cash and affecting the next period's resilience stock rather than the current period's working capital.
+
+## 36. Ensemble-based scenario reporting and batch-merging workflow
+- **What**: Added native multi-seed ensemble runs in `run_simulation.py` and a separate `merge_ensemble_members.py` utility for extending an ensemble in batches by concatenating compatible `*_members.csv` files and regenerating a fresh summary CSV.
+- **Why**: Long hazard runs have non-trivial fixed overhead, so it is useful to build larger ensembles incrementally rather than rerunning all seeds in one invocation. Ensemble summaries also provide a more defensible basis for scenario comparison than single-seed trajectories in a stochastic hazard model.
+- **Where**: `run_simulation.py`, `merge_ensemble_members.py`, `plot_from_csv_paper.py`, `README.md`, `AGENTS.md`, and `tests/test_ensemble_outputs.py` / `tests/test_merge_ensemble_members.py`.
+- **Manuscript impact**: The experimental-design and results sections should describe scenario results as ensembles of independently seeded runs summarized by a central line (mean or median) plus an uncertainty band (e.g., p10--p90), rather than as single trajectories.
+
+## 37. Bottleneck plots downgraded to auxiliary diagnostics
+- **What**: Bottleneck classification remains available in the agent data, but it is no longer emphasized as a central paper result.
+- **Why**: Under the repaired demand-driven model, bottleneck labels are conditional on already demand-capped production plans, and ensemble bottleneck plotting additionally requires saving large agent panels for every seed. The main paper story is now more cleanly communicated by aggregate production, capital, liquidity, consumption, wages, prices, inventories, labour, and direct-loss diagnostics.
+- **Where**: `plot_from_csv_paper.py` still supports bottleneck plotting when agent data are present, but the manuscript now treats these plots as optional appendix/debugging diagnostics rather than as a main-text figure.
+- **Manuscript impact**: Remove or demote the bottleneck figure from the main results section. If retained at all, frame it as an auxiliary conditional-planning diagnostic rather than as a primary macro result.
