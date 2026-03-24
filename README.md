@@ -132,6 +132,11 @@ python run_simulation.py --param-file aqueduct_riverine_parameters_rcp8p5.json -
 
 # Run an explicit seed set and keep the combined agent ensemble too
 python run_simulation.py --param-file aqueduct_riverine_parameters_rcp8p5.json --seeds 41 42 43 44 45 --save-agent-ensemble --ensemble-plot-stat median
+
+# Extend an existing ensemble later by merging multiple member batches
+python merge_ensemble_members.py \
+  --member-files simulation_hazard_adaptation_batch1_members.csv simulation_hazard_adaptation_batch2_members.csv \
+  --out-prefix simulation_hazard_adaptation_aqueduct_riverine_parameters_rcp8p5_riverine_firm_topology_100_ensemble10
 ```
 
 Multi-seed runs execute the requested seeds sequentially in one invocation and write:
@@ -140,6 +145,8 @@ Multi-seed runs execute the requested seeds sequentially in one invocation and w
 - `simulation_*_members.csv`: member-level aggregate trajectories with a `Seed` column
 - `simulation_*_agents.csv`: optional combined agent ensemble when `--save-agent-ensemble` is enabled
 - `simulation_*_ensemble.png`: a quick ensemble plot with faint member traces plus a highlighted mean/median line
+
+If you build the ensemble in batches, merge the resulting `*_members.csv` files afterward with `merge_ensemble_members.py`. The merge script validates that the batches share the same scenario label, step grid, and schema, rejects overlapping seeds by default, and writes a fresh combined summary plus merged member file.
 
 ### Parameter File Format
 
