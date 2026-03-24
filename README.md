@@ -34,10 +34,10 @@ The model simulates economic agents (households and firms) on a spatial grid whi
 - **Agent Types**: Households (labor suppliers) and firms (producers with Leontief technology)
 - **Economic Markets**: Endogenous wages, dynamic pricing, labor mobility, demand-driven production, and supply chain networks
 - **Climate Integration**: Lazy hazard sampling from full-resolution GeoTIFF rasters with JRC region-specific damage curves
-- **Adaptive Behaviors**: Risk-based household migration and firm capital adjustments
+- **Adaptive Behaviors**: Optional household relocation plus hazard-conditional firm resilience investment with local observation and firm-level learning
 - **Liquidity-Dependent Recovery**: Post-disaster recovery speed scales with firm liquidity (firms with more capital can afford faster repairs)
 - **Minimum Wage Floor**: Wage offers bounded below at 40% of initial wage, a proxy consistent with ILO (2016) observations on minimum wages in high-income economies
-- **Firm Adaptation System**: Hazard-conditional resilience capital with adaptive expectations and a contextual-bandit policy over discrete adaptation investments
+- **Firm Adaptation System**: Hazard-conditional resilience capital with neighborhood hazard observation and a firm-level contextual bandit over discrete adaptation investments
 - **Multiple Sectors**: Commodity, manufacturing, and retail sectors with sector-specific production coefficients and configurable household final-demand ratios over final-good sectors
 - **Circular-Flow Closure**: Households receive wages plus firm payouts, and total money is tracked explicitly so the household-firm system remains stock-flow closed in no-entry/no-exit runs
 
@@ -46,9 +46,9 @@ The model simulates economic agents (households and firms) on a spatial grid whi
 - **Memory-efficient hazard loading**: Samples hazard values only at agent locations using `rasterio.sample()`, avoiding loading full rasters into memory
 - **Region-specific damage functions**: JRC depth-damage curves for Europe, Asia, Africa, North America, South America, and Oceania
 - **No preprocessing required**: Works directly with full-resolution Aqueduct flood rasters (~90MB each)
-- **Distance-soft labor market**: Households consider all firms; distance is a disutility but there is no hard radius
+- **Sector-local labor market**: Households search nearby same-sector firms first, then fall back to the broader market with a distance penalty
 - **Final-goods market discipline**: Households buy only from final-good sectors; upstream sectors sell to firms rather than directly to households
-- **Adaptation System**: Hazard-conditional resilience learning with explicit adaptation spending, avoided-loss rewards, and stock-flow-consistent firm reorganization
+- **Adaptation System**: Hazard-conditional resilience learning with end-of-period adaptation funding, avoided-loss rewards, and stock-flow-consistent firm reorganization
 
 ## Core Architecture
 
@@ -60,8 +60,8 @@ The model uses a `mesa.space.MultiGrid` with configurable resolution (default 1�
 
 #### HouseholdAgent
 - **Labor Supply**: Each household supplies 1 unit of labor per step
-- **Employment Choice**: Maximizes `wage - distance_cost × distance` utility across all firms (cross-sector employment allowed)
-- **Consumption**: Uses a disposable-income rule based on current labor income, recently distributed firm payouts, and a small draw from money holdings above a target cash buffer; allocates that budget across final-good sectors with fractional purchases when budget < unit price
+- **Employment Choice**: Uses staged search: nearby same-sector firms are tried first, then the wider market is searched with wage-distance utility and a remote-search penalty (cross-sector fallback remains allowed)
+- **Consumption**: Uses a disposable-income rule based on current labor income, recently distributed firm payouts, recent adaptation-service income, and a small draw from money holdings above a target cash buffer; allocates that budget across final-good sectors with fractional purchases when budget < unit price
 - **Relocation**: Optional and disabled in the main scenario parameter files. The current relocation logic can still be toggled on for experiments, but it is not used in the reported core scenarios.
 
 #### FirmAgent
@@ -70,7 +70,7 @@ The model uses a `mesa.space.MultiGrid` with configurable resolution (default 1�
   - Commodity: labor=0.6, input=0.0, capital=0.7 (capital-intensive extraction, no upstream inputs)
   - Manufacturing: labor=0.3, input=0.6, capital=0.6 (automated, capital & input intensive)
   - Retail: labor=0.5, input=0.4, capital=0.2 (moderate labor, low capital needs)
-- **Adaptation System**: A resilience-capital stock, hazard-context state, tabular UCB action selection, and bankruptcy reorganization with parent-state inheritance
+- **Adaptation System**: A resilience-capital stock, firm-level hazard beliefs, neighborhood loss observation, firm-level UCB policy learning, end-of-period adaptation funding from residual cash, and bankruptcy reorganization with parent-state inheritance
 - **Wage Setting**: Revenue-based wage targeting — wages track revenue per worker × a fixed labor share of 0.5, with smooth adjustment (10% toward target per step); minimum wage floor at 40% of initial wage
 - **Dynamic Pricing**: Markup pricing — price = unit cost × (1 + markup), where markup is set by sell-through rate; prices track costs bidirectionally with no cost-floor ratchet
 - **Damage Recovery**: Liquidity-dependent recovery rate (20%–50% per step) so stressed firms recover more slowly
@@ -106,11 +106,13 @@ Damage is calculated using JRC Global Flood Depth-Damage Functions:
 
 ### Firm Adaptation System
 - **Adaptation Stock**: Each firm carries a `resilience_capital` stock in `[0, 1]` that attenuates direct hazard losses and speeds recovery
-- **Hazard Context**: Firms maintain EWMAs of expected direct loss, realized direct loss, and supplier disruption, plus current resilience stock
+- **Hazard Context**: Firms maintain EWMAs of expected direct loss, realized direct loss, nearby observed direct loss, supplier disruption, and current resilience stock
+- **Neighborhood Observation**: Firms observe flood-related losses among nearby firms within a configurable radius, allowing anticipatory adaptation before own exposure
 - **Action Set**: Every 4 steps, firms choose among `maintain`, `small`, and `large` resilience investments
-- **Bandit Policy**: A tabular contextual-UCB rule selects the action when the hazard state is active; baseline no-hazard runs remain dormant
-- **Reward Signal**: Annualized avoided direct loss minus adaptation cost, normalized by direct value at risk
-- **Population Dynamics**: Bankrupt firms are reorganized in place, preserving stock-flow closure while inheriting adaptation state from successful same-sector parents
+- **Funding Timing**: Adaptation actions are chosen before the hazard is sampled, but maintenance and new resilience spending are funded only at period close from residual post-operations cash; newly installed resilience capital affects the next period rather than the current one
+- **Firm-Level Policy Learning**: Each firm maintains its own tabular contextual-UCB rule over the discretized hazard state; nearby observations affect the state, but action values are updated from the firm's own informative hazard windows
+- **Reward Signal**: Completed adaptation windows are updated with avoided direct loss minus adaptation cost, normalized by the firm's own direct loss over the window
+- **Population Dynamics**: Bankrupt firms are reorganized in place, preserving stock-flow closure while inheriting adaptation state and firm-level bandit memory from successful same-sector parents
 
 ## Usage
 
@@ -151,6 +153,7 @@ python run_simulation.py --param-file aqueduct_riverine_parameters.json
     "reward_window": 4,
     "ewma_alpha": 0.2,
     "ucb_c": 1.0,
+    "observation_radius": 4,
     "action_increments": [0.0, 0.05, 0.1],
     "resilience_decay": 0.01,
     "maintenance_cost_rate": 0.005,
@@ -218,9 +221,9 @@ Include at least one final-good sector (`retail`, `wholesale`, or `services`) in
 
 ## Output Files
 
-- **simulation_*.csv**: Model-level time series (production, wealth, wages, prices, risk, bottleneck counts)
-- **Stock-flow diagnostics in `simulation_*.csv`**: `Total_Money`, `Money_Drift`, `Firm_Dividends_Paid`, `Firm_Investment_Spending`, `Household_Labor_Income`, `Household_Dividend_Income`, and `Household_Capital_Income`
-- **simulation_*_agents.csv**: Agent-level panel data (money, capital, production, sector, type, and firm-level `household_sales_last_step` for true seller-sector final demand). Household `sector` values in this file are initialization/placement cohort tags, not purchased-good categories.
+- **simulation_*.csv**: Model-level time series (production, wealth, wages, prices, risk, bottleneck counts, and adaptation diagnostics)
+- **Stock-flow diagnostics in `simulation_*.csv`**: `Total_Money`, `Money_Drift`, `Firm_Dividends_Paid`, `Firm_Investment_Spending`, `Household_Labor_Income`, `Household_Dividend_Income`, `Household_Capital_Income`, `Household_Adaptation_Income`, and adaptation state summaries such as `Average_Local_Observed_Loss` and `Adaptation_Updates`
+- **simulation_*_agents.csv**: Agent-level panel data (money, capital, production, sector, type, seller-sector demand, and firm-level adaptation states including `resilience_capital`, `local_observed_loss`, `adaptation_action`, and `adaptation_reward`). Household `sector` values in this file are initialization/placement cohort tags, not purchased-good categories.
 - **simulation_*_timeseries.png**: Multi-panel plots of key metrics. Household consumption panels use actual household purchases, and any sector breakdown of final demand is derived from seller sectors rather than household cohort labels.
 - **simulation_*_sector_bottlenecks.png**: Sector-level bottleneck analysis
 
@@ -241,7 +244,7 @@ Include at least one final-good sector (`retail`, `wholesale`, or `services`) in
   | Retail | 0.5 | 0.4 | 0.2 | Moderate labor, low capital needs |
 - **Depreciation Rate**: 0.2% per step
 - **Consumption Ratios**: Configurable household spending by final-good sector only. For the current 100-firm riverine topology the relevant setting is `{"retail": 1.0}`.
-- **Household Consumption Rule**: `0.9 × disposable_income + 0.02 × max(0, money - 50)`, where disposable income is current labor income plus the previous period's dividends and reduced-form investment income
+- **Household Consumption Rule**: `0.9 × disposable_income + 0.02 × max(0, money - 50)`, where disposable income is current labor income plus the previous period's dividends, reduced-form investment income, and adaptation-service income
 - **Wage Mechanism**: Revenue-based targeting — firms set wages at `revenue_per_worker × labor_share`, with a fixed labour-share parameter of `0.5` and 10% smooth adjustment per step. Wages are structurally bounded by revenue and self-correct during downturns.
 - **Minimum Wage Floor**: 40% of initial mean wage, a proxy consistent with ILO (2016) observations (40–60% of median)
 - **Production Planning**: Firms target expected sales plus an inventory buffer, translate that into vacancies and input demand, preserve a working-capital buffer, initialize inventories and capital from labour-consistent demand, clear household demand after the current period's production is complete, and close the period by splitting positive profits between dividends and internally financed capital expansion subject to liquidity constraints
@@ -258,7 +261,8 @@ Include at least one final-good sector (`retail`, `wholesale`, or `services`) in
 - `adaptation.decision_interval`: Steps between bandit decisions (default: 4)
 - `adaptation.reward_window`: Steps used to evaluate each action (default: 4)
 - `adaptation.ewma_alpha`: Smoothing parameter for hazard-state expectations (default: 0.2)
-- `adaptation.ucb_c`: Contextual-bandit exploration coefficient (default: 1.0)
+- `adaptation.ucb_c`: Firm-level contextual-bandit exploration coefficient (default: 1.0)
+- `adaptation.observation_radius`: Manhattan-radius threshold for observing nearby firm losses (default: 4 grid cells)
 - `adaptation.action_increments`: Resilience-capital increments for maintain/small/large actions (default: `[0.0, 0.05, 0.1]`)
 - `adaptation.resilience_decay`: Per-step depreciation of resilience capital (default: 0.01)
 - `adaptation.maintenance_cost_rate`: Per-step carrying cost on resilience capital (default: 0.005)

@@ -22,6 +22,7 @@ def build_closed_economy_model(*, adaptation_enabled: bool) -> EconomyModel:
             "reward_window": 4,
             "ewma_alpha": 0.2,
             "ucb_c": 1.0,
+            "observation_radius": 4,
             "action_increments": [0.0, 0.05, 0.10],
             "resilience_decay": 0.01,
             "maintenance_cost_rate": 0.005,
@@ -81,20 +82,29 @@ def test_baseline_adaptation_stays_dormant_without_hazards() -> None:
     assert all(firm.adaptation_update_count == 0 for firm in model._firms)
 
 
-def test_adaptation_spending_is_returned_to_households() -> None:
-    """Adaptation maintenance must be a household-side income flow, not a money sink."""
+def test_adaptation_spending_is_deferred_and_returned_to_households() -> None:
+    """Adaptation should be funded after operations and remain stock-flow consistent."""
     model = build_closed_economy_model(adaptation_enabled=True)
     firm = model._firms[0]
+
+    firm.money = 200.0
     initial_total_money = model.total_money()
-
-    firm.resilience_capital = 0.5
     firm.base_capital_target = 100.0
-    firm._liquidity_buffer = 0.0
+    firm.resilience_capital = 0.5
     firm.begin_period_adaptation()
+    decayed_resilience = firm.resilience_capital
+    firm._queue_adaptation_investment(2)
 
+    assert np.isclose(firm.money, 200.0, atol=1e-9)
+    assert firm.adaptation_spending_this_step == 0.0
+    assert np.isclose(firm.resilience_capital, decayed_resilience, atol=1e-9)
+
+    firm._fund_adaptation_after_operations(available_cash=50.0, investable_profit=50.0)
     household_adaptation_income = sum(h.adaptation_income_this_step for h in model._households)
 
     assert firm.adaptation_spending_this_step > 0.0
+    assert firm.money < 200.0
+    assert firm.resilience_capital > decayed_resilience
     assert np.isclose(household_adaptation_income, firm.adaptation_spending_this_step, atol=1e-9)
     assert np.isclose(model.total_money(), initial_total_money, atol=1e-9)
 
@@ -113,9 +123,10 @@ def test_firm_reorganization_preserves_total_money_and_inherits_adaptation_state
     parent.resilience_capital = 0.4
     parent.expected_direct_loss_ewma = 0.2
     parent.realized_direct_loss_ewma = 0.15
+    parent.local_observed_loss_ewma = 0.1
     parent.supplier_disruption_ewma = 0.1
-    parent.ucb_action_counts = {(2, 1, 1, 1): [3, 2, 1]}
-    parent.ucb_action_values = {(2, 1, 1, 1): [0.1, 0.4, 0.2]}
+    parent.ucb_action_counts = {(1, 1, 0, 0): [2, 1, 0]}
+    parent.ucb_action_values = {(1, 1, 0, 0): [0.3, 0.5, 0.0]}
 
     failed_firm.money = 0.0
     initial_total_money = model.total_money()
@@ -127,6 +138,7 @@ def test_firm_reorganization_preserves_total_money_and_inherits_adaptation_state
     assert np.isclose(failed_firm.resilience_capital, parent.resilience_capital, atol=1e-9)
     assert failed_firm.expected_direct_loss_ewma == parent.expected_direct_loss_ewma
     assert failed_firm.realized_direct_loss_ewma == parent.realized_direct_loss_ewma
+    assert failed_firm.local_observed_loss_ewma == parent.local_observed_loss_ewma
     assert failed_firm.supplier_disruption_ewma == parent.supplier_disruption_ewma
     assert failed_firm.ucb_action_counts == parent.ucb_action_counts
     assert failed_firm.ucb_action_values == parent.ucb_action_values
@@ -175,7 +187,7 @@ def test_resilience_capital_reduces_direct_losses_and_improves_recovery() -> Non
 
 
 def test_bandit_explores_unseen_actions_then_prefers_higher_reward_action() -> None:
-    """The tabular UCB policy should explore untried actions and then exploit stronger rewards."""
+    """The firm-level tabular UCB policy should explore untried actions and then exploit stronger rewards."""
     model = build_closed_economy_model(adaptation_enabled=True)
     firm = model._firms[0]
     context = (2, 2, 1, 0)
@@ -190,14 +202,25 @@ def test_bandit_explores_unseen_actions_then_prefers_higher_reward_action() -> N
     firm.ucb_action_values[context] = [0.2, 0.4, 0.0]
     assert firm._choose_ucb_action(context) == 2
 
-    for action_index, reward in ((0, 0.15), (1, 0.75), (2, 0.25)):
-        firm.current_policy_context = context
-        firm.current_action_index = action_index
-        firm.window_raw_direct_loss = 10.0
-        firm.window_adapted_direct_loss = 10.0 * (1.0 - reward)
-        firm.window_adaptation_cost = 0.0
-        firm.window_peak_raw_loss_signal = 0.2
-        firm._finalize_adaptation_window()
+    peer = next(
+        candidate for candidate in model._firms
+        if candidate is not firm and candidate.sector == firm.sector
+    )
+    firm.ucb_action_counts[context] = [0, 0, 0]
+    firm.ucb_action_values[context] = [0.0, 0.0, 0.0]
+    firm.current_policy_context = context
+    firm.current_action_index = 1
+    firm.steps_in_current_window = firm.reward_window
+    firm.window_raw_direct_loss = 10.0
+    firm.window_adapted_direct_loss = 6.0
+    firm.window_adaptation_cost = 0.0
+    firm.window_peak_raw_loss_signal = 0.2
+    assert firm._update_adaptation_policy_from_window() is True
+
+    assert firm.ucb_action_counts[context][1] == 1
+    assert np.isclose(firm.ucb_action_values[context][1], 0.4, atol=1e-9)
+    assert np.isclose(firm.last_adaptation_reward, 0.4, atol=1e-9)
+    assert peer.ucb_action_counts.get(context) is None
 
     firm.ucb_action_counts[context] = [6, 6, 6]
     firm.ucb_action_values[context] = [0.15, 0.75, 0.25]
@@ -205,22 +228,43 @@ def test_bandit_explores_unseen_actions_then_prefers_higher_reward_action() -> N
 
 
 def test_bandit_skips_uninformative_low_loss_windows() -> None:
-    """Tiny-loss windows should not update the adaptation bandit."""
+    """Tiny-loss windows should not update the firm-level adaptation bandit."""
     model = build_closed_economy_model(adaptation_enabled=True)
     firm = model._firms[0]
     context = (1, 1, 0, 0)
 
     firm.current_policy_context = context
     firm.current_action_index = 1
+    firm.steps_in_current_window = firm.reward_window
     firm.window_raw_direct_loss = 10.0
     firm.window_adapted_direct_loss = 6.0
     firm.window_adaptation_cost = 0.0
     firm.window_peak_raw_loss_signal = 0.01
-    firm._finalize_adaptation_window()
+    firm._adaptation_policy_initialized = True
+    updated = firm._update_adaptation_policy_from_window()
 
+    assert updated is False
     assert firm.last_adaptation_reward != firm.last_adaptation_reward
     assert firm.adaptation_update_count == 0
     assert firm.ucb_action_counts.get(context) is None
+
+
+def test_nearby_hazard_losses_enter_local_observed_loss_state() -> None:
+    """Firms should observe nearby hazard losses even before they are hit themselves."""
+    model = build_closed_economy_model(adaptation_enabled=True)
+    focal = next(f for f in model._firms if f.sector == "services")
+    neighbor = next(
+        f for f in model._firms
+        if f is not focal and f.sector == focal.sector
+    )
+
+    focal.pos = (10, 10)
+    neighbor.pos = (11, 10)
+    neighbor.raw_direct_loss_fraction_this_step = 0.4
+
+    observed = model.get_local_observed_loss_fraction(focal)
+
+    assert np.isclose(observed, 0.4, atol=1e-9)
 
 
 def test_households_try_nearby_same_sector_firms_before_remote_market() -> None:

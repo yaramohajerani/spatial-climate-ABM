@@ -1,8 +1,8 @@
-"""Sensitivity analysis for hazard-conditional adaptation exploration.
+"""Sensitivity analysis for firm-level hazard-conditional adaptation exploration.
 
 Runs the hazard+adaptation scenario across a range of UCB exploration
 coefficients to verify that qualitative conclusions are robust to the
-bandit's exploration intensity.
+shared bandit's exploration intensity.
 
 Usage:
     # Full run (saves timeseries + summary CSVs and plot)
@@ -40,7 +40,7 @@ UCB_CONFIGS = {
 
 def _parse_args():
     p = argparse.ArgumentParser(
-        description="Sensitivity analysis for contextual-bandit exploration strength.",
+        description="Sensitivity analysis for firm-level contextual-bandit exploration strength.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument(

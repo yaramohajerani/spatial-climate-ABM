@@ -79,6 +79,8 @@ class EconomyModel(Model):
         self.firm_learning_enabled: bool = self.firm_adaptation_enabled
         self.min_money_survival: float = self.adaptation_config.get("min_money_survival", 1.0)
         self.replacement_frequency: int = self.adaptation_config.get("replacement_frequency", 10)
+        self.adaptation_observation_radius: int = int(self.adaptation_config.get("observation_radius", 4))
+        self.adaptation_updates_this_step: int = 0
 
         # Household consumption ratios across final-good sectors.
         # Upstream sectors sell to firms, not directly to households.
@@ -205,7 +207,7 @@ class EconomyModel(Model):
                 "Household_Labor_Income": lambda m: sum(h.labor_income_this_step for h in m._households),
                 "Household_Dividend_Income": lambda m: sum(h.dividend_income_this_step for h in m._households),
                 "Household_Capital_Income": lambda m: sum(h.capital_income_this_step for h in m._households),
-                "Household_Adaptation_Income": lambda m: sum(h.adaptation_income_last_step for h in m._households),
+                "Household_Adaptation_Income": lambda m: sum(h.adaptation_income_this_step for h in m._households),
                 "Average_Risk": lambda m: np.mean(list(m.hazard_map.values())),
                 "Mean_Wage": lambda m: m.mean_wage,
                 "Mean_Price": lambda m: np.mean([f.price for f in m._firms]) if m._firms else 0.0,
@@ -219,8 +221,10 @@ class EconomyModel(Model):
                 "Average_Resilience_Capital": lambda m: np.mean([f.resilience_capital for f in m._firms]) if m._firms else 0.0,
                 "Average_Expected_Direct_Loss": lambda m: np.mean([f.expected_direct_loss_ewma for f in m._firms]) if m._firms else 0.0,
                 "Average_Realized_Direct_Loss": lambda m: np.mean([f.realized_direct_loss_ewma for f in m._firms]) if m._firms else 0.0,
+                "Average_Local_Observed_Loss": lambda m: np.mean([f.local_observed_loss_ewma for f in m._firms]) if m._firms else 0.0,
                 "Average_Supplier_Disruption": lambda m: np.mean([f.supplier_disruption_ewma for f in m._firms]) if m._firms else 0.0,
                 "Average_Adaptation_Reward": lambda m: float(np.nanmean([f.last_adaptation_reward for f in m._firms])) if any(np.isfinite(f.last_adaptation_reward) for f in m._firms) else 0.0,
+                "Adaptation_Updates": lambda m: m.adaptation_updates_this_step,
                 "Fixed_Labor_Share": lambda m: np.mean([getattr(f, "LABOR_SHARE", np.nan) for f in m._firms]) if m._firms else 0.0,
                 "Firm_Replacements": lambda m: getattr(m, 'total_firm_replacements', 0),
                 "Total_Sales": lambda m: sum(f.sales_last_step for f in m._firms),
@@ -255,6 +259,7 @@ class EconomyModel(Model):
                 "resilience_capital": lambda a: getattr(a, "resilience_capital", np.nan),
                 "expected_direct_loss": lambda a: getattr(a, "expected_direct_loss_ewma", np.nan),
                 "realized_direct_loss": lambda a: getattr(a, "realized_direct_loss_ewma", np.nan),
+                "local_observed_loss": lambda a: getattr(a, "local_observed_loss_ewma", np.nan),
                 "supplier_disruption": lambda a: getattr(a, "supplier_disruption_ewma", np.nan),
                 "adaptation_reward": lambda a: getattr(a, "last_adaptation_reward", np.nan),
                 "adaptation_action": lambda a: getattr(a, "last_adaptation_action", ""),
@@ -403,6 +408,62 @@ class EconomyModel(Model):
 
         firm.money += funded_amount
         return funded_amount
+
+    def get_local_observed_loss_fraction(self, focal_firm: FirmAgent) -> float:
+        """Return the weighted mean nearby raw-loss signal observed by ``focal_firm``."""
+
+        radius = max(0, int(self.adaptation_observation_radius))
+        if radius <= 0:
+            return 0.0
+
+        weighted_loss = 0.0
+        total_weight = 0.0
+        x0, y0 = focal_firm.pos
+        for other in self._firms:
+            if other is focal_firm:
+                continue
+            dist = abs(x0 - other.pos[0]) + abs(y0 - other.pos[1])
+            if dist > radius:
+                continue
+            raw_loss = getattr(other, "raw_direct_loss_fraction_this_step", 0.0)
+            if raw_loss <= 0:
+                continue
+            weight = 1.0 / (1.0 + dist)
+            weighted_loss += weight * raw_loss
+            total_weight += weight
+
+        if total_weight <= 0:
+            return 0.0
+        return weighted_loss / total_weight
+
+    def _advance_adaptation_learning(self) -> None:
+        """Reset period adaptation state, update firm-level rewards, and choose new actions."""
+
+        self.adaptation_updates_this_step = 0
+
+        for firm in self._firms:
+            firm.begin_period_adaptation()
+
+        if not self.firm_adaptation_enabled:
+            return
+
+        completed_firms: List[FirmAgent] = []
+
+        for firm in self._firms:
+            if not firm.has_completed_adaptation_window():
+                continue
+            completed_firms.append(firm)
+            if firm._update_adaptation_policy_from_window():
+                self.adaptation_updates_this_step += 1
+
+        for firm in completed_firms:
+            firm._reset_adaptation_window()
+
+        for firm in self._firms:
+            if not firm.adaptation_enabled:
+                continue
+            if not firm._adaptation_policy_initialized or firm in completed_firms:
+                firm._select_adaptation_action()
 
     def _sector_priority(self, firm: FirmAgent) -> tuple[int, float]:
         """Sort firms by broad supply-chain tier with random tie breaks."""
@@ -706,8 +767,7 @@ class EconomyModel(Model):
         self.current_step += 1
 
         # Firms update resilience decisions before the new hazard state is sampled.
-        for firm in self._firms:
-            firm.begin_period_adaptation()
+        self._advance_adaptation_learning()
 
         # Each year: sample hazard independently for every cell based on RP
         self._sample_pixelwise_hazard()

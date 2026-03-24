@@ -433,6 +433,7 @@ class FirmAgent(Agent):
         self.resilience_capital: float = 0.0
         self.expected_direct_loss_ewma: float = 0.0
         self.realized_direct_loss_ewma: float = 0.0
+        self.local_observed_loss_ewma: float = 0.0
         self.supplier_disruption_ewma: float = 0.0
         self.last_adaptation_action: str = self.ACTION_LABELS[0]
         self.last_adaptation_reward: float = np.nan
@@ -440,6 +441,7 @@ class FirmAgent(Agent):
         self.current_policy_context: tuple[int, int, int, int] | None = None
         self.ucb_action_counts: dict[tuple[int, int, int, int], list[int]] = {}
         self.ucb_action_values: dict[tuple[int, int, int, int], list[float]] = {}
+        self.pending_adaptation_increment: float = 0.0
         self.steps_in_current_window: int = 0
         self.window_raw_direct_loss: float = 0.0
         self.window_adapted_direct_loss: float = 0.0
@@ -453,7 +455,7 @@ class FirmAgent(Agent):
 
     # ---------------- Adaptation System Methods ------------------------- #
     def begin_period_adaptation(self) -> None:
-        """Update resilience state before hazards are sampled for the period."""
+        """Reset period adaptation accounting before hazards are sampled."""
 
         self.adaptation_spending_this_step = 0.0
         self.adaptation_investment_this_step = 0.0
@@ -467,52 +469,43 @@ class FirmAgent(Agent):
         if not self.adaptation_enabled:
             return
 
+        self.pending_adaptation_increment = 0.0
         self.resilience_capital = max(0.0, self.resilience_capital * (1.0 - self.resilience_decay))
 
-        if self.steps_in_current_window >= self.reward_window:
-            self._finalize_adaptation_window()
-            self._reset_adaptation_window()
-            self._select_adaptation_action()
-        elif not self._adaptation_policy_initialized:
-            self._adaptation_policy_initialized = True
-            self.current_policy_context = None
-            self.current_action_index = 0
-            self.last_adaptation_action = self.ACTION_LABELS[0]
+    def has_completed_adaptation_window(self) -> bool:
+        return bool(self.adaptation_enabled and self.steps_in_current_window >= self.reward_window)
 
-        self._apply_adaptation_maintenance()
-
-    def _finalize_adaptation_window(self) -> None:
-        """Update the bandit with the realized reward from the last window."""
-
+    def _update_adaptation_policy_from_window(self) -> bool:
+        """Update this firm's contextual bandit from its completed reward window."""
         if self.current_policy_context is None:
             self.last_adaptation_reward = np.nan
-            return
+            return False
         if self.window_raw_direct_loss <= 0:
             self.last_adaptation_reward = np.nan
-            return
+            return False
         if self.window_peak_raw_loss_signal <= self.LOSS_STATE_THRESHOLDS[0]:
             self.last_adaptation_reward = np.nan
-            return
+            return False
 
-        reward = (
+        reward_numerator = (
             (self.window_raw_direct_loss - self.window_adapted_direct_loss)
             - self.window_adaptation_cost
-        ) / (1e-6 + self.window_raw_direct_loss)
-        counts = self.ucb_action_counts.setdefault(
-            self.current_policy_context,
-            [0] * len(self.action_increments),
         )
-        values = self.ucb_action_values.setdefault(
-            self.current_policy_context,
-            [0.0] * len(self.action_increments),
-        )
+        reward = reward_numerator / (1e-6 + self.window_raw_direct_loss)
+        if not np.isfinite(reward):
+            self.last_adaptation_reward = np.nan
+            return False
 
+        context = self.current_policy_context
+        counts = self.ucb_action_counts.setdefault(context, [0] * len(self.action_increments))
+        values = self.ucb_action_values.setdefault(context, [0.0] * len(self.action_increments))
         counts[self.current_action_index] += 1
         count = counts[self.current_action_index]
         previous = values[self.current_action_index]
         values[self.current_action_index] = previous + (reward - previous) / count
         self.last_adaptation_reward = float(reward)
         self.adaptation_update_count += 1
+        return True
 
     def _reset_adaptation_window(self) -> None:
         self.steps_in_current_window = 0
@@ -525,6 +518,7 @@ class FirmAgent(Agent):
         return bool(
             self.expected_direct_loss_ewma > self.LOSS_STATE_THRESHOLDS[0]
             or self.realized_direct_loss_ewma > self.LOSS_STATE_THRESHOLDS[0]
+            or self.local_observed_loss_ewma > self.LOSS_STATE_THRESHOLDS[0]
             or self.supplier_disruption_ewma > self.LOSS_STATE_THRESHOLDS[0]
             or self.resilience_capital > self.LOSS_STATE_THRESHOLDS[0]
         )
@@ -539,7 +533,7 @@ class FirmAgent(Agent):
     def _build_adaptation_context(self) -> tuple[int, int, int, int]:
         return (
             self._bin_metric(self.expected_direct_loss_ewma, self.LOSS_STATE_THRESHOLDS),
-            self._bin_metric(self.realized_direct_loss_ewma, self.LOSS_STATE_THRESHOLDS),
+            self._bin_metric(self.local_observed_loss_ewma, self.LOSS_STATE_THRESHOLDS),
             self._bin_metric(self.supplier_disruption_ewma, self.LOSS_STATE_THRESHOLDS),
             self._bin_metric(self.resilience_capital, self.RESILIENCE_STATE_THRESHOLDS),
         )
@@ -557,11 +551,17 @@ class FirmAgent(Agent):
         self.current_policy_context = context
         self.current_action_index = action_index
         self.last_adaptation_action = self.ACTION_LABELS[action_index]
-        self._apply_adaptation_investment(action_index)
+        self._queue_adaptation_investment(action_index)
 
     def _choose_ucb_action(self, context: tuple[int, int, int, int]) -> int:
-        counts = self.ucb_action_counts.setdefault(context, [0] * len(self.action_increments))
-        values = self.ucb_action_values.setdefault(context, [0.0] * len(self.action_increments))
+        counts = self.ucb_action_counts.setdefault(
+            context,
+            [0] * len(self.action_increments),
+        )
+        values = self.ucb_action_values.setdefault(
+            context,
+            [0.0] * len(self.action_increments),
+        )
 
         for idx, count in enumerate(counts):
             if count == 0:
@@ -574,40 +574,50 @@ class FirmAgent(Agent):
         ]
         return int(np.argmax(scores))
 
-    def _available_cash_for_adaptation(self) -> float:
-        return max(0.0, self.money - self._liquidity_buffer)
-
     def _adaptation_scale(self) -> float:
         return max(1.0, self.base_capital_target)
 
-    def _apply_adaptation_investment(self, action_index: int) -> None:
-        desired_increment = self.action_increments[action_index]
-        if desired_increment <= 0:
-            return
+    def _queue_adaptation_investment(self, action_index: int) -> None:
+        self.pending_adaptation_increment = max(0.0, self.action_increments[action_index])
 
+    def _fund_adaptation_after_operations(
+        self,
+        *,
+        available_cash: float,
+        investable_profit: float,
+    ) -> tuple[float, float]:
+        """Fund maintenance and planned resilience investment after operations close.
+
+        Adaptation no longer draws from working capital before hiring and procurement.
+        Instead, the chosen action is financed from residual post-operations cash and
+        only affects resilience capital going into the next period.
+        """
         scale = self._adaptation_scale()
-        desired_spending = desired_increment * scale
-        actual_spending = min(desired_spending, self._available_cash_for_adaptation())
-        if actual_spending <= 0:
-            return
-
-        realized_increment = actual_spending / scale
-        self.money -= actual_spending
-        self.resilience_capital = min(1.0, self.resilience_capital + realized_increment)
-        self.adaptation_spending_this_step += actual_spending
-        self.adaptation_investment_this_step += actual_spending
-        self.model.distribute_household_income(actual_spending, income_kind="adaptation")
-
-    def _apply_adaptation_maintenance(self) -> None:
         desired_spending = self.maintenance_cost_rate * self.resilience_capital * self._adaptation_scale()
-        actual_spending = min(desired_spending, self._available_cash_for_adaptation())
-        if actual_spending <= 0:
-            return
+        maintenance_spending = min(desired_spending, available_cash, investable_profit)
+        if maintenance_spending > 0:
+            self.money -= maintenance_spending
+            self.adaptation_spending_this_step += maintenance_spending
+            self.adaptation_maintenance_this_step += maintenance_spending
+            self.model.distribute_household_income(maintenance_spending, income_kind="adaptation")
+            available_cash -= maintenance_spending
+            investable_profit -= maintenance_spending
 
-        self.money -= actual_spending
-        self.adaptation_spending_this_step += actual_spending
-        self.adaptation_maintenance_this_step += actual_spending
-        self.model.distribute_household_income(actual_spending, income_kind="adaptation")
+        investment_spending = 0.0
+        desired_increment = self.pending_adaptation_increment
+        if desired_increment > 0 and available_cash > 0 and investable_profit > 0:
+            desired_spending = desired_increment * scale
+            investment_spending = min(desired_spending, available_cash, investable_profit)
+            if investment_spending > 0:
+                realized_increment = investment_spending / scale
+                self.money -= investment_spending
+                self.resilience_capital = min(1.0, self.resilience_capital + realized_increment)
+                self.adaptation_spending_this_step += investment_spending
+                self.adaptation_investment_this_step += investment_spending
+                self.model.distribute_household_income(investment_spending, income_kind="adaptation")
+
+        self.pending_adaptation_increment = 0.0
+        return maintenance_spending, investment_spending
 
     def estimate_direct_value_at_risk(self) -> float:
         avg_input_price = float(np.mean([s.price for s in self.connected_firms])) if self.connected_firms else self.price
@@ -638,7 +648,12 @@ class FirmAgent(Agent):
         self.resilience_capital = parent.resilience_capital
         self.expected_direct_loss_ewma = parent.expected_direct_loss_ewma
         self.realized_direct_loss_ewma = parent.realized_direct_loss_ewma
+        self.local_observed_loss_ewma = parent.local_observed_loss_ewma
         self.supplier_disruption_ewma = parent.supplier_disruption_ewma
+        self.current_policy_context = None
+        self.current_action_index = 0
+        self.last_adaptation_action = self.ACTION_LABELS[0]
+        self.last_adaptation_reward = np.nan
         self.ucb_action_counts = {
             context: counts.copy()
             for context, counts in parent.ucb_action_counts.items()
@@ -647,10 +662,8 @@ class FirmAgent(Agent):
             context: values.copy()
             for context, values in parent.ucb_action_values.items()
         }
-        self.current_policy_context = None
-        self.current_action_index = 0
-        self.last_adaptation_action = self.ACTION_LABELS[0]
-        self.last_adaptation_reward = np.nan
+        self.pending_adaptation_increment = 0.0
+        self.adaptation_update_count = parent.adaptation_update_count
         self._adaptation_policy_initialized = False
         self._reset_adaptation_window()
 
@@ -1017,8 +1030,16 @@ class FirmAgent(Agent):
             )
 
         available_cash = max(0.0, self.money - operating_cash_reserve)
+        investable_profit = max(0.0, positive_profit - self.investment_spending_this_step)
+        if self.adaptation_enabled and available_cash > 0 and investable_profit > 0:
+            self._fund_adaptation_after_operations(
+                available_cash=available_cash,
+                investable_profit=investable_profit,
+            )
+
+        available_cash = max(0.0, self.money - operating_cash_reserve)
         desired_dividends = min(
-            max(0.0, positive_profit - self.investment_spending_this_step),
+            max(0.0, positive_profit - self.investment_spending_this_step - self.adaptation_spending_this_step),
             available_cash,
         )
         if desired_dividends > 0:
@@ -1043,9 +1064,14 @@ class FirmAgent(Agent):
         alpha = self.ewma_alpha
         observed_raw_loss = max(self.raw_direct_loss_fraction_this_step, raw_recovery_drag)
         observed_adapted_loss = max(self.adapted_direct_loss_fraction_this_step, adapted_recovery_drag)
+        local_observed_loss = self.model.get_local_observed_loss_fraction(self)
         self.window_peak_raw_loss_signal = max(self.window_peak_raw_loss_signal, observed_raw_loss)
         self.expected_direct_loss_ewma = (1.0 - alpha) * self.expected_direct_loss_ewma + alpha * observed_raw_loss
         self.realized_direct_loss_ewma = (1.0 - alpha) * self.realized_direct_loss_ewma + alpha * observed_adapted_loss
+        self.local_observed_loss_ewma = (
+            (1.0 - alpha) * self.local_observed_loss_ewma
+            + alpha * local_observed_loss
+        )
         self.supplier_disruption_ewma = (
             (1.0 - alpha) * self.supplier_disruption_ewma
             + alpha * self.supplier_disruption_this_step
