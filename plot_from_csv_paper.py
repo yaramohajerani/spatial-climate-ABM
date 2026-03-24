@@ -106,7 +106,57 @@ def parse_args():
         action="store_true",
         help="Add a 4th row showing firm inventory and household labor sold"
     )
+    parser.add_argument(
+        "--ensemble-stat",
+        choices=("mean", "median"),
+        default="mean",
+        help="Statistic to plot from ensemble summary CSVs"
+    )
+    parser.add_argument(
+        "--show-ensemble-members",
+        action="store_true",
+        help="When a summary CSV has a matching *_members.csv sidecar, overlay faint ensemble members"
+    )
+    parser.add_argument(
+        "--show-ensemble-band",
+        action="store_true",
+        help="Shade the p10-p90 band when ensemble summary CSVs are provided"
+    )
     return parser.parse_args()
+
+
+ENSEMBLE_STAT_ORDER = ["mean", "median", "std", "p10", "p90"]
+
+
+def summarize_members_for_plot(df: pd.DataFrame) -> pd.DataFrame:
+    """Create a summary dataframe from a member-level ensemble CSV."""
+    group_cols = [col for col in ["Scenario", "Step", "Year"] if col in df.columns]
+    numeric_cols = [
+        col for col in df.select_dtypes(include=[np.number]).columns
+        if col not in set(group_cols + ["Seed"])
+    ]
+    grouped = df.groupby(group_cols, sort=True)
+    ensemble_size = grouped["Seed"].nunique().rename("EnsembleSize").reset_index()
+    frames = []
+    aggregations = {
+        "mean": grouped[numeric_cols].mean(),
+        "median": grouped[numeric_cols].median(),
+        "std": grouped[numeric_cols].std().fillna(0.0),
+        "p10": grouped[numeric_cols].quantile(0.10),
+        "p90": grouped[numeric_cols].quantile(0.90),
+    }
+    for stat in ENSEMBLE_STAT_ORDER:
+        stat_df = aggregations[stat].reset_index()
+        stat_df["EnsembleStatistic"] = stat
+        stat_df = stat_df.merge(ensemble_size, on=group_cols, how="left")
+        frames.append(stat_df)
+    summary_df = pd.concat(frames, ignore_index=True)
+    summary_df["EnsembleStatistic"] = pd.Categorical(
+        summary_df["EnsembleStatistic"],
+        categories=ENSEMBLE_STAT_ORDER,
+        ordered=True,
+    )
+    return summary_df.sort_values(group_cols + ["EnsembleStatistic"]).reset_index(drop=True)
 
 
 def main():
@@ -116,6 +166,8 @@ def main():
     # Load and combine multiple CSV files
     dataframes = []
     agent_dataframes = []
+    ensemble_member_dataframes = []
+    ensemble_band_frames = []
     
     for csv_file in args.csv_files:
         csv_path = Path(csv_file)
@@ -124,7 +176,7 @@ def main():
         
         df = pd.read_csv(csv_path)
         print(f"Loaded data from {csv_path}")
-        
+
         # Extract scenario from filename or add step column if needed
         if "Scenario" not in df.columns:
             # Try to infer scenario from filename
@@ -141,7 +193,36 @@ def main():
         # Add step column if not present
         if "Step" not in df.columns:
             df["Step"] = df.index
-            
+
+        if "EnsembleStatistic" in df.columns:
+            band_subset = df[df["EnsembleStatistic"].isin(["p10", "p90"])].copy()
+            if not band_subset.empty:
+                ensemble_band_frames.append(band_subset)
+            selected = df[df["EnsembleStatistic"] == args.ensemble_stat].copy()
+            if selected.empty:
+                raise ValueError(f"{csv_path} does not contain EnsembleStatistic={args.ensemble_stat}")
+            df = selected
+            if args.show_ensemble_members:
+                members_path = csv_path.parent / f"{csv_path.stem}_members.csv"
+                if members_path.exists():
+                    member_df = pd.read_csv(members_path)
+                    if "Scenario" not in member_df.columns:
+                        member_df["Scenario"] = scenario_name
+                    if "Step" not in member_df.columns:
+                        member_df["Step"] = member_df.index
+                    ensemble_member_dataframes.append(member_df)
+                    print(f"Loaded ensemble members from {members_path}")
+                else:
+                    print(f"Warning: No ensemble members sidecar found for {csv_path}")
+        elif "Seed" in df.columns:
+            if args.show_ensemble_members:
+                ensemble_member_dataframes.append(df.copy())
+            full_summary = summarize_members_for_plot(df)
+            band_subset = full_summary[full_summary["EnsembleStatistic"].isin(["p10", "p90"])].copy()
+            if not band_subset.empty:
+                ensemble_band_frames.append(band_subset)
+            df = full_summary[full_summary["EnsembleStatistic"] == args.ensemble_stat].copy()
+
         dataframes.append(df)
         
         # Load corresponding agent data
@@ -170,6 +251,14 @@ def main():
     
     # Combine all dataframes
     df_combined = pd.concat(dataframes, ignore_index=True)
+    member_df_combined = (
+        pd.concat(ensemble_member_dataframes, ignore_index=True)
+        if ensemble_member_dataframes else pd.DataFrame()
+    )
+    band_df_combined = (
+        pd.concat(ensemble_band_frames, ignore_index=True)
+        if ensemble_band_frames else pd.DataFrame()
+    )
     
     if agent_dataframes:
         agent_df_combined = pd.concat(agent_dataframes, ignore_index=True)
@@ -349,16 +438,98 @@ def main():
         "Mean_Wage": "mean",
     }
     
-    def deflate(x_vals, y_vals, scenario, metric_name):
+    def deflate(x_vals, y_vals, scenario, metric_name, source_df=None, deflator_col="Mean_Price"):
         """Divide y-values by the mean price at each x-value if metric is real."""
         if metric_name not in real_metrics:
             return y_vals
-        deflator = price_deflator.get(scenario, {})
-        if not deflator:
-            return y_vals
-        prices = np.array([deflator.get(x, np.nan) for x in x_vals])
+        if source_df is not None and deflator_col in source_df.columns:
+            prices = source_df[deflator_col].to_numpy(dtype=float)
+        else:
+            deflator = price_deflator.get(scenario, {})
+            if not deflator:
+                return y_vals
+            prices = np.array([deflator.get(x, np.nan) for x in x_vals], dtype=float)
         prices[prices == 0] = np.nan
         return np.where(np.isfinite(prices), y_vals / prices, y_vals)
+
+    def plot_ensemble_context(metric_col, metric_name, scenario, ax):
+        """Overlay ensemble members and uncertainty band for aggregate metrics."""
+        style = scenario_style_map[scenario]
+
+        if args.show_ensemble_members and not member_df_combined.empty and metric_col in member_df_combined.columns:
+            member_subset = member_df_combined[member_df_combined["Scenario"] == scenario]
+            if not member_subset.empty:
+                for _, member_grp in member_subset.groupby("Seed"):
+                    member_grp = member_grp.sort_values(x_col)
+                    x_vals = member_grp[x_col].to_numpy()
+                    y_vals = deflate(
+                        x_vals,
+                        member_grp[metric_col].to_numpy(dtype=float),
+                        scenario,
+                        metric_name,
+                        source_df=member_grp,
+                    )
+                    ax.plot(
+                        x_vals,
+                        y_vals,
+                        color=style["color"],
+                        linestyle=style["linestyle"],
+                        linewidth=0.8,
+                        alpha=0.12,
+                        zorder=1,
+                    )
+
+        if args.show_ensemble_band and not band_df_combined.empty and metric_col in band_df_combined.columns:
+            band_subset = band_df_combined[band_df_combined["Scenario"] == scenario]
+            p10 = band_subset[band_subset["EnsembleStatistic"] == "p10"].copy()
+            p90 = band_subset[band_subset["EnsembleStatistic"] == "p90"].copy()
+            if not p10.empty and not p90.empty:
+                merge_cols = [x_col, metric_col]
+                if metric_name in real_metrics:
+                    if "Mean_Price" in p10.columns:
+                        merge_cols.append("Mean_Price")
+                    if "Mean_Price" in p90.columns and "Mean_Price" not in merge_cols:
+                        merge_cols.append("Mean_Price")
+                lower_df = p10[merge_cols].sort_values(x_col).rename(
+                    columns={
+                        metric_col: f"{metric_col}_p10",
+                        "Mean_Price": "Mean_Price_p10",
+                    }
+                )
+                upper_df = p90[merge_cols].sort_values(x_col).rename(
+                    columns={
+                        metric_col: f"{metric_col}_p90",
+                        "Mean_Price": "Mean_Price_p90",
+                    }
+                )
+                band = lower_df.merge(upper_df, on=x_col, how="inner")
+                if not band.empty:
+                    x_vals = band[x_col].to_numpy()
+                    lower_vals = deflate(
+                        x_vals,
+                        band[f"{metric_col}_p10"].to_numpy(dtype=float),
+                        scenario,
+                        metric_name,
+                        source_df=band,
+                        deflator_col="Mean_Price_p10",
+                    )
+                    upper_vals = deflate(
+                        x_vals,
+                        band[f"{metric_col}_p90"].to_numpy(dtype=float),
+                        scenario,
+                        metric_name,
+                        source_df=band,
+                        deflator_col="Mean_Price_p90",
+                    )
+                    ax.fill_between(
+                        x_vals,
+                        lower_vals,
+                        upper_vals,
+                        color=style["color"],
+                        alpha=0.12,
+                        linewidth=0,
+                        zorder=2,
+                    )
 
     def plot_metric(metric_name, ax):
         """Plot a single metric.
@@ -387,7 +558,14 @@ def main():
                 style = scenario_style_map[scenario]
                 if metric_name in grp.columns:
                     x_data = grp[x_col].values
-                    y_data = deflate(x_data, grp[metric_name].values, scenario, metric_name)
+                    plot_ensemble_context(metric_name, metric_name, scenario, ax)
+                    y_data = deflate(
+                        x_data,
+                        grp[metric_name].values,
+                        scenario,
+                        metric_name,
+                        source_df=grp,
+                    )
                     ax.plot(x_data, y_data,
                            color=style["color"], linestyle=style["linestyle"],
                            label=f"Mean - {scenario}", linewidth=style["linewidth"], alpha=0.7, zorder=3)
@@ -438,7 +616,14 @@ def main():
                 for scenario, grp in df_combined.groupby("Scenario"):
                     style = scenario_style_map[scenario]
                     x_vals = grp[x_col].values
-                    y_vals = deflate(x_vals, grp[aggregate_col].values, scenario, metric_name)
+                    plot_ensemble_context(aggregate_col, metric_name, scenario, ax)
+                    y_vals = deflate(
+                        x_vals,
+                        grp[aggregate_col].values,
+                        scenario,
+                        metric_name,
+                        source_df=grp,
+                    )
                     ax.plot(
                         x_vals,
                         y_vals,
@@ -528,6 +713,7 @@ def main():
                 for scenario, grp in df_combined.groupby("Scenario"):
                     style = scenario_style_map[scenario]
                     x_vals = grp[x_col].values
+                    plot_ensemble_context(aggregate_col, metric_name, scenario, ax)
                     y_vals = grp[aggregate_col].values
                     ax.plot(
                         x_vals,

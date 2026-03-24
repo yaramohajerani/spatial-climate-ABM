@@ -126,7 +126,20 @@ python run_simulation.py --param-file gfdl_rcp45_parameters.json
 
 # Or with preprocessed files
 python run_simulation.py --param-file aqueduct_riverine_parameters.json
+
+# Run a 5-seed ensemble and save mean-based summary outputs
+python run_simulation.py --param-file aqueduct_riverine_parameters_rcp8p5.json --n-seeds 5 --seed-start 41
+
+# Run an explicit seed set and keep the combined agent ensemble too
+python run_simulation.py --param-file aqueduct_riverine_parameters_rcp8p5.json --seeds 41 42 43 44 45 --save-agent-ensemble --ensemble-plot-stat median
 ```
+
+Multi-seed runs execute the requested seeds sequentially in one invocation and write:
+
+- `simulation_*.csv`: ensemble summary by step with `EnsembleStatistic` rows (`mean`, `median`, `std`, `p10`, `p90`)
+- `simulation_*_members.csv`: member-level aggregate trajectories with a `Seed` column
+- `simulation_*_agents.csv`: optional combined agent ensemble when `--save-agent-ensemble` is enabled
+- `simulation_*_ensemble.png`: a quick ensemble plot with faint member traces plus a highlighted mean/median line
 
 ### Parameter File Format
 
@@ -221,11 +234,24 @@ Include at least one final-good sector (`retail`, `wholesale`, or `services`) in
 
 ## Output Files
 
-- **simulation_*.csv**: Model-level time series (production, wealth, wages, prices, risk, bottleneck counts, and adaptation diagnostics)
+- **simulation_*.csv**: Model-level time series for single-seed runs, or ensemble summaries for multi-seed runs (production, wealth, wages, prices, risk, bottleneck counts, and adaptation diagnostics)
 - **Stock-flow diagnostics in `simulation_*.csv`**: `Total_Money`, `Money_Drift`, `Firm_Dividends_Paid`, `Firm_Investment_Spending`, `Household_Labor_Income`, `Household_Dividend_Income`, `Household_Capital_Income`, `Household_Adaptation_Income`, and adaptation state summaries such as `Average_Local_Observed_Loss` and `Adaptation_Updates`
-- **simulation_*_agents.csv**: Agent-level panel data (money, capital, production, sector, type, seller-sector demand, and firm-level adaptation states including `resilience_capital`, `local_observed_loss`, `adaptation_action`, and `adaptation_reward`). Household `sector` values in this file are initialization/placement cohort tags, not purchased-good categories.
+- **simulation_*_members.csv**: Member-level aggregate ensemble panel with one row per step and seed
+- **simulation_*_agents.csv**: Agent-level panel data (money, capital, production, sector, type, seller-sector demand, and firm-level adaptation states including `resilience_capital`, `local_observed_loss`, `adaptation_action`, and `adaptation_reward`). Household `sector` values in this file are initialization/placement cohort tags, not purchased-good categories. In ensemble mode this file is only written when `--save-agent-ensemble` is enabled.
+- **simulation_*_ensemble.png**: Ensemble quick-look plot with faint member traces, a highlighted mean/median trajectory, and a p10-p90 band
 - **simulation_*_timeseries.png**: Multi-panel plots of key metrics. Household consumption panels use actual household purchases, and any sector breakdown of final demand is derived from seller sectors rather than household cohort labels.
 - **simulation_*_sector_bottlenecks.png**: Sector-level bottleneck analysis
+
+When plotting ensemble summaries later, `plot_from_csv_paper.py` can use the saved summary directly and optionally pick up the matching `*_members.csv` sidecar:
+
+```bash
+python plot_from_csv_paper.py \
+  --csv-files simulation_baseline_noadaptation_...csv simulation_hazard_noadaptation_...csv simulation_hazard_adaptation_...csv \
+  --ensemble-stat median \
+  --show-ensemble-band \
+  --show-ensemble-members \
+  --out paper_ensemble_timeseries.png
+```
 
 ## Model Parameters
 

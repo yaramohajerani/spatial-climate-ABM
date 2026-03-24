@@ -1,8 +1,10 @@
-"""Run prototype climate-economy ABM for 10 timesteps and persist results."""
+"""Run prototype climate-economy ABM headlessly and persist results."""
 
 from pathlib import Path
 import argparse
 from datetime import datetime
+import numpy as np
+import pandas as pd
 # Import model and agent classes
 from model import EconomyModel
 from agents import FirmAgent
@@ -24,17 +26,227 @@ def _parse():
     p.add_argument("--viz", action="store_true", help="Launch interactive Solara dashboard instead of headless run")
     p.add_argument("--steps", type=int, default=10, help="Number of timesteps to simulate")
     p.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    p.add_argument("--seeds", nargs="+", type=int, help="Optional explicit list of seeds for an ensemble run")
+    p.add_argument("--n-seeds", type=int, default=None, help="Number of consecutive seeds to run starting from --seed or --seed-start")
+    p.add_argument("--seed-start", type=int, default=None, help="Starting seed for --n-seeds (defaults to --seed)")
     p.add_argument("--start-year", type=int, default=0, help="Base calendar year for step 0 (optional; used for plotting)")
     p.add_argument("--topology", type=str, help="Optional JSON file describing firm supply-chain topology")
     p.add_argument(
         "--param-file",
         type=str,
-        help="Path to a JSON file containing parameter overrides. Keys can include rp_files (list), viz (bool), seed (int), topology (str).",
+        help=(
+            "Path to a JSON file containing parameter overrides. Keys can include "
+            "rp_files (list), viz (bool), seed/seeds, topology (str), and ensemble settings."
+        ),
     )
     p.add_argument("--no-hazards", action="store_true", help="Run baseline scenario without hazard impacts")
     p.add_argument("--no-adaptation", action="store_true", help="Disable hazard-conditional adaptation in firms")
     p.add_argument("--no-learning", action="store_true", help="Deprecated alias for --no-adaptation")
+    p.add_argument("--save-agent-ensemble", action="store_true", help="When running multiple seeds, also save the combined agent panel")
+    p.add_argument("--ensemble-plot-stat", choices=("mean", "median"), default="mean", help="Statistic to highlight in ensemble plots and summaries")
     return p.parse_args()
+
+
+ENSEMBLE_STAT_ORDER = ["mean", "median", "std", "p10", "p90"]
+
+
+def _resolve_seed_list(args) -> list[int]:
+    """Return the ordered list of seeds to run."""
+    if getattr(args, "seeds", None):
+        seen = set()
+        ordered = []
+        for seed in args.seeds:
+            seed = int(seed)
+            if seed not in seen:
+                ordered.append(seed)
+                seen.add(seed)
+        return ordered
+
+    if getattr(args, "n_seeds", None):
+        if args.n_seeds <= 0:
+            raise SystemExit("--n-seeds must be positive")
+        start = args.seed_start if args.seed_start is not None else args.seed
+        return list(range(int(start), int(start) + int(args.n_seeds)))
+
+    return [int(args.seed)]
+
+
+def _scenario_display(apply_hazards: bool, adaptation_enabled: bool) -> str:
+    base = "Hazard" if apply_hazards else "Baseline"
+    suffix = "Adaptation" if adaptation_enabled else "No Adaptation"
+    return f"{base} + {suffix}"
+
+
+def _scenario_label(apply_hazards: bool, adaptation_enabled: bool) -> str:
+    parts = ["hazard" if apply_hazards else "baseline"]
+    parts.append("adaptation" if adaptation_enabled else "noadaptation")
+    return "_".join(parts)
+
+
+def _finalize_main_results(df: pd.DataFrame, *, scenario_display: str, seed: int, start_year: int, steps_per_year: int) -> pd.DataFrame:
+    df = df.copy()
+    df["Scenario"] = scenario_display
+    if "Step" not in df.columns:
+        df["Step"] = df.index
+    if start_year and "Year" not in df.columns:
+        df["Year"] = start_year + df["Step"].astype(float) / steps_per_year
+    df["Seed"] = seed
+    return df
+
+
+def _finalize_agent_results(agent_df: pd.DataFrame, *, scenario_display: str, seed: int, start_year: int, steps_per_year: int) -> pd.DataFrame:
+    agent_df = agent_df.copy()
+    agent_df.rename(columns={"level_0": "Step", "level_1": "AgentID"}, inplace=True, errors="ignore")
+    agent_df["Scenario"] = scenario_display
+    agent_df["Seed"] = seed
+    if start_year and "Year" not in agent_df.columns and "Step" in agent_df.columns:
+        agent_df["Year"] = start_year + agent_df["Step"].astype(float) / steps_per_year
+    return agent_df
+
+
+def _run_single_simulation(
+    *,
+    args,
+    events,
+    apply_hazards: bool,
+    adaptation_config: dict,
+    seed: int,
+    scenario_display: str,
+):
+    model = EconomyModel(
+        num_households=args.num_households,
+        num_firms=20,
+        hazard_events=events,
+        seed=seed,
+        apply_hazard_impacts=apply_hazards,
+        firm_topology_path=args.topology,
+        start_year=args.start_year,
+        steps_per_year=args.steps_per_year,
+        adaptation_params=adaptation_config,
+        consumption_ratios=args.consumption_ratios,
+        grid_resolution=args.grid_resolution,
+        household_relocation=args.household_relocation,
+    )
+
+    for _ in range(args.steps):
+        model.step()
+
+    df = _finalize_main_results(
+        model.results_to_dataframe(),
+        scenario_display=scenario_display,
+        seed=seed,
+        start_year=args.start_year,
+        steps_per_year=args.steps_per_year,
+    )
+    agent_df = _finalize_agent_results(
+        model.datacollector.get_agent_vars_dataframe().reset_index(),
+        scenario_display=scenario_display,
+        seed=seed,
+        start_year=args.start_year,
+        steps_per_year=args.steps_per_year,
+    )
+    return model, df, agent_df
+
+
+def _build_ensemble_summary(member_df: pd.DataFrame) -> pd.DataFrame:
+    """Summarize member-level model outputs by step and scenario."""
+    if member_df.empty:
+        return member_df.copy()
+
+    group_cols = [col for col in ["Scenario", "Step", "Year"] if col in member_df.columns]
+    numeric_cols = [
+        col for col in member_df.select_dtypes(include=[np.number]).columns
+        if col not in set(group_cols + ["Seed"])
+    ]
+    grouped = member_df.groupby(group_cols, sort=True)
+    ensemble_size = grouped["Seed"].nunique().rename("EnsembleSize").reset_index()
+    frames: list[pd.DataFrame] = []
+    aggregations = {
+        "mean": grouped[numeric_cols].mean(),
+        "median": grouped[numeric_cols].median(),
+        "std": grouped[numeric_cols].std().fillna(0.0),
+        "p10": grouped[numeric_cols].quantile(0.10),
+        "p90": grouped[numeric_cols].quantile(0.90),
+    }
+    for stat in ENSEMBLE_STAT_ORDER:
+        stat_df = aggregations[stat].reset_index()
+        stat_df["EnsembleStatistic"] = stat
+        stat_df = stat_df.merge(ensemble_size, on=group_cols, how="left")
+        frames.append(stat_df)
+
+    summary_df = pd.concat(frames, ignore_index=True)
+    summary_df["EnsembleStatistic"] = pd.Categorical(
+        summary_df["EnsembleStatistic"],
+        categories=ENSEMBLE_STAT_ORDER,
+        ordered=True,
+    )
+    return summary_df.sort_values(group_cols + ["EnsembleStatistic"]).reset_index(drop=True)
+
+
+def _save_ensemble_plot(summary_df: pd.DataFrame, member_df: pd.DataFrame, output_path: Path, *, highlight_stat: str) -> None:
+    """Create a lightweight ensemble plot with faint member lines and a summary line."""
+    import matplotlib.pyplot as plt
+
+    stat_df = summary_df[summary_df["EnsembleStatistic"] == highlight_stat].copy()
+    p10_df = summary_df[summary_df["EnsembleStatistic"] == "p10"].copy()
+    p90_df = summary_df[summary_df["EnsembleStatistic"] == "p90"].copy()
+    if stat_df.empty:
+        return
+
+    scenario = stat_df["Scenario"].iloc[0]
+    x_col = "Year" if "Year" in stat_df.columns else "Step"
+    metrics = [
+        ("Firm_Production", "Aggregate Firm Production", "Units of Goods", None),
+        ("Firm_Capital", "Aggregate Firm Capital", "Units of Capital", None),
+        ("Firm_Wealth", "Aggregate Real Firm Liquidity", "Real Dollars ($ / Mean Price)", "Mean_Price"),
+        ("Household_Consumption", "Aggregate Household Consumption", "Units of Goods", None),
+        ("Mean_Wage", "Mean Firm Wage Offer", "Real Dollars ($ / Mean Price)", "Mean_Price"),
+        ("Mean_Price", "Mean Firm Price", "$ / Unit of Goods", None),
+        ("Firm_Inventory", "Aggregate Firm Inventory", "Units of Goods", None),
+        ("Household_Labor_Sold", "Aggregate Household Labor Sold", "Units of Labor", None),
+    ]
+
+    fig, axes = plt.subplots(4, 2, figsize=(12, 13))
+    axes_flat = axes.flatten()
+    color = "tab:red" if "Hazard" in scenario else "tab:blue"
+
+    def _deflate(df_subset: pd.DataFrame, metric_col: str, deflator_col: str | None) -> np.ndarray:
+        values = df_subset[metric_col].to_numpy(dtype=float)
+        if deflator_col and deflator_col in df_subset.columns:
+            prices = df_subset[deflator_col].to_numpy(dtype=float)
+            prices = np.where(prices == 0, np.nan, prices)
+            return np.where(np.isfinite(prices), values / prices, values)
+        return values
+
+    for ax, (metric, title, ylabel, deflator) in zip(axes_flat, metrics):
+        if metric not in stat_df.columns:
+            ax.set_visible(False)
+            continue
+        for _, member_grp in member_df.groupby("Seed"):
+            member_grp = member_grp.sort_values(x_col)
+            x_vals = member_grp[x_col].to_numpy()
+            y_vals = _deflate(member_grp, metric, deflator)
+            ax.plot(x_vals, y_vals, color=color, alpha=0.15, linewidth=0.8)
+
+        stat_grp = stat_df.sort_values(x_col)
+        x_vals = stat_grp[x_col].to_numpy()
+        lower = p10_df.sort_values(x_col)
+        upper = p90_df.sort_values(x_col)
+        if not lower.empty and not upper.empty and metric in lower.columns and metric in upper.columns:
+            lower_vals = _deflate(lower, metric, deflator)
+            upper_vals = _deflate(upper, metric, deflator)
+            ax.fill_between(x_vals, lower_vals, upper_vals, color=color, alpha=0.12)
+        ax.plot(x_vals, _deflate(stat_grp, metric, deflator), color=color, linewidth=2.5, label=highlight_stat.title())
+        ax.set_title(title)
+        ax.set_ylabel(ylabel)
+        ax.set_xlabel(x_col)
+        ax.legend(fontsize=8)
+
+    fig.suptitle(f"{scenario} Ensemble ({member_df['Seed'].nunique()} seeds)", fontsize=14, fontweight="bold")
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 def main() -> None:  # noqa: D401
     args = _parse()
@@ -69,6 +281,12 @@ def main() -> None:  # noqa: D401
         # 3. Seed -----------------------------------------------------------
         if args.seed == 42 and "seed" in param_data:
             args.seed = int(param_data["seed"])
+        if not args.seeds and "seeds" in param_data:
+            args.seeds = [int(seed) for seed in param_data["seeds"]]
+        if args.n_seeds is None and "n_seeds" in param_data:
+            args.n_seeds = int(param_data["n_seeds"])
+        if args.seed_start is None and "seed_start" in param_data:
+            args.seed_start = int(param_data["seed_start"])
 
         # 3a. Steps ---------------------------------------------------------
         if args.steps == 10 and "steps" in param_data:
@@ -100,6 +318,10 @@ def main() -> None:  # noqa: D401
 
         # 9. Household relocation toggle -------------------------------------
         args.household_relocation = bool(param_data.get("household_relocation", True))
+        if not args.save_agent_ensemble and "save_agent_ensemble" in param_data:
+            args.save_agent_ensemble = bool(param_data.get("save_agent_ensemble", False))
+        if args.ensemble_plot_stat == "mean" and "ensemble_plot_stat" in param_data:
+            args.ensemble_plot_stat = str(param_data.get("ensemble_plot_stat", "mean"))
 
     # Ensure we have at least one RP spec after merging param file -----------
     if not args.rp_file:
@@ -121,6 +343,10 @@ def main() -> None:  # noqa: D401
                         "<RP>:<START>:<END>:<TYPE>:<path>."
                     )
                 ) from exc
+
+    seed_list = _resolve_seed_list(args)
+    if args.viz and len(seed_list) > 1:
+        raise SystemExit("Multi-seed ensemble mode is not supported with --viz.")
 
     # If visualization requested, delegate to Solara which hosts the dashboard
     if args.viz:
@@ -176,18 +402,7 @@ def main() -> None:  # noqa: D401
     adaptation_enabled = bool(adaptation_config.get("enabled", True))
 
     # Generate scenario label for output files
-    scenario_parts = []
-    if apply_hazards:
-        scenario_parts.append("hazard")
-    else:
-        scenario_parts.append("baseline")
-    
-    if adaptation_enabled:
-        scenario_parts.append("adaptation")
-    else:
-        scenario_parts.append("noadaptation")
-    
-    scenario_label = "_".join(scenario_parts)
+    scenario_label = _scenario_label(apply_hazards, adaptation_enabled)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     topo_tag = ""
     if args.topology:
@@ -202,68 +417,79 @@ def main() -> None:  # noqa: D401
         tags.append(param_tag)
     if topo_tag:
         tags.append(topo_tag)
+    if len(seed_list) > 1:
+        tags.append(f"ensemble{len(seed_list)}")
     tags.append(timestamp)
     scenario_label_ts = "_".join(tags)
+    scenario_display = _scenario_display(apply_hazards, adaptation_enabled)
 
-    # Headless mode: run the simulation directly
-    model = EconomyModel(
-        num_households=args.num_households,
-        num_firms=20,
-        hazard_events=events,
-        seed=args.seed,
-        apply_hazard_impacts=apply_hazards,
-        firm_topology_path=args.topology,
-        start_year=args.start_year,
-        steps_per_year=args.steps_per_year,
-        adaptation_params=adaptation_config,
-        consumption_ratios=args.consumption_ratios,
-        grid_resolution=args.grid_resolution,
-        household_relocation=args.household_relocation,
-    )
-
-    for _ in range(args.steps):
-        model.step()
-
-    # Add scenario information to the dataframes before saving
-    df = model.results_to_dataframe()
-    
-    # Create scenario label for the data
-    if apply_hazards:
-        scenario_display = "Hazard"
-    else:
-        scenario_display = "Baseline"
-    
-    scenario_display += " + No Adaptation" if not adaptation_enabled else " + Adaptation"
-    
-    df["Scenario"] = scenario_display
-    df["Step"] = df.index
-    
-    # Also add scenario to agent data
-    agent_df = model.datacollector.get_agent_vars_dataframe().reset_index()
-    agent_df.rename(columns={"level_0": "Step", "level_1": "AgentID"}, inplace=True, errors="ignore")
-    agent_df["Scenario"] = scenario_display
-    
     # Save results with scenario label + timestamp
     output_filename = f"simulation_{scenario_label_ts}"
-    
-    # Save main results
     main_csv_path = f"{output_filename}.csv"
-    df.to_csv(main_csv_path, index=False)
-    
-    # Save agent results
     agent_csv_path = f"{output_filename}_agents.csv"
+
+    if len(seed_list) > 1:
+        member_frames = []
+        agent_member_frames = []
+        for seed in seed_list:
+            _, seed_df, seed_agent_df = _run_single_simulation(
+                args=args,
+                events=events,
+                apply_hazards=apply_hazards,
+                adaptation_config=adaptation_config,
+                seed=seed,
+                scenario_display=scenario_display,
+            )
+            member_frames.append(seed_df)
+            if args.save_agent_ensemble:
+                agent_member_frames.append(seed_agent_df)
+
+        member_df = pd.concat(member_frames, ignore_index=True)
+        summary_df = _build_ensemble_summary(member_df)
+        summary_df.to_csv(main_csv_path, index=False)
+
+        members_csv_path = f"{output_filename}_members.csv"
+        member_df.to_csv(members_csv_path, index=False)
+
+        if args.save_agent_ensemble and agent_member_frames:
+            pd.concat(agent_member_frames, ignore_index=True).to_csv(agent_csv_path, index=False)
+
+        ensemble_plot_path = Path(f"{output_filename}_ensemble.png")
+        _save_ensemble_plot(
+            summary_df,
+            member_df,
+            ensemble_plot_path,
+            highlight_stat=args.ensemble_plot_stat,
+        )
+
+        print(f"Ensemble simulation complete for scenario: {scenario_label}")
+        print(f"Seeds run: {seed_list}")
+        print(f"Summary results saved as {main_csv_path}")
+        print(f"Member results saved as {members_csv_path}")
+        if args.save_agent_ensemble and agent_member_frames:
+            print(f"Combined agent panel saved as {agent_csv_path}")
+        print(f"Ensemble plot saved as {ensemble_plot_path}")
+        return
+
+    model, df, agent_df = _run_single_simulation(
+        args=args,
+        events=events,
+        apply_hazards=apply_hazards,
+        adaptation_config=adaptation_config,
+        seed=seed_list[0],
+        scenario_display=scenario_display,
+    )
+
+    df.to_csv(main_csv_path, index=False)
     agent_df.to_csv(agent_csv_path, index=False)
-    
+
     print(f"Simulation complete for scenario: {scenario_label}")
     print(f"Results saved as {main_csv_path} and {agent_csv_path}")
 
     # ------------------------- Plotting ---------------------------- #
     import matplotlib.pyplot as plt
     import matplotlib.gridspec as gridspec
-    import numpy as np
     from trophic_utils import compute_trophic_levels
-
-    df = model.results_to_dataframe()
 
     rename_map = {"Base_Wage": "Mean_Wage", "Household_LaborSold": "Household_Labor_Sold"}
     df = df.rename(columns=rename_map)
@@ -292,9 +518,6 @@ def main() -> None:  # noqa: D401
         for f in model.agents if isinstance(f, FirmAgent)
     }
     lvl_map = compute_trophic_levels(firm_adj)
-
-    agent_df = model.datacollector.get_agent_vars_dataframe().reset_index()
-    agent_df.rename(columns={"level_0": "Step", "level_1": "AgentID"}, inplace=True, errors="ignore")
 
     # Split firm vs household for convenience
     firm_df = agent_df[agent_df["type"] == "FirmAgent"].copy()
