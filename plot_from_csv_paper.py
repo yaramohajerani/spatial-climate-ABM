@@ -4,6 +4,8 @@
 import argparse
 from pathlib import Path
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 import pandas as pd
 import numpy as np
 
@@ -909,32 +911,69 @@ def main():
 
     # Create shared legend for time-series plots
     handles, labels = axes_ts[0, 0].get_legend_handles_labels()
+    legend_pairs = []
+    seen_labels = set()
+    ensemble_inputs_present = (
+        not member_df_combined.empty
+        or not band_df_combined.empty
+        or "EnsembleStatistic" in df_combined.columns
+    )
 
     # Create shorter labels for shared legend
-    short_labels = []
-    for label in labels:
+    for handle, label in zip(handles, labels):
+        if label in seen_labels:
+            continue
+        seen_labels.add(label)
         if "Mean -" in label:
             scenario = label.replace("Mean - ", "")
-            short_labels.append(scenario_abbrev(scenario))
+            summary_label = scenario_abbrev(scenario)
+            if ensemble_inputs_present:
+                summary_label = f"{summary_label} ({args.ensemble_stat})"
+            legend_pairs.append((handle, summary_label))
         else:
             parts = label.split(" - ")
             if len(parts) >= 2:
                 sector = parts[0].replace("Final demand: ", "")
                 scenario = parts[1]
-                short_labels.append(f"{sector}-{scenario_abbrev(scenario)}")
+                legend_pairs.append((handle, f"{sector}-{scenario_abbrev(scenario)}"))
             else:
-                short_labels.append(label[:8])
+                legend_pairs.append((handle, label[:12]))
 
-    if handles:
-        ncols = min(len(handles), 6)  # Max 6 columns
-        legend = fig_ts.legend(handles, short_labels, loc='lower center', ncol=ncols,
-                              fontsize=9, bbox_to_anchor=(0.5, -0.02))
-        for i, line in enumerate(legend.get_lines()):
-            label = short_labels[i] if i < len(short_labels) else ""
-            if any(abbrev in label for abbrev in ["commodity-", "manufacturing-"]):
-                line.set_linewidth(2)
-            else:
-                line.set_linewidth(3)
+    if args.show_ensemble_members and not member_df_combined.empty:
+        legend_pairs.append(
+            (
+                Line2D([0], [0], color="#666666", linewidth=1.0, alpha=0.3),
+                "Individual seed",
+            )
+        )
+    if args.show_ensemble_band and not band_df_combined.empty:
+        legend_pairs.append(
+            (
+                Patch(facecolor="#999999", edgecolor="none", alpha=0.18),
+                "p10-p90 band",
+            )
+        )
+
+    if legend_pairs:
+        legend_handles = [pair[0] for pair in legend_pairs]
+        legend_labels = [pair[1] for pair in legend_pairs]
+        ncols = min(len(legend_handles), 6)  # Max 6 columns
+        legend = fig_ts.legend(
+            legend_handles,
+            legend_labels,
+            loc='lower center',
+            ncol=ncols,
+            fontsize=9,
+            bbox_to_anchor=(0.5, -0.02),
+        )
+        for handle, label in zip(legend.legend_handles, legend_labels):
+            if isinstance(handle, Line2D):
+                if any(abbrev in label for abbrev in ["commodity-", "manufacturing-"]):
+                    handle.set_linewidth(2)
+                elif "Individual seed" in label:
+                    handle.set_linewidth(1)
+                else:
+                    handle.set_linewidth(3)
 
     fig_ts.suptitle("Baseline vs. RCP8.5 Agent Trajectories", fontsize=14, fontweight='bold')
     fig_ts.tight_layout()
