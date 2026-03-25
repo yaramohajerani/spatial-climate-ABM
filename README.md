@@ -76,7 +76,7 @@ The model uses a `mesa.space.MultiGrid` with configurable resolution (default 1Â
 - **Damage Recovery**: Liquidity-dependent recovery rate (20%â€“50% per step) so stressed firms recover more slowly
 - **Input Procurement**: Inputs from connected suppliers are treated as substitutable units and are purchased from the cheapest available suppliers first
 - **Production Planning**: Firms plan output from expected sales plus inventory buffers, hire only up to planned vacancies, seed startup inventories/capacity from labour-scaled final demand, expand capital only from residual cash above a working-capital buffer, and operate in phased within-step order (labour, production, then household consumption)
-- **Profit Distribution**: Positive profits above the operating buffer are split between retained-earnings capital expansion and household payouts; because there is no explicit capital-goods sector, investment spending is recycled to households as reduced-form investment income to preserve monetary closure
+- **Profit Distribution**: Positive profits above the operating buffer first rebuild the firm's base capital target, then support discretionary expansion, and only then flow to household payouts; because there is no explicit capital-goods sector, investment spending is recycled to households as reduced-form investment income to preserve monetary closure
 - **Adaptation-State Reorganization**: Failed firms are reorganized in place under inherited same-sector adaptation state and, if needed, recapitalized by household equity contributions; replacements do not mint new firm cash, capital, or inventories
 
 ### Climate Hazard System

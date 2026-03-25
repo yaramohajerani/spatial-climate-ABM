@@ -1011,6 +1011,11 @@ class FirmAgent(Agent):
         # or recycled into installed capital. Because the model has no explicit
         # capital-goods firm, investment spending is transferred to households
         # as capital-service income so money stays inside the closed economy.
+        #
+        # The baseline closure needs firms to preserve their installed productive
+        # base before distributing residual profits. We therefore fund capital
+        # replacement up to the firm's base-capital target before allowing
+        # discretionary expansion and dividends.
         operating_cash_reserve = max(
             self._liquidity_buffer,
             self.wage_bill_this_step + self.input_spend_this_step,
@@ -1018,22 +1023,37 @@ class FirmAgent(Agent):
         available_cash = max(0.0, self.money - operating_cash_reserve)
         positive_profit = max(0.0, accounting_profit)
         investment_share = 0.5
-        capital_gap = max(0.0, self.target_capital_stock - self.capital_stock)
-        desired_investment_spending = min(
-            positive_profit * investment_share,
-            capital_gap * self.CAPITAL_INSTALLATION_COST,
-            available_cash,
-        )
 
-        if desired_investment_spending > 0:
-            installable_capital = desired_investment_spending / self.CAPITAL_INSTALLATION_COST
-            self.money -= desired_investment_spending
+        def install_capital(spending: float) -> float:
+            if spending <= 0:
+                return 0.0
+            installable_capital = spending / self.CAPITAL_INSTALLATION_COST
+            self.money -= spending
             self.capital_stock += installable_capital
-            self.investment_spending_this_step = desired_investment_spending
+            self.investment_spending_this_step += spending
             self.model.distribute_household_income(
-                desired_investment_spending,
+                spending,
                 income_kind="capital",
             )
+            return spending
+
+        maintenance_capital_gap = max(0.0, self.base_capital_target - self.capital_stock)
+        maintenance_spending = min(
+            positive_profit,
+            maintenance_capital_gap * self.CAPITAL_INSTALLATION_COST,
+            available_cash,
+        )
+        install_capital(maintenance_spending)
+
+        available_cash = max(0.0, self.money - operating_cash_reserve)
+        residual_profit = max(0.0, positive_profit - self.investment_spending_this_step)
+        expansion_capital_gap = max(0.0, self.target_capital_stock - self.capital_stock)
+        discretionary_investment_spending = min(
+            residual_profit * investment_share,
+            expansion_capital_gap * self.CAPITAL_INSTALLATION_COST,
+            available_cash,
+        )
+        install_capital(discretionary_investment_spending)
 
         available_cash = max(0.0, self.money - operating_cash_reserve)
         investable_profit = max(0.0, positive_profit - self.investment_spending_this_step)

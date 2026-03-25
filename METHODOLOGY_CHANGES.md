@@ -240,3 +240,9 @@ Tracking changes to the model methodology that need to be reflected in the manus
 - **Why**: One of the core advantages of the ABM is that it can quantify how local direct hazards propagate through supply chains and liquidity constraints onto firms that never experience a direct physical shock. The existing main time-series figure showed aggregate macro resilience, but it did not isolate this specifically systemic component of risk transmission.
 - **Where**: `agents.py`, `model.py`, `plot_cascade_risk.py`, `tests/test_stock_flow_closure.py`, `tests/test_cascade_plot.py`, `README.md`, and `AGENTS.md`.
 - **Manuscript impact**: Add a methods paragraph explaining the never-hit cascade reporters and include a dedicated figure/results paragraph once the hazard ensembles are rerun with the updated code. This figure should be presented as the ABM's systemic-risk decomposition, distinct from the main macro trajectory figure.
+
+## 40. Base-capital replacement before dividends
+- **What**: Revised firm profit allocation so positive profits first rebuild each firm's `base_capital_target`, then fund discretionary expansion toward the current demand-driven capital target, and only then flow out as dividends.
+- **Why**: The previous rule capped reinvestment too aggressively relative to the no-hazard capital replacement requirement, leaving the baseline with a slow residual decline in installed capital and output even after the startup transient had mostly settled. Prioritizing replacement before dividends produces a more defensible no-hazard closure without breaking stock-flow consistency.
+- **Where**: `agents.py`, `tests/test_stock_flow_closure.py`, `README.md`, and `AGENTS.md`.
+- **Manuscript impact**: Update the methodology text so retained-earnings capital formation is described as base-capital maintenance first, then expansion/distribution. Recheck the baseline narrative and any reported equilibrium interpretation after rerunning the scenarios.

@@ -109,6 +109,30 @@ def test_adaptation_spending_is_deferred_and_returned_to_households() -> None:
     assert np.isclose(model.total_money(), initial_total_money, atol=1e-9)
 
 
+def test_firms_replace_base_capital_before_paying_dividends() -> None:
+    """Positive profits should first rebuild the base capital target before dividends."""
+    model = build_closed_economy_model(adaptation_enabled=False)
+    firm = model._firms[0]
+
+    firm.money = 200.0
+    firm.base_capital_target = 100.0
+    firm.target_capital_stock = 120.0
+    firm.capital_stock = 90.0
+    firm.revenue_this_step = 20.0
+    firm.wage_bill_this_step = 0.0
+    firm.input_spend_this_step = 0.0
+    firm.depreciation_this_step = 0.0
+    firm._liquidity_buffer = 0.0
+
+    initial_total_money = model.total_money()
+    firm.close_step()
+
+    assert np.isclose(firm.investment_spending_this_step, 15.0, atol=1e-9)
+    assert np.isclose(firm.capital_stock, 105.0, atol=1e-9)
+    assert np.isclose(firm.dividends_paid_this_step, 5.0, atol=1e-9)
+    assert np.isclose(model.total_money(), initial_total_money, atol=1e-9)
+
+
 def test_firm_reorganization_preserves_total_money_and_inherits_adaptation_state() -> None:
     """Reorganization should keep money closed and copy parent adaptation state."""
     model = build_closed_economy_model(adaptation_enabled=True)
