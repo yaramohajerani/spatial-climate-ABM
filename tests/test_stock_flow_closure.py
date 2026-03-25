@@ -267,6 +267,57 @@ def test_nearby_hazard_losses_enter_local_observed_loss_state() -> None:
     assert np.isclose(observed, 0.4, atol=1e-9)
 
 
+def test_cascade_reporters_track_never_hit_firm_burden() -> None:
+    """Systemic-risk reporters should separate directly hit firms from never-hit disrupted firms."""
+    model = build_closed_economy_model(adaptation_enabled=True)
+
+    for firm in model._firms:
+        firm.ever_directly_hit = False
+        firm.ever_indirectly_disrupted_before_direct_hit = False
+        firm.production = 0.0
+        firm.capital_stock = 0.0
+        firm.supplier_disruption_this_step = 0.0
+        firm.supplier_disruption_ewma = 0.0
+
+    directly_hit = model._firms[0]
+    indirectly_disrupted = model._firms[1]
+    unaffected_never_hit = model._firms[2]
+
+    directly_hit.ever_directly_hit = True
+    directly_hit.production = 2.0
+    directly_hit.capital_stock = 5.0
+    directly_hit.supplier_disruption_ewma = 0.1
+
+    indirectly_disrupted.production = 8.0
+    indirectly_disrupted.capital_stock = 12.0
+    indirectly_disrupted.supplier_disruption_this_step = 0.3
+    indirectly_disrupted.supplier_disruption_ewma = 0.6
+    indirectly_disrupted.ever_indirectly_disrupted_before_direct_hit = True
+
+    unaffected_never_hit.production = 10.0
+    unaffected_never_hit.capital_stock = 8.0
+    unaffected_never_hit.supplier_disruption_ewma = 0.1
+
+    model.datacollector.collect(model)
+    row = model.results_to_dataframe().iloc[-1]
+    total_firms = len(model._firms)
+
+    assert row["Ever_Directly_Hit_Firms"] == 1
+    assert np.isclose(row["Ever_Directly_Hit_Firm_Share"], 1.0 / total_firms, atol=1e-9)
+    assert row["Never_Hit_Firms"] == total_firms - 1
+    assert row["Never_Hit_Currently_Disrupted_Firms"] == 1
+    assert np.isclose(row["Never_Hit_Currently_Disrupted_Firm_Share"], 1.0 / total_firms, atol=1e-9)
+    assert np.isclose(row["Never_Hit_Supplier_Disruption_Burden_Share"], 0.875, atol=1e-9)
+    assert np.isclose(row["Never_Hit_Production_Share"], 0.9, atol=1e-9)
+    assert np.isclose(row["Never_Hit_Capital_Share"], 0.8, atol=1e-9)
+    assert row["Ever_Indirectly_Disrupted_Before_Direct_Hit_Firms"] == 1
+    assert np.isclose(
+        row["Ever_Indirectly_Disrupted_Before_Direct_Hit_Firm_Share"],
+        1.0 / total_firms,
+        atol=1e-9,
+    )
+
+
 def test_households_try_nearby_same_sector_firms_before_remote_market() -> None:
     """Sector-local staged search should fill nearby vacancies before remote fallback."""
     model = build_closed_economy_model(adaptation_enabled=False)

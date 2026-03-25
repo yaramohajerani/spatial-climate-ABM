@@ -113,6 +113,7 @@ Damage is calculated using JRC Global Flood Depth-Damage Functions:
 - **Firm-Level Policy Learning**: Each firm maintains its own tabular contextual-UCB rule over the discretized hazard state; nearby observations affect the state, but action values are updated from the firm's own informative hazard windows
 - **Reward Signal**: Completed adaptation windows are updated with avoided direct loss minus adaptation cost, normalized by the firm's own direct loss over the window
 - **Population Dynamics**: Bankrupt firms are reorganized in place, preserving stock-flow closure while inheriting adaptation state and firm-level bandit memory from successful same-sector parents
+- **Systemic Cascade Diagnostics**: The model now tracks which firms have ever been directly hit and reports how much supplier disruption, output, and capital are borne by firms that remain never directly hit, making it easier to quantify indirect network transmission for paper figures
 
 ## Usage
 
@@ -209,6 +210,25 @@ This runs the hazard+adaptation scenario across four UCB exploration strengths (
 - `sensitivity_analysis_timeseries_members.csv`: per-seed member panel
 - `sensitivity_analysis.csv`: final-decade summary table across seeds
 
+### Cascade-Risk Figure
+
+Plot the hazard-only cascade diagnostics that isolate risk borne by firms that have not been directly flooded:
+
+```bash
+python plot_cascade_risk.py \
+  --csv-files simulation_hazard_noadaptation_...csv simulation_hazard_adaptation_...csv \
+  --ensemble-stat mean \
+  --show-ensemble-band \
+  --out cascade_risk.png
+```
+
+The figure uses new model reporters recorded in `simulation_*.csv`, including:
+- `Ever_Directly_Hit_Firm_Share`
+- `Never_Hit_Currently_Disrupted_Firm_Share`
+- `Never_Hit_Supplier_Disruption_Burden_Share`
+- `Never_Hit_Production_Share`
+- `Never_Hit_Capital_Share`
+
 ### Data Preprocessing (Optional)
 
 For resampling rasters to model grid resolution (optional - model works with full-resolution files):
@@ -254,6 +274,7 @@ Include at least one final-good sector (`retail`, `wholesale`, or `services`) in
 
 - **simulation_*.csv**: Model-level time series for single-seed runs, or ensemble summaries for multi-seed runs (production, wealth, wages, prices, risk, bottleneck counts, adaptation diagnostics, and `Meta_*` provenance fields)
 - **Stock-flow diagnostics in `simulation_*.csv`**: `Total_Money`, `Money_Drift`, `Firm_Dividends_Paid`, `Firm_Investment_Spending`, `Household_Labor_Income`, `Household_Dividend_Income`, `Household_Capital_Income`, `Household_Adaptation_Income`, and adaptation state summaries such as `Average_Local_Observed_Loss` and `Adaptation_Updates`
+- **Cascade diagnostics in `simulation_*.csv`**: `Ever_Directly_Hit_Firm_Share`, `Never_Hit_Currently_Disrupted_Firm_Share`, `Never_Hit_Supplier_Disruption_Burden_Share`, `Never_Hit_Production_Share`, `Never_Hit_Capital_Share`, and the corresponding count variables used for paper-ready systemic-risk figures
 - **simulation_*_members.csv**: Member-level aggregate ensemble panel with one row per step and seed, plus `Meta_*` scenario/config provenance fields
 - **simulation_*_agents.csv**: Agent-level panel data (money, capital, production, sector, type, seller-sector demand, and firm-level adaptation states including `resilience_capital`, `local_observed_loss`, `adaptation_action`, and `adaptation_reward`). Household `sector` values in this file are initialization/placement cohort tags, not purchased-good categories. In ensemble mode this file is only written when `--save-agent-ensemble` is enabled.
 - **simulation_*_ensemble.png**: Ensemble quick-look plot with faint member traces, a highlighted mean/median trajectory, and a p10-p90 band
@@ -326,6 +347,7 @@ python plot_from_csv_paper.py \
 ├── model.py              # Main EconomyModel class
 ├── agents.py             # HouseholdAgent and FirmAgent classes
 ├── run_simulation.py     # CLI runner with parameter file support
+├── plot_cascade_risk.py  # Paper-oriented figure for indirect risk on never-directly-hit firms
 ├── sensitivity_analysis.py # Matched-seed ensemble sensitivity analysis for the main ML hyperparameter (ucb_c)
 ├── hazard_utils.py       # LazyHazard class for memory-efficient sampling
 ├── damage_functions.py   # JRC damage functions from Excel

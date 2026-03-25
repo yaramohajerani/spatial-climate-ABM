@@ -231,6 +231,16 @@ class EconomyModel(Model):
                 "Total_Firms": lambda m: len(m._firms),
                 "Flooded_Firms": lambda m: sum(1 for f in m._firms if m.hazard_map.get(f.pos, 0) > 0),
                 "Flooded_Households": lambda m: sum(1 for h in m._households if m.hazard_map.get(h.pos, 0) > 0),
+                "Ever_Directly_Hit_Firms": lambda m: m._count_ever_directly_hit_firms(),
+                "Ever_Directly_Hit_Firm_Share": lambda m: m._share_ever_directly_hit_firms(),
+                "Never_Hit_Firms": lambda m: m._count_never_hit_firms(),
+                "Never_Hit_Currently_Disrupted_Firms": lambda m: m._count_never_hit_currently_disrupted_firms(),
+                "Never_Hit_Currently_Disrupted_Firm_Share": lambda m: m._share_never_hit_currently_disrupted_firms(),
+                "Never_Hit_Supplier_Disruption_Burden_Share": lambda m: m._share_supplier_disruption_borne_by_never_hit_firms(),
+                "Never_Hit_Production_Share": lambda m: m._share_production_from_never_hit_firms(),
+                "Never_Hit_Capital_Share": lambda m: m._share_capital_held_by_never_hit_firms(),
+                "Ever_Indirectly_Disrupted_Before_Direct_Hit_Firms": lambda m: m._count_ever_indirectly_disrupted_before_direct_hit_firms(),
+                "Ever_Indirectly_Disrupted_Before_Direct_Hit_Firm_Share": lambda m: m._share_ever_indirectly_disrupted_before_direct_hit_firms(),
             },
             agent_reporters={
                 "money": lambda a: getattr(a, "money", np.nan),
@@ -267,6 +277,8 @@ class EconomyModel(Model):
                 "realized_direct_loss_value": lambda a: getattr(a, "realized_direct_loss_this_step", np.nan),
                 "adaptation_updates": lambda a: getattr(a, "adaptation_update_count", np.nan),
                 "labor_share": lambda a: getattr(a, "LABOR_SHARE", np.nan),
+                "ever_directly_hit": lambda a: getattr(a, "ever_directly_hit", np.nan),
+                "ever_indirectly_disrupted_before_direct_hit": lambda a: getattr(a, "ever_indirectly_disrupted_before_direct_hit", np.nan),
             },
         )
 
@@ -435,6 +447,74 @@ class EconomyModel(Model):
         if total_weight <= 0:
             return 0.0
         return weighted_loss / total_weight
+
+    @staticmethod
+    def _safe_share(numerator: float, denominator: float) -> float:
+        if denominator <= 0:
+            return 0.0
+        return float(numerator) / float(denominator)
+
+    def _never_hit_firms(self) -> List[FirmAgent]:
+        return [firm for firm in self._firms if not getattr(firm, "ever_directly_hit", False)]
+
+    def _count_ever_directly_hit_firms(self) -> int:
+        return sum(1 for firm in self._firms if getattr(firm, "ever_directly_hit", False))
+
+    def _share_ever_directly_hit_firms(self) -> float:
+        return self._safe_share(self._count_ever_directly_hit_firms(), len(self._firms))
+
+    def _count_never_hit_firms(self) -> int:
+        return len(self._never_hit_firms())
+
+    def _count_never_hit_currently_disrupted_firms(self) -> int:
+        return sum(
+            1
+            for firm in self._never_hit_firms()
+            if getattr(firm, "supplier_disruption_this_step", 0.0) > 0
+        )
+
+    def _share_never_hit_currently_disrupted_firms(self) -> float:
+        return self._safe_share(
+            self._count_never_hit_currently_disrupted_firms(),
+            len(self._firms),
+        )
+
+    def _share_supplier_disruption_borne_by_never_hit_firms(self) -> float:
+        total_disruption = sum(getattr(firm, "supplier_disruption_ewma", 0.0) for firm in self._firms)
+        never_hit_disruption = sum(
+            getattr(firm, "supplier_disruption_ewma", 0.0)
+            for firm in self._never_hit_firms()
+        )
+        return self._safe_share(never_hit_disruption, total_disruption)
+
+    def _share_production_from_never_hit_firms(self) -> float:
+        total_production = sum(getattr(firm, "production", 0.0) for firm in self._firms)
+        never_hit_production = sum(
+            getattr(firm, "production", 0.0)
+            for firm in self._never_hit_firms()
+        )
+        return self._safe_share(never_hit_production, total_production)
+
+    def _share_capital_held_by_never_hit_firms(self) -> float:
+        total_capital = sum(getattr(firm, "capital_stock", 0.0) for firm in self._firms)
+        never_hit_capital = sum(
+            getattr(firm, "capital_stock", 0.0)
+            for firm in self._never_hit_firms()
+        )
+        return self._safe_share(never_hit_capital, total_capital)
+
+    def _count_ever_indirectly_disrupted_before_direct_hit_firms(self) -> int:
+        return sum(
+            1
+            for firm in self._firms
+            if getattr(firm, "ever_indirectly_disrupted_before_direct_hit", False)
+        )
+
+    def _share_ever_indirectly_disrupted_before_direct_hit_firms(self) -> float:
+        return self._safe_share(
+            self._count_ever_indirectly_disrupted_before_direct_hit_firms(),
+            len(self._firms),
+        )
 
     def _advance_adaptation_learning(self) -> None:
         """Reset period adaptation state, update firm-level rewards, and choose new actions."""

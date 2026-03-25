@@ -450,6 +450,10 @@ class FirmAgent(Agent):
         self.adaptation_update_count: int = 0
         self._adaptation_policy_initialized: bool = False
 
+        # Exposure-state diagnostics for cascading-risk analysis.
+        self.ever_directly_hit: bool = False
+        self.ever_indirectly_disrupted_before_direct_hit: bool = False
+
         # Survival tracking for firm reorganization
         self.survival_time: int = 0
 
@@ -643,6 +647,8 @@ class FirmAgent(Agent):
         self.adapted_direct_loss_fraction_this_step = max(self.adapted_direct_loss_fraction_this_step, adapted_loss_fraction)
         self.counterfactual_direct_loss_this_step += raw_loss_fraction * direct_value_at_risk
         self.realized_direct_loss_this_step += adapted_loss_fraction * direct_value_at_risk
+        if raw_loss_fraction > 0:
+            self.ever_directly_hit = True
 
     def copy_adaptation_state_from(self, parent: "FirmAgent") -> None:
         self.resilience_capital = parent.resilience_capital
@@ -1076,6 +1082,8 @@ class FirmAgent(Agent):
             (1.0 - alpha) * self.supplier_disruption_ewma
             + alpha * self.supplier_disruption_this_step
         )
+        if self.supplier_disruption_this_step > 0 and not self.ever_directly_hit:
+            self.ever_indirectly_disrupted_before_direct_hit = True
         self.window_raw_direct_loss += self.counterfactual_direct_loss_this_step
         self.window_adapted_direct_loss += self.realized_direct_loss_this_step
         self.window_adaptation_cost += self.adaptation_spending_this_step
