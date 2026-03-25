@@ -193,14 +193,21 @@ If you build the ensemble in batches, merge the resulting `*_members.csv` files 
 Run a UCB exploration sweep to verify robustness of the hazard-conditional adaptation results:
 
 ```bash
-# Full sensitivity analysis
-python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json
+# Full ensemble sensitivity analysis with matched seeds across all tested UCB values
+python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --n-seeds 10 --seed-start 41
 
-# Quick test (50 steps)
-python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --quick
+# Quick test (50 steps, 3-seed ensemble)
+python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --quick --n-seeds 3 --seed-start 41
+
+# Re-plot from saved ensemble sensitivity outputs
+python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --from-csv sensitivity_analysis_timeseries.csv
 ```
 
-This runs the hazard+adaptation scenario across four UCB exploration strengths (`c = 0.25, 0.5, 1.0, 2.0`) and produces a comparison plot and summary CSV table.
+This runs the hazard+adaptation scenario across four UCB exploration strengths (`c = 0.25, 0.5, 1.0, 2.0`) using the same seed list for each value and produces:
+- `sensitivity_analysis.png`: ensemble time-series comparison
+- `sensitivity_analysis_timeseries.csv`: per-step ensemble summary
+- `sensitivity_analysis_timeseries_members.csv`: per-seed member panel
+- `sensitivity_analysis.csv`: final-decade summary table across seeds
 
 ### Data Preprocessing (Optional)
 
@@ -319,7 +326,7 @@ python plot_from_csv_paper.py \
 ├── model.py              # Main EconomyModel class
 ├── agents.py             # HouseholdAgent and FirmAgent classes
 ├── run_simulation.py     # CLI runner with parameter file support
-├── sensitivity_analysis.py # UCB exploration sensitivity analysis
+├── sensitivity_analysis.py # Matched-seed ensemble sensitivity analysis for the main ML hyperparameter (ucb_c)
 ├── hazard_utils.py       # LazyHazard class for memory-efficient sampling
 ├── damage_functions.py   # JRC damage functions from Excel
 ├── trophic_utils.py      # Network topology analysis utilities (not used in core runtime logic)
