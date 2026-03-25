@@ -34,7 +34,7 @@
     "decision_interval": 4,
     "reward_window": 4,
     "ewma_alpha": 0.2,
-    "ucb_c": 1.0,
+    "ucb_c": 0.5,
     "observation_radius": 4,
     "action_increments": [0.0, 0.05, 0.1],
     "resilience_decay": 0.01,

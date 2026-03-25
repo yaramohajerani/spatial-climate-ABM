@@ -14,6 +14,15 @@ import pandas as pd
 
 ENSEMBLE_STAT_ORDER = ["mean", "median", "std", "p10", "p90"]
 REQUIRED_MEMBER_COLUMNS = {"Scenario", "Step", "Seed"}
+METADATA_PREFIX = "Meta_"
+MERGE_VARIABLE_METADATA = {
+    f"{METADATA_PREFIX}RunTimestamp",
+    f"{METADATA_PREFIX}SeedCount",
+    f"{METADATA_PREFIX}SeedList",
+    f"{METADATA_PREFIX}SeedMin",
+    f"{METADATA_PREFIX}SeedMax",
+    f"{METADATA_PREFIX}SourceMemberFiles",
+}
 
 
 def parse_args():
@@ -52,6 +61,7 @@ def build_ensemble_summary(member_df: pd.DataFrame) -> pd.DataFrame:
         col
         for col in member_df.select_dtypes(include=[np.number]).columns
         if col not in set(group_cols + ["Seed"])
+        and not col.startswith(METADATA_PREFIX)
     ]
     grouped = member_df.groupby(group_cols, sort=True)
     ensemble_size = grouped["Seed"].nunique().rename("EnsembleSize").reset_index()
@@ -91,6 +101,47 @@ def _step_year_map(df: pd.DataFrame) -> dict | None:
     return mapping or None
 
 
+def _metadata_columns(df: pd.DataFrame) -> list[str]:
+    return [col for col in df.columns if col.startswith(METADATA_PREFIX)]
+
+
+def _constant_metadata(df: pd.DataFrame, *, ignore: set[str] | None = None) -> dict[str, object]:
+    ignore = ignore or set()
+    metadata: dict[str, object] = {}
+    for col in _metadata_columns(df):
+        if col in ignore:
+            continue
+        values = df[col].drop_duplicates().tolist()
+        if len(values) > 1:
+            raise ValueError(f"{col} varies within a single member file and cannot be merged safely.")
+        metadata[col] = values[0] if values else ""
+    return metadata
+
+
+def _apply_metadata(df: pd.DataFrame, metadata: dict[str, object]) -> pd.DataFrame:
+    df = df.copy()
+    for key, value in metadata.items():
+        df[key] = value
+    return df
+
+
+def _ensemble_seed_metadata(seed_values: list[int]) -> dict[str, object]:
+    ordered = sorted(int(seed) for seed in seed_values)
+    if not ordered:
+        return {
+            f"{METADATA_PREFIX}SeedCount": 0,
+            f"{METADATA_PREFIX}SeedList": "",
+            f"{METADATA_PREFIX}SeedMin": "",
+            f"{METADATA_PREFIX}SeedMax": "",
+        }
+    return {
+        f"{METADATA_PREFIX}SeedCount": len(ordered),
+        f"{METADATA_PREFIX}SeedList": ",".join(str(seed) for seed in ordered),
+        f"{METADATA_PREFIX}SeedMin": ordered[0],
+        f"{METADATA_PREFIX}SeedMax": ordered[-1],
+    }
+
+
 def merge_member_dataframes(
     frames: list[pd.DataFrame],
     *,
@@ -109,6 +160,7 @@ def merge_member_dataframes(
     reference_scenario: str | None = None
     reference_steps: tuple | None = None
     reference_year_map: dict | None = None
+    reference_metadata: dict[str, object] | None = None
     seen_seeds: set[int] = set()
     normalized_frames: list[pd.DataFrame] = []
 
@@ -149,6 +201,14 @@ def merge_member_dataframes(
         elif year_map != reference_year_map:
             raise ValueError(f"{label} has a different Step→Year mapping from the first member file.")
 
+        metadata = _constant_metadata(df, ignore=MERGE_VARIABLE_METADATA)
+        if reference_metadata is None:
+            reference_metadata = metadata
+        elif metadata != reference_metadata:
+            raise ValueError(
+                f"{label} has metadata that does not match the first member file."
+            )
+
         seed_values = {int(seed) for seed in df["Seed"].dropna().unique()}
         overlapping = sorted(seed_values & seen_seeds)
         if overlapping and not allow_duplicate_seeds:
@@ -161,7 +221,15 @@ def merge_member_dataframes(
     merged_df = pd.concat(normalized_frames, ignore_index=True)
     sort_cols = [col for col in ["Scenario", "Seed", "Step"] if col in merged_df.columns]
     merged_df = merged_df.sort_values(sort_cols).reset_index(drop=True)
+    merged_metadata = {
+        **(reference_metadata or {}),
+        **_ensemble_seed_metadata(sorted(int(seed) for seed in merged_df["Seed"].dropna().unique())),
+        f"{METADATA_PREFIX}RunTimestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
+        f"{METADATA_PREFIX}SourceMemberFiles": ";".join(labels),
+    }
+    merged_df = _apply_metadata(merged_df, merged_metadata)
     summary_df = build_ensemble_summary(merged_df)
+    summary_df = _apply_metadata(summary_df, merged_metadata)
     return merged_df, summary_df
 
 

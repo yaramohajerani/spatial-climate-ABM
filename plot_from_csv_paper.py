@@ -73,6 +73,19 @@ def scenario_abbrev(scenario: str) -> str:
     return base
 
 
+def scenario_main_color(scenario: str) -> str:
+    """Return a unique main color for each core paper scenario."""
+    if "baseline" in scenario.lower():
+        return "#4C78A8"
+    if is_hazard_scenario(scenario) and is_adaptation_scenario(scenario):
+        return "#59A14F"
+    if is_hazard_scenario(scenario) and is_no_adaptation_scenario(scenario):
+        return "#E15759"
+    if is_hazard_scenario(scenario):
+        return "#F28E2B"
+    return "#7F7F7F"
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Create plots from existing simulation CSV files",
@@ -128,6 +141,7 @@ def parse_args():
 
 
 ENSEMBLE_STAT_ORDER = ["mean", "median", "std", "p10", "p90"]
+METADATA_PREFIX = "Meta_"
 
 
 def summarize_members_for_plot(df: pd.DataFrame) -> pd.DataFrame:
@@ -136,6 +150,7 @@ def summarize_members_for_plot(df: pd.DataFrame) -> pd.DataFrame:
     numeric_cols = [
         col for col in df.select_dtypes(include=[np.number]).columns
         if col not in set(group_cols + ["Seed"])
+        and not col.startswith(METADATA_PREFIX)
     ]
     grouped = df.groupby(group_cols, sort=True)
     ensemble_size = grouped["Seed"].nunique().rename("EnsembleSize").reset_index()
@@ -326,36 +341,44 @@ def main():
         df_copy["Year"] = df_copy["Step"].map(year_map)
         return df_copy
     
-    # Colors distinguish baseline vs hazard; line styles distinguish adaptation on/off.
+    # Use distinct colors for each scenario so ensemble bands remain visually separable.
     scenario_style_map = {}
     for scenario in unique_scenarios:
-        color = "tab:red" if is_hazard_scenario(scenario) else "tab:blue"
-        linestyle = "--" if is_no_adaptation_scenario(scenario) else "-"
-        linewidth = 1.8 if is_adaptation_scenario(scenario) else 1.6
+        color = scenario_main_color(scenario)
+        linestyle = "-"
+        linewidth = 1.8
         scenario_style_map[scenario] = {
             "color": color,
             "linestyle": linestyle,
             "linewidth": linewidth,
         }
 
-    # Define sector color palettes keyed by baseline vs hazard for consistency with main lines
-    sector_colors_baseline = ["#6baed6", "#3182bd"]
-    sector_colors_hazard = ["#ffb347", "#ff7f0e"]
+    # Define sector color palettes keyed by scenario so sector traces stay close to their parent scenario color.
+    scenario_sector_palettes = {
+        "baseline": ["#9ecae9", "#6baed6", "#3182bd"],
+        "hazard_adaptation": ["#A1D99B", "#74C476", "#31A354"],
+        "hazard_noadaptation": ["#FCAE91", "#FB6A4A", "#CB181D"],
+        "hazard": ["#FDD0A2", "#FDAE6B", "#E6550D"],
+        "default": ["#D0D0D0", "#A0A0A0", "#707070"],
+    }
 
     def get_sector_style(scenario, sector_idx):
         """Get color and style for a sector line based on scenario and sector index."""
-        # Choose color palette based on hazard vs baseline
-        if is_hazard_scenario(scenario):
-            color = sector_colors_hazard[sector_idx % len(sector_colors_hazard)]
+        if "baseline" in scenario.lower():
+            palette = scenario_sector_palettes["baseline"]
+        elif is_hazard_scenario(scenario) and is_adaptation_scenario(scenario):
+            palette = scenario_sector_palettes["hazard_adaptation"]
+        elif is_hazard_scenario(scenario) and is_no_adaptation_scenario(scenario):
+            palette = scenario_sector_palettes["hazard_noadaptation"]
+        elif is_hazard_scenario(scenario):
+            palette = scenario_sector_palettes["hazard"]
         else:
-            color = sector_colors_baseline[sector_idx % len(sector_colors_baseline)]
-
-        # Keep sector traces aligned with adaptation vs no-adaptation styling.
-        linestyle = "--" if is_no_adaptation_scenario(scenario) else "-"
+            palette = scenario_sector_palettes["default"]
+        color = palette[sector_idx % len(palette)]
 
         return {
             "color": color,
-            "linestyle": linestyle,
+            "linestyle": "-",
             "alpha": 0.8,
             "linewidth": 0.7,
             "zorder": 1
@@ -950,7 +973,7 @@ def main():
         legend_pairs.append(
             (
                 Patch(facecolor="#999999", edgecolor="none", alpha=0.18),
-                "p10-p90 band",
+                "Scenario p10-p90 band",
             )
         )
 
@@ -975,7 +998,7 @@ def main():
                 else:
                     handle.set_linewidth(3)
 
-    fig_ts.suptitle("Baseline vs. RCP8.5 Agent Trajectories", fontsize=14, fontweight='bold')
+    fig_ts.suptitle("Baseline vs. RCP8.5 Ensemble Trajectories", fontsize=14, fontweight='bold')
     fig_ts.tight_layout()
     fig_ts.subplots_adjust(bottom=0.06)
 

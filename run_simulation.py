@@ -3,6 +3,7 @@
 from pathlib import Path
 import argparse
 from datetime import datetime
+import subprocess
 import numpy as np
 import pandas as pd
 # Import model and agent classes
@@ -48,6 +49,15 @@ def _parse():
 
 
 ENSEMBLE_STAT_ORDER = ["mean", "median", "std", "p10", "p90"]
+METADATA_PREFIX = "Meta_"
+MERGE_VARIABLE_METADATA = {
+    f"{METADATA_PREFIX}RunTimestamp",
+    f"{METADATA_PREFIX}SeedCount",
+    f"{METADATA_PREFIX}SeedList",
+    f"{METADATA_PREFIX}SeedMin",
+    f"{METADATA_PREFIX}SeedMax",
+    f"{METADATA_PREFIX}SourceMemberFiles",
+}
 
 
 def _resolve_seed_list(args) -> list[int]:
@@ -81,6 +91,90 @@ def _scenario_label(apply_hazards: bool, adaptation_enabled: bool) -> str:
     parts = ["hazard" if apply_hazards else "baseline"]
     parts.append("adaptation" if adaptation_enabled else "noadaptation")
     return "_".join(parts)
+
+
+def _safe_git_commit() -> str:
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except Exception:  # noqa: BLE001
+        return ""
+    return proc.stdout.strip()
+
+
+def _event_signature(events: list[tuple[int, int, int, str, str]]) -> str:
+    return ";".join(f"{rp}:{start}:{end}:{haz_type}:{path}" for rp, start, end, haz_type, path in events)
+
+
+def _base_metadata(
+    *,
+    args,
+    events,
+    apply_hazards: bool,
+    adaptation_enabled: bool,
+    adaptation_config: dict,
+    scenario_label: str,
+    timestamp: str,
+) -> dict[str, object]:
+    param_path = str(args.param_file) if args.param_file else ""
+    topology_path = str(args.topology) if args.topology else ""
+    return {
+        f"{METADATA_PREFIX}ScenarioLabel": scenario_label,
+        f"{METADATA_PREFIX}ApplyHazards": bool(apply_hazards),
+        f"{METADATA_PREFIX}AdaptationEnabled": bool(adaptation_enabled),
+        f"{METADATA_PREFIX}ParamFile": param_path,
+        f"{METADATA_PREFIX}ParamFileStem": Path(param_path).stem if param_path else "",
+        f"{METADATA_PREFIX}TopologyPath": topology_path,
+        f"{METADATA_PREFIX}TopologyStem": Path(topology_path).stem if topology_path else "",
+        f"{METADATA_PREFIX}HazardEventCount": len(events),
+        f"{METADATA_PREFIX}HazardEvents": _event_signature(events),
+        f"{METADATA_PREFIX}StartYear": int(args.start_year),
+        f"{METADATA_PREFIX}StepsPerYear": int(args.steps_per_year),
+        f"{METADATA_PREFIX}StepsRequested": int(args.steps),
+        f"{METADATA_PREFIX}NumHouseholds": int(args.num_households),
+        f"{METADATA_PREFIX}GridResolution": float(args.grid_resolution),
+        f"{METADATA_PREFIX}HouseholdRelocation": bool(args.household_relocation),
+        f"{METADATA_PREFIX}UCB_C": float(adaptation_config.get("ucb_c", 1.0)),
+        f"{METADATA_PREFIX}DecisionInterval": int(adaptation_config.get("decision_interval", 4)),
+        f"{METADATA_PREFIX}RewardWindow": int(adaptation_config.get("reward_window", 4)),
+        f"{METADATA_PREFIX}ObservationRadius": float(adaptation_config.get("observation_radius", 3.0)),
+        f"{METADATA_PREFIX}ResilienceDecay": float(adaptation_config.get("resilience_decay", 0.01)),
+        f"{METADATA_PREFIX}MaintenanceCostRate": float(adaptation_config.get("maintenance_cost_rate", 0.005)),
+        f"{METADATA_PREFIX}LossReductionMax": float(adaptation_config.get("loss_reduction_max", 0.6)),
+        f"{METADATA_PREFIX}MinMoneySurvival": float(adaptation_config.get("min_money_survival", 10.0)),
+        f"{METADATA_PREFIX}ReplacementFrequency": int(adaptation_config.get("replacement_frequency", 10)),
+        f"{METADATA_PREFIX}RunTimestamp": timestamp,
+        f"{METADATA_PREFIX}GitCommit": _safe_git_commit(),
+        f"{METADATA_PREFIX}SourceMemberFiles": "",
+    }
+
+
+def _ensemble_seed_metadata(seed_list: list[int]) -> dict[str, object]:
+    ordered = [int(seed) for seed in seed_list]
+    if not ordered:
+        return {
+            f"{METADATA_PREFIX}SeedCount": 0,
+            f"{METADATA_PREFIX}SeedList": "",
+            f"{METADATA_PREFIX}SeedMin": "",
+            f"{METADATA_PREFIX}SeedMax": "",
+        }
+    return {
+        f"{METADATA_PREFIX}SeedCount": len(ordered),
+        f"{METADATA_PREFIX}SeedList": ",".join(str(seed) for seed in ordered),
+        f"{METADATA_PREFIX}SeedMin": min(ordered),
+        f"{METADATA_PREFIX}SeedMax": max(ordered),
+    }
+
+
+def _apply_metadata(df: pd.DataFrame, metadata: dict[str, object]) -> pd.DataFrame:
+    df = df.copy()
+    for key, value in metadata.items():
+        df[key] = value
+    return df
 
 
 def _finalize_main_results(df: pd.DataFrame, *, scenario_display: str, seed: int, start_year: int, steps_per_year: int) -> pd.DataFrame:
@@ -157,6 +251,7 @@ def _build_ensemble_summary(member_df: pd.DataFrame) -> pd.DataFrame:
     numeric_cols = [
         col for col in member_df.select_dtypes(include=[np.number]).columns
         if col not in set(group_cols + ["Seed"])
+        and not col.startswith(METADATA_PREFIX)
     ]
     grouped = member_df.groupby(group_cols, sort=True)
     ensemble_size = grouped["Seed"].nunique().rename("EnsembleSize").reset_index()
@@ -422,6 +517,18 @@ def main() -> None:  # noqa: D401
     tags.append(timestamp)
     scenario_label_ts = "_".join(tags)
     scenario_display = _scenario_display(apply_hazards, adaptation_enabled)
+    metadata = {
+        **_base_metadata(
+            args=args,
+            events=events,
+            apply_hazards=apply_hazards,
+            adaptation_enabled=adaptation_enabled,
+            adaptation_config=adaptation_config,
+            scenario_label=scenario_label,
+            timestamp=timestamp,
+        ),
+        **_ensemble_seed_metadata(seed_list),
+    }
 
     # Save results with scenario label + timestamp
     output_filename = f"simulation_{scenario_label_ts}"
@@ -445,14 +552,18 @@ def main() -> None:  # noqa: D401
                 agent_member_frames.append(seed_agent_df)
 
         member_df = pd.concat(member_frames, ignore_index=True)
+        member_df = _apply_metadata(member_df, metadata)
         summary_df = _build_ensemble_summary(member_df)
+        summary_df = _apply_metadata(summary_df, metadata)
         summary_df.to_csv(main_csv_path, index=False)
 
         members_csv_path = f"{output_filename}_members.csv"
         member_df.to_csv(members_csv_path, index=False)
 
         if args.save_agent_ensemble and agent_member_frames:
-            pd.concat(agent_member_frames, ignore_index=True).to_csv(agent_csv_path, index=False)
+            agent_member_df = pd.concat(agent_member_frames, ignore_index=True)
+            agent_member_df = _apply_metadata(agent_member_df, metadata)
+            agent_member_df.to_csv(agent_csv_path, index=False)
 
         ensemble_plot_path = Path(f"{output_filename}_ensemble.png")
         _save_ensemble_plot(
@@ -479,6 +590,8 @@ def main() -> None:  # noqa: D401
         seed=seed_list[0],
         scenario_display=scenario_display,
     )
+    df = _apply_metadata(df, metadata)
+    agent_df = _apply_metadata(agent_df, metadata)
 
     df.to_csv(main_csv_path, index=False)
     agent_df.to_csv(agent_csv_path, index=False)

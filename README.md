@@ -146,7 +146,11 @@ Multi-seed runs execute the requested seeds sequentially in one invocation and w
 - `simulation_*_agents.csv`: optional combined agent ensemble when `--save-agent-ensemble` is enabled
 - `simulation_*_ensemble.png`: a quick ensemble plot with faint member traces plus a highlighted mean/median line
 
-If you build the ensemble in batches, merge the resulting `*_members.csv` files afterward with `merge_ensemble_members.py`. The merge script validates that the batches share the same scenario label, step grid, and schema, rejects overlapping seeds by default, and writes a fresh combined summary plus merged member file.
+Both the summary and member CSVs now include `Meta_*` columns so each file is self-describing without needing the original command line. These metadata columns include the scenario label, hazard/adaptation toggles, parameter/topology file names, hazard event signature, seed range, and key adaptation settings such as `Meta_UCB_C`, `Meta_DecisionInterval`, and `Meta_ObservationRadius`.
+
+This provenance guarantee applies to files produced with the current runner. Legacy CSVs generated before the `Meta_*` fields were added can still be merged, but the merge script cannot reconstruct missing historical settings that were never written to those files.
+
+If you build the ensemble in batches, merge the resulting `*_members.csv` files afterward with `merge_ensemble_members.py`. The merge script validates that the batches share the same scenario label, metadata, step grid, and schema, rejects overlapping seeds by default, and writes a fresh combined summary plus merged member file.
 
 ### Parameter File Format
 
@@ -241,9 +245,9 @@ Include at least one final-good sector (`retail`, `wholesale`, or `services`) in
 
 ## Output Files
 
-- **simulation_*.csv**: Model-level time series for single-seed runs, or ensemble summaries for multi-seed runs (production, wealth, wages, prices, risk, bottleneck counts, and adaptation diagnostics)
+- **simulation_*.csv**: Model-level time series for single-seed runs, or ensemble summaries for multi-seed runs (production, wealth, wages, prices, risk, bottleneck counts, adaptation diagnostics, and `Meta_*` provenance fields)
 - **Stock-flow diagnostics in `simulation_*.csv`**: `Total_Money`, `Money_Drift`, `Firm_Dividends_Paid`, `Firm_Investment_Spending`, `Household_Labor_Income`, `Household_Dividend_Income`, `Household_Capital_Income`, `Household_Adaptation_Income`, and adaptation state summaries such as `Average_Local_Observed_Loss` and `Adaptation_Updates`
-- **simulation_*_members.csv**: Member-level aggregate ensemble panel with one row per step and seed
+- **simulation_*_members.csv**: Member-level aggregate ensemble panel with one row per step and seed, plus `Meta_*` scenario/config provenance fields
 - **simulation_*_agents.csv**: Agent-level panel data (money, capital, production, sector, type, seller-sector demand, and firm-level adaptation states including `resilience_capital`, `local_observed_loss`, `adaptation_action`, and `adaptation_reward`). Household `sector` values in this file are initialization/placement cohort tags, not purchased-good categories. In ensemble mode this file is only written when `--save-agent-ensemble` is enabled.
 - **simulation_*_ensemble.png**: Ensemble quick-look plot with faint member traces, a highlighted mean/median trajectory, and a p10-p90 band
 - **simulation_*_timeseries.png**: Multi-panel plots of key metrics. Household consumption panels use actual household purchases, and any sector breakdown of final demand is derived from seller sectors rather than household cohort labels.
