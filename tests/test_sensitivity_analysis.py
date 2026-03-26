@@ -6,17 +6,19 @@ from sensitivity_analysis import build_ensemble_summary, make_summary_table
 
 def _member_frame() -> pd.DataFrame:
     rows = []
-    for label, ucb_c, scale in [
-        ("UCB c=0.50", 0.5, 1.0),
-        ("UCB c=1.00", 1.0, 0.8),
+    for label, midpoint, scale in [
+        ("Sensitivity 3.0", 3.0, 1.0),
+        ("Sensitivity 5.0", 5.0, 0.8),
     ]:
         for seed, offset in [(41, 0.0), (42, 2.0)]:
             for step, year in [(0, 2030.0), (1, 2030.25)]:
                 rows.append(
                     {
                         "Scenario": "Hazard + Adaptation",
-                        "UCB_Exploration": label,
-                        "UCB_C": ucb_c,
+                        "Sensitivity_Label": label,
+                        "Adaptation_Sensitivity_Min": midpoint - 1.0,
+                        "Adaptation_Sensitivity_Max": midpoint + 1.0,
+                        "Adaptation_Sensitivity_Midpoint": midpoint,
                         "Step": step,
                         "Year": year,
                         "Seed": seed,
@@ -34,18 +36,18 @@ def _member_frame() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def test_build_ensemble_summary_groups_by_ucb_and_ignores_metadata() -> None:
+def test_build_ensemble_summary_groups_by_sensitivity_and_ignores_metadata() -> None:
     member_df = _member_frame()
     summary_df = build_ensemble_summary(member_df)
 
     mean_step0 = summary_df[
-        (summary_df["UCB_Exploration"] == "UCB c=0.50")
+        (summary_df["Sensitivity_Label"] == "Sensitivity 3.0")
         & (summary_df["Step"] == 0)
         & (summary_df["EnsembleStatistic"] == "mean")
     ].iloc[0]
 
     assert mean_step0["EnsembleSize"] == 2
-    assert mean_step0["UCB_C"] == 0.5
+    assert mean_step0["Adaptation_Sensitivity_Midpoint"] == 3.0
     assert mean_step0["Firm_Production"] == pytest.approx((10.0 + 12.0) / 2.0)
     assert "Meta_ParamFile" not in summary_df.columns
 
@@ -61,10 +63,10 @@ def test_make_summary_table_uses_seed_level_final_decade_ensemble_statistics() -
         member_df=member_df,
     )
 
-    row_050 = table[table["UCB Exploration"] == "UCB c=0.50"].iloc[0]
-    row_100 = table[table["UCB Exploration"] == "UCB c=1.00"].iloc[0]
+    row_300 = table[table["Sensitivity Label"] == "Sensitivity 3.0"].iloc[0]
+    row_500 = table[table["Sensitivity Label"] == "Sensitivity 5.0"].iloc[0]
 
-    assert row_050["EnsembleSize"] == 2
-    assert row_050["Production_Mean"] > row_100["Production_Mean"]
-    assert row_050["RealLiquidity_Mean"] == pytest.approx((10.125 + 10.625) / 2.0)
-    assert row_050["DirectLoss_Mean"] == pytest.approx(0.05)
+    assert row_300["EnsembleSize"] == 2
+    assert row_300["Production_Mean"] > row_500["Production_Mean"]
+    assert row_300["RealLiquidity_Mean"] == pytest.approx((10.125 + 10.625) / 2.0)
+    assert row_300["DirectLoss_Mean"] == pytest.approx(0.05)

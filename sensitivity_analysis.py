@@ -1,7 +1,7 @@
-"""Sensitivity analysis for firm-level hazard-conditional adaptation exploration.
+"""Sensitivity analysis for hazard-conditional continuity-capital adaptation.
 
-Runs the hazard+adaptation scenario across a range of contextual-bandit
-exploration coefficients (`ucb_c`) using matched seeds across all tested values.
+Runs the hazard+adaptation scenario across a range of continuity-sensitivity
+settings using matched seeds across all tested values.
 The script writes:
 
 - an ensemble-aware time-series plot
@@ -33,17 +33,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from model import EconomyModel
 from agents import FirmAgent, HouseholdAgent
 from ensemble_utils import ENSEMBLE_STAT_ORDER, METADATA_PREFIX, apply_metadata, build_ensemble_summary as summarize_ensemble
+from hazard_utils import parse_hazard_event_specs
+from model import EconomyModel
 from run_simulation import _resolve_seed_list
 
 
-UCB_CONFIGS = {
-    "UCB c=0.25": 0.25,
-    "UCB c=0.50": 0.50,
-    "UCB c=1.00": 1.00,
-    "UCB c=2.00": 2.00,
+SENSITIVITY_CONFIGS = {
+    "Sensitivity 1.5": (1.0, 2.0),
+    "Sensitivity 3.0": (2.0, 4.0),
+    "Sensitivity 5.0": (4.0, 6.0),
+    "Sensitivity 8.0": (7.0, 9.0),
 }
 
 PLOT_METRICS = [
@@ -68,7 +69,7 @@ SUMMARY_METRICS = [
 
 def _parse_args():
     parser = argparse.ArgumentParser(
-        description="Sensitivity analysis for firm-level contextual-bandit exploration strength.",
+        description="Sensitivity analysis for hazard-conditional continuity-capital adaptation.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -137,16 +138,7 @@ def _load_params(param_file: str) -> dict:
 
 
 def _parse_events(rp_files: list[str]):
-    events = []
-    for item in rp_files:
-        try:
-            rp_str, start_str, end_str, type_str, path_str = item.split(":", 4)
-        except ValueError as exc:  # noqa: BLE001
-            raise SystemExit(
-                f"Invalid rp_file format: {item}. Expected <RP>:<START>:<END>:<TYPE>:<path>."
-            ) from exc
-        events.append((int(rp_str), int(start_str), int(end_str), type_str, path_str))
-    return events
+    return parse_hazard_event_specs(rp_files)
 
 
 def _merge_seed_args(args, params: dict) -> list[int]:
@@ -161,8 +153,11 @@ def _merge_seed_args(args, params: dict) -> list[int]:
     return _resolve_seed_list(args)
 
 
-def _event_signature(events: list[tuple[int, int, int, str, str]]) -> str:
-    return ";".join(f"{rp}:{start}:{end}:{haz_type}:{path}" for rp, start, end, haz_type, path in events)
+def _event_signature(events: list[tuple[int, int, int, str, str | None]]) -> str:
+    return ";".join(
+        f"{rp}:{start}:{end}:{haz_type}:{path if path is not None else 'None'}"
+        for rp, start, end, haz_type, path in events
+    )
 
 
 def _sensitivity_metadata(
@@ -174,8 +169,9 @@ def _sensitivity_metadata(
     n_steps: int,
 ) -> dict[str, object]:
     topology_path = str(params.get("topology") or "")
+    adaptation_config = params.get("adaptation", params.get("learning", {}))
     return {
-        f"{METADATA_PREFIX}SensitivityParameter": "ucb_c",
+        f"{METADATA_PREFIX}SensitivityParameter": "adaptation_sensitivity",
         f"{METADATA_PREFIX}ParamFile": str(param_file),
         f"{METADATA_PREFIX}ParamFileStem": Path(param_file).stem,
         f"{METADATA_PREFIX}TopologyPath": topology_path,
@@ -196,6 +192,15 @@ def _sensitivity_metadata(
         f"{METADATA_PREFIX}FirmMinLiquidityBuffer": float(FirmAgent.MIN_LIQUIDITY_BUFFER),
         f"{METADATA_PREFIX}FirmLaborShare": float(FirmAgent.LABOR_SHARE),
         f"{METADATA_PREFIX}NoWorkerWagePremium": float(FirmAgent.NO_WORKER_WAGE_PREMIUM),
+        f"{METADATA_PREFIX}DecisionInterval": int(adaptation_config.get("decision_interval", 4)),
+        f"{METADATA_PREFIX}ObservationRadius": float(adaptation_config.get("observation_radius", 4)),
+        f"{METADATA_PREFIX}ResilienceDecay": float(adaptation_config.get("resilience_decay", 0.01)),
+        f"{METADATA_PREFIX}ContinuityDecay": float(adaptation_config.get("continuity_decay", adaptation_config.get("resilience_decay", 0.01))),
+        f"{METADATA_PREFIX}MaintenanceCostRate": float(adaptation_config.get("maintenance_cost_rate", 0.005)),
+        f"{METADATA_PREFIX}MaxBackupSuppliers": int(adaptation_config.get("max_backup_suppliers", 5)),
+        f"{METADATA_PREFIX}MaxAdaptIncrement": float(adaptation_config.get("max_adaptation_increment", 0.25)),
+        f"{METADATA_PREFIX}ContinuitySensitivityMin": float(sensitivity_min),
+        f"{METADATA_PREFIX}ContinuitySensitivityMax": float(sensitivity_max),
         f"{METADATA_PREFIX}SeedCount": len(seed_list),
         f"{METADATA_PREFIX}SeedList": ",".join(str(seed) for seed in seed_list),
         f"{METADATA_PREFIX}SeedMin": min(seed_list) if seed_list else "",
@@ -207,15 +212,18 @@ def _finalize_results(
     df: pd.DataFrame,
     *,
     label: str,
-    ucb_c: float,
+    sensitivity_min: float,
+    sensitivity_max: float,
     seed: int,
     start_year: int,
     steps_per_year: int,
 ) -> pd.DataFrame:
     df = df.copy()
     df["Scenario"] = "Hazard + Adaptation"
-    df["UCB_Exploration"] = label
-    df["UCB_C"] = float(ucb_c)
+    df["Sensitivity_Label"] = label
+    df["Adaptation_Sensitivity_Min"] = float(sensitivity_min)
+    df["Adaptation_Sensitivity_Max"] = float(sensitivity_max)
+    df["Adaptation_Sensitivity_Midpoint"] = 0.5 * (float(sensitivity_min) + float(sensitivity_max))
     if "Step" not in df.columns:
         df["Step"] = df.index
     if start_year and "Year" not in df.columns:
@@ -224,9 +232,22 @@ def _finalize_results(
     return df
 
 
-def run_scenario(params: dict, events: list, label: str, ucb_c: float, n_steps: int, seed: int) -> pd.DataFrame:
+def run_scenario(
+    params: dict,
+    events: list,
+    label: str,
+    sensitivity_min: float,
+    sensitivity_max: float,
+    n_steps: int,
+    seed: int,
+) -> pd.DataFrame:
     adaptation_config = params.get("adaptation", params.get("learning", {}))
-    adaptation_config = {**adaptation_config, "enabled": True, "ucb_c": float(ucb_c)}
+    adaptation_config = {
+        **adaptation_config,
+        "enabled": True,
+        "adaptation_sensitivity_min": float(sensitivity_min),
+        "adaptation_sensitivity_max": float(sensitivity_max),
+    }
 
     model = EconomyModel(
         num_households=int(params.get("num_households", 100)),
@@ -249,7 +270,8 @@ def run_scenario(params: dict, events: list, label: str, ucb_c: float, n_steps: 
     return _finalize_results(
         model.results_to_dataframe(),
         label=label,
-        ucb_c=ucb_c,
+        sensitivity_min=sensitivity_min,
+        sensitivity_max=sensitivity_max,
         seed=seed,
         start_year=int(params.get("start_year", 0)),
         steps_per_year=int(params.get("steps_per_year", 4)),
@@ -259,7 +281,15 @@ def run_scenario(params: dict, events: list, label: str, ucb_c: float, n_steps: 
 def build_ensemble_summary(member_df: pd.DataFrame) -> pd.DataFrame:
     return summarize_ensemble(
         member_df,
-        group_cols=["Scenario", "UCB_Exploration", "UCB_C", "Step", "Year"],
+        group_cols=[
+            "Scenario",
+            "Sensitivity_Label",
+            "Adaptation_Sensitivity_Min",
+            "Adaptation_Sensitivity_Max",
+            "Adaptation_Sensitivity_Midpoint",
+            "Step",
+            "Year",
+        ],
     )
 
 
@@ -298,8 +328,8 @@ def load_timeseries(csv_path: str) -> tuple[pd.DataFrame, pd.DataFrame | None]:
 
 
 def _ordered_labels(frame: pd.DataFrame) -> list[str]:
-    labels = list(frame["UCB_Exploration"].dropna().unique())
-    configured = [label for label in UCB_CONFIGS if label in labels]
+    labels = list(frame["Sensitivity_Label"].dropna().unique())
+    configured = [label for label in SENSITIVITY_CONFIGS if label in labels]
     extras = [label for label in labels if label not in configured]
     return configured + extras
 
@@ -339,7 +369,7 @@ def plot_sensitivity(
     for idx, (column, title, ylabel, norm_mode) in enumerate(PLOT_METRICS):
         ax = axes[idx]
         for label, color in zip(labels, colors):
-            stat_mask = summary_df["UCB_Exploration"] == label
+            stat_mask = summary_df["Sensitivity_Label"] == label
             stat_df = summary_df.loc[stat_mask & (summary_df["EnsembleStatistic"] == ensemble_stat)].sort_values("Step")
             if stat_df.empty or column not in stat_df.columns:
                 continue
@@ -348,7 +378,7 @@ def plot_sensitivity(
             x_vals = stat_df[x_col]
 
             if show_ensemble_members and member_df is not None:
-                member_mask = member_df["UCB_Exploration"] == label
+                member_mask = member_df["Sensitivity_Label"] == label
                 for _, seed_grp in member_df.loc[member_mask].groupby("Seed"):
                     seed_grp = seed_grp.sort_values("Step")
                     if column not in seed_grp.columns:
@@ -392,13 +422,13 @@ def plot_sensitivity(
         ensemble_size = int(summary_df["EnsembleSize"].max())
         stat_label = ensemble_stat.title()
         fig.suptitle(
-            f"Sensitivity of Outcomes to UCB Exploration Strength\n(Hazard + Adaptation scenario; {ensemble_size}-seed ensemble {stat_label})",
+            f"Sensitivity of Outcomes to Adaptation Sensitivity\n(Hazard + Adaptation scenario; {ensemble_size}-seed ensemble {stat_label})",
             fontsize=13,
             y=1.02,
         )
     else:
         fig.suptitle(
-            "Sensitivity of Outcomes to UCB Exploration Strength\n(Hazard + Adaptation scenario; single seed)",
+            "Sensitivity of Outcomes to Adaptation Sensitivity\n(Hazard + Adaptation scenario; single seed)",
             fontsize=13,
             y=1.02,
         )
@@ -416,7 +446,7 @@ def _make_summary_table_from_members(
 ) -> pd.DataFrame:
     rows = []
     for label in _ordered_labels(member_df):
-        label_df = member_df[member_df["UCB_Exploration"] == label]
+        label_df = member_df[member_df["Sensitivity_Label"] == label]
         per_seed_rows = []
         for seed, seed_df in label_df.groupby("Seed"):
             last_decade = seed_df.sort_values("Step").tail(steps_per_year * 10)
@@ -432,8 +462,10 @@ def _make_summary_table_from_members(
         if seed_summary.empty:
             continue
         row = {
-            "UCB Exploration": label,
-            "UCB_C": float(label_df["UCB_C"].iloc[0]),
+            "Sensitivity Label": label,
+            "Adaptation_Sensitivity_Min": float(label_df["Adaptation_Sensitivity_Min"].iloc[0]),
+            "Adaptation_Sensitivity_Max": float(label_df["Adaptation_Sensitivity_Max"].iloc[0]),
+            "Adaptation_Sensitivity_Midpoint": float(label_df["Adaptation_Sensitivity_Midpoint"].iloc[0]),
             "EnsembleSize": int(seed_summary["Seed"].nunique()),
         }
         for metric_name, _, _ in SUMMARY_METRICS:
@@ -458,10 +490,14 @@ def _make_summary_table_from_summary(
 ) -> pd.DataFrame:
     rows = []
     for label in _ordered_labels(summary_df):
-        label_rows = {"UCB Exploration": label}
-        label_slice = summary_df[summary_df["UCB_Exploration"] == label]
-        if "UCB_C" in label_slice.columns:
-            label_rows["UCB_C"] = float(label_slice["UCB_C"].iloc[0])
+        label_rows = {"Sensitivity Label": label}
+        label_slice = summary_df[summary_df["Sensitivity_Label"] == label]
+        if "Adaptation_Sensitivity_Midpoint" in label_slice.columns:
+            label_rows["Adaptation_Sensitivity_Midpoint"] = float(label_slice["Adaptation_Sensitivity_Midpoint"].iloc[0])
+        if "Adaptation_Sensitivity_Min" in label_slice.columns:
+            label_rows["Adaptation_Sensitivity_Min"] = float(label_slice["Adaptation_Sensitivity_Min"].iloc[0])
+        if "Adaptation_Sensitivity_Max" in label_slice.columns:
+            label_rows["Adaptation_Sensitivity_Max"] = float(label_slice["Adaptation_Sensitivity_Max"].iloc[0])
         if "EnsembleSize" in label_slice.columns:
             label_rows["EnsembleSize"] = int(label_slice["EnsembleSize"].max())
 
@@ -503,7 +539,11 @@ def _print_summary_table(summary: pd.DataFrame) -> None:
     if summary.empty:
         print("No summary rows available.")
         return
-    display_cols = ["UCB Exploration", "UCB_C", "EnsembleSize"]
+    display_cols = [
+        "Sensitivity Label",
+        "Adaptation_Sensitivity_Midpoint",
+        "EnsembleSize",
+    ]
     for metric_name, _, _ in SUMMARY_METRICS:
         mean_col = f"{metric_name}_Mean"
         p10_col = f"{metric_name}_P10"
@@ -540,13 +580,31 @@ def main():
         )
 
         member_frames = []
-        for label, ucb_c in UCB_CONFIGS.items():
+        for label, (sensitivity_min, sensitivity_max) in SENSITIVITY_CONFIGS.items():
             print(f"\n{'=' * 72}")
-            print(f"Running sensitivity sweep: {label}  ucb_c={ucb_c}  seeds={seed_list}")
+            print(
+                "Running sensitivity sweep: "
+                f"{label}  sensitivity=[{sensitivity_min}, {sensitivity_max}]  seeds={seed_list}"
+            )
             print(f"{'=' * 72}")
             for seed in seed_list:
-                seed_df = run_scenario(params, events, label, ucb_c, n_steps, seed)
-                seed_df = apply_metadata(seed_df, {**metadata, f"{METADATA_PREFIX}UCB_C": float(ucb_c)})
+                seed_df = run_scenario(
+                    params,
+                    events,
+                    label,
+                    sensitivity_min,
+                    sensitivity_max,
+                    n_steps,
+                    seed,
+                )
+                seed_df = apply_metadata(
+                    seed_df,
+                    {
+                        **metadata,
+                        f"{METADATA_PREFIX}AdaptationSensitivityMin": float(sensitivity_min),
+                        f"{METADATA_PREFIX}AdaptationSensitivityMax": float(sensitivity_max),
+                    },
+                )
                 member_frames.append(seed_df)
 
         member_df = pd.concat(member_frames, ignore_index=True)

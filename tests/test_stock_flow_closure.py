@@ -20,14 +20,14 @@ def build_closed_economy_model(*, adaptation_enabled: bool) -> EconomyModel:
         adaptation_params={
             "enabled": adaptation_enabled,
             "decision_interval": 4,
-            "reward_window": 4,
             "ewma_alpha": 0.2,
-            "ucb_c": 1.0,
             "observation_radius": 4,
-            "action_increments": [0.0, 0.05, 0.10],
+            "adaptation_sensitivity_min": 2.0,
+            "adaptation_sensitivity_max": 2.0,
+            "max_adaptation_increment": 0.25,
             "resilience_decay": 0.01,
             "maintenance_cost_rate": 0.005,
-            "loss_reduction_max": 0.6,
+            "max_backup_suppliers": 5,
             "min_money_survival": 1.0,
             "replacement_frequency": 10,
         },
@@ -78,8 +78,8 @@ def test_baseline_adaptation_stays_dormant_without_hazards() -> None:
     assert np.allclose(df["Firm_Adaptation_Spending"].to_numpy(), 0.0, atol=1e-9)
     assert np.allclose(df["Household_Adaptation_Income"].to_numpy(), 0.0, atol=1e-9)
     assert np.allclose(df["Average_Resilience_Capital"].to_numpy(), 0.0, atol=1e-9)
-    assert all(not firm.ucb_action_counts for firm in model._firms)
-    assert all(firm.current_policy_context is None for firm in model._firms)
+    assert all(np.isclose(firm.last_adaptation_target, 0.0, atol=1e-12) for firm in model._firms)
+    assert all(np.isclose(firm.last_perceived_hazard_risk, 0.0, atol=1e-12) for firm in model._firms)
     assert all(firm.adaptation_update_count == 0 for firm in model._firms)
 
 
@@ -94,7 +94,7 @@ def test_adaptation_spending_is_deferred_and_returned_to_households() -> None:
     firm.resilience_capital = 0.5
     firm.begin_period_adaptation()
     decayed_resilience = firm.resilience_capital
-    firm._queue_adaptation_investment(2)
+    firm.pending_adaptation_increment = 0.10
 
     assert np.isclose(firm.money, 200.0, atol=1e-9)
     assert firm.adaptation_spending_this_step == 0.0
@@ -245,8 +245,9 @@ def test_firm_reorganization_preserves_total_money_and_inherits_adaptation_state
     parent.realized_direct_loss_ewma = 0.15
     parent.local_observed_loss_ewma = 0.1
     parent.supplier_disruption_ewma = 0.1
-    parent.ucb_action_counts = {(1, 1, 0, 0): [2, 1, 0]}
-    parent.ucb_action_values = {(1, 1, 0, 0): [0.3, 0.5, 0.0]}
+    parent.adaptation_sensitivity = 3.5
+    parent.last_adaptation_target = 0.45
+    parent.last_perceived_hazard_risk = 0.12
 
     failed_firm.money = 0.0
     initial_total_money = model.total_money()
@@ -260,113 +261,58 @@ def test_firm_reorganization_preserves_total_money_and_inherits_adaptation_state
     assert failed_firm.realized_direct_loss_ewma == parent.realized_direct_loss_ewma
     assert failed_firm.local_observed_loss_ewma == parent.local_observed_loss_ewma
     assert failed_firm.supplier_disruption_ewma == parent.supplier_disruption_ewma
-    assert failed_firm.ucb_action_counts == parent.ucb_action_counts
-    assert failed_firm.ucb_action_values == parent.ucb_action_values
+    assert np.isclose(failed_firm.adaptation_sensitivity, parent.adaptation_sensitivity, atol=1e-9)
+    assert np.isclose(failed_firm.last_adaptation_target, parent.last_adaptation_target, atol=1e-9)
+    assert np.isclose(failed_firm.last_perceived_hazard_risk, parent.last_perceived_hazard_risk, atol=1e-9)
 
 
-def test_resilience_capital_reduces_direct_losses_and_improves_recovery() -> None:
-    """Higher resilience should attenuate capital, inventory, and downtime damage."""
-    model = build_closed_economy_model(adaptation_enabled=True)
-    low_resilience, high_resilience = model._firms[:2]
-
-    for firm in (low_resilience, high_resilience):
-        firm.capital_stock = 100.0
-        firm.inventory_output = 20.0
-        firm.inventory_inputs = {999: 10.0}
-        firm.damage_factor = 1.0
-        firm.counterfactual_damage_factor = 1.0
-        firm.expected_sales = 15.0
-        firm.price = 1.0
-        firm.money = 100.0
-        firm.begin_period_adaptation()
-
-    low_resilience.resilience_capital = 0.0
-    high_resilience.resilience_capital = 0.5
-    raw_loss = 0.4
-
-    for firm in (low_resilience, high_resilience):
-        adapted_loss = firm.get_adapted_loss_fraction(raw_loss)
-        firm.record_direct_losses(raw_loss, adapted_loss)
-        firm.capital_stock *= 1.0 - adapted_loss
-        firm.damage_factor *= 1.0 - adapted_loss
-        firm.counterfactual_damage_factor *= 1.0 - raw_loss
-        firm.inventory_output *= 1.0 - adapted_loss
-        for supplier_id in list(firm.inventory_inputs.keys()):
-            firm.inventory_inputs[supplier_id] *= 1.0 - adapted_loss
-
-    assert high_resilience.capital_stock > low_resilience.capital_stock
-    assert high_resilience.inventory_output > low_resilience.inventory_output
-    assert high_resilience.inventory_inputs[999] > low_resilience.inventory_inputs[999]
-    assert high_resilience.damage_factor > low_resilience.damage_factor
-
-    low_resilience.step()
-    high_resilience.step()
-
-    assert high_resilience.damage_factor > low_resilience.damage_factor
-    assert high_resilience.realized_direct_loss_this_step < low_resilience.realized_direct_loss_this_step
-
-
-def test_bandit_explores_unseen_actions_then_prefers_higher_reward_action() -> None:
-    """The firm-level tabular UCB policy should explore untried actions and then exploit stronger rewards."""
+def test_adapted_loss_fraction_is_pass_through() -> None:
+    """get_adapted_loss_fraction should return the raw loss unchanged (no attenuation)."""
     model = build_closed_economy_model(adaptation_enabled=True)
     firm = model._firms[0]
-    context = (2, 2, 1, 0)
 
-    assert firm._choose_ucb_action(context) == 0
+    firm.resilience_capital = 0.0
+    assert np.isclose(firm.get_adapted_loss_fraction(0.4), 0.4, atol=1e-12)
 
-    firm.ucb_action_counts[context] = [1, 0, 0]
-    firm.ucb_action_values[context] = [0.2, 0.0, 0.0]
-    assert firm._choose_ucb_action(context) == 1
+    firm.resilience_capital = 0.5
+    assert np.isclose(firm.get_adapted_loss_fraction(0.4), 0.4, atol=1e-12)
 
-    firm.ucb_action_counts[context] = [1, 1, 0]
-    firm.ucb_action_values[context] = [0.2, 0.4, 0.0]
-    assert firm._choose_ucb_action(context) == 2
-
-    peer = next(
-        candidate for candidate in model._firms
-        if candidate is not firm and candidate.sector == firm.sector
-    )
-    firm.ucb_action_counts[context] = [0, 0, 0]
-    firm.ucb_action_values[context] = [0.0, 0.0, 0.0]
-    firm.current_policy_context = context
-    firm.current_action_index = 1
-    firm.steps_in_current_window = firm.reward_window
-    firm.window_raw_direct_loss = 10.0
-    firm.window_adapted_direct_loss = 6.0
-    firm.window_adaptation_cost = 0.0
-    firm.window_peak_raw_loss_signal = 0.2
-    assert firm._update_adaptation_policy_from_window() is True
-
-    assert firm.ucb_action_counts[context][1] == 1
-    assert np.isclose(firm.ucb_action_values[context][1], 0.4, atol=1e-9)
-    assert np.isclose(firm.last_adaptation_reward, 0.4, atol=1e-9)
-    assert peer.ucb_action_counts.get(context) is None
-
-    firm.ucb_action_counts[context] = [6, 6, 6]
-    firm.ucb_action_values[context] = [0.15, 0.75, 0.25]
-    assert firm._choose_ucb_action(context) == 1
+    firm.resilience_capital = 1.0
+    assert np.isclose(firm.get_adapted_loss_fraction(0.4), 0.4, atol=1e-12)
 
 
-def test_bandit_skips_uninformative_low_loss_windows() -> None:
-    """Tiny-loss windows should not update the firm-level adaptation bandit."""
+def test_proportional_targeting_scales_with_signal_strength() -> None:
+    """Continuity targets should scale with annualized operating-shortfall risk and respect caps."""
     model = build_closed_economy_model(adaptation_enabled=True)
     firm = model._firms[0]
-    context = (1, 1, 0, 0)
+    firm.adaptation_sensitivity = 3.0
+    firm.max_adaptation_increment = 1.0
 
-    firm.current_policy_context = context
-    firm.current_action_index = 1
-    firm.steps_in_current_window = firm.reward_window
-    firm.window_raw_direct_loss = 10.0
-    firm.window_adapted_direct_loss = 6.0
-    firm.window_adaptation_cost = 0.0
-    firm.window_peak_raw_loss_signal = 0.01
-    firm._adaptation_policy_initialized = True
-    updated = firm._update_adaptation_policy_from_window()
+    firm.expected_operating_shortfall_ewma = 0.0
+    firm.local_observed_shortfall_ewma = 0.0
+    firm.resilience_capital = 0.0
+    firm._select_adaptation_action()
+    assert np.isclose(firm.pending_adaptation_increment, 0.0, atol=1e-12)
+    assert firm.last_adaptation_action == "dormant"
 
-    assert updated is False
-    assert firm.last_adaptation_reward != firm.last_adaptation_reward
-    assert firm.adaptation_update_count == 0
-    assert firm.ucb_action_counts.get(context) is None
+    firm.expected_operating_shortfall_ewma = 0.10
+    firm.local_observed_shortfall_ewma = 0.05
+    firm.resilience_capital = 0.0
+    firm._select_adaptation_action()
+    assert np.isclose(firm.last_perceived_hazard_risk, 0.10, atol=1e-9)
+    assert np.isclose(firm.last_adaptation_target, 1.0, atol=1e-9)
+    assert np.isclose(firm.pending_adaptation_increment, 1.0, atol=1e-9)
+    assert firm.last_adaptation_action == "adjust"
+
+    firm.max_adaptation_increment = 0.25
+    firm.expected_operating_shortfall_ewma = 0.40
+    firm.local_observed_shortfall_ewma = 0.30
+    firm.resilience_capital = 0.10
+    firm._select_adaptation_action()
+    assert np.isclose(firm.last_perceived_hazard_risk, 0.40, atol=1e-9)
+    assert np.isclose(firm.last_adaptation_target, 1.0, atol=1e-9)
+    assert np.isclose(firm.pending_adaptation_increment, 0.25, atol=1e-9)
+    assert firm.last_adaptation_action == "adjust"
 
 
 def test_nearby_hazard_losses_enter_local_observed_loss_state() -> None:
@@ -385,6 +331,78 @@ def test_nearby_hazard_losses_enter_local_observed_loss_state() -> None:
     observed = model.get_local_observed_loss_fraction(focal)
 
     assert np.isclose(observed, 0.4, atol=1e-9)
+
+
+def test_nearby_operating_shortfalls_enter_local_observed_shortfall_state() -> None:
+    """Firms should also observe nearby hazard-induced operating shortfalls."""
+    model = build_closed_economy_model(adaptation_enabled=True)
+    focal = next(f for f in model._firms if f.sector == "services")
+    neighbor = next(
+        f for f in model._firms
+        if f is not focal and f.sector == focal.sector
+    )
+
+    focal.pos = (10, 10)
+    neighbor.pos = (11, 10)
+    neighbor.hazard_operating_shortfall_this_step = 0.3
+
+    observed = model.get_local_observed_shortfall_fraction(focal)
+
+    assert np.isclose(observed, 0.3, atol=1e-9)
+
+
+def test_backup_supplier_search_purchases_real_goods() -> None:
+    """Continuity capital should enable backup purchases from non-primary firms."""
+    model = build_closed_economy_model(adaptation_enabled=True)
+    # Find a buyer with connected firms
+    buyer = next(f for f in model._firms if f.connected_firms)
+    primary_supplier = buyer.connected_firms[0]
+
+    # Find a backup candidate: same sector as primary supplier, not the buyer
+    backup = next(
+        f for f in model._firms
+        if f.sector == primary_supplier.sector
+        and f is not buyer
+        and f is not primary_supplier
+    )
+
+    # Set up: primary supplier is damaged and has no inventory
+    primary_supplier.inventory_output = 0.0
+    primary_supplier.damage_factor = 0.5
+    primary_supplier.adapted_direct_loss_fraction_this_step = 0.3
+
+    # Backup supplier has inventory available
+    backup.inventory_output = 10.0
+    backup.price = 1.0
+
+    # Buyer has continuity capital and cash
+    buyer.continuity_capital = 0.5
+    buyer.money = 200.0
+    buyer.inventory_inputs = {primary_supplier.unique_id: 0.0}
+    buyer.connected_firms = [primary_supplier]
+
+    initial_total_money = model.total_money()
+
+    # Run one step — buyer should find backup supplier
+    buyer.employees.clear()
+    buyer.employees.extend([object()] * 5)
+    buyer.target_output = 10.0
+    buyer.demand_driven_output = 10.0
+    buyer.capital_stock = 20.0
+    buyer.capital_coeff = buyer.original_capital_coeff
+    buyer.damage_factor = 1.0
+    buyer.counterfactual_damage_factor = 1.0
+    buyer.raw_direct_loss_fraction_this_step = 0.0
+    buyer.adapted_direct_loss_fraction_this_step = 0.0
+    buyer.price = 1.0
+    buyer.wage_offer = 1.0
+
+    buyer.step()
+
+    # Backup purchases should be positive (real goods from real supplier)
+    assert buyer.backup_purchases_this_step > 0.0
+    # Money is conserved (buyer cash -> backup supplier cash)
+    assert np.isclose(model.total_money(), initial_total_money, atol=1e-6)
 
 
 def test_cascade_reporters_track_never_hit_firm_burden() -> None:
@@ -466,3 +484,50 @@ def test_households_try_nearby_same_sector_firms_before_remote_market() -> None:
     assert household.labor_sold == 1.0
     assert household in local_firm.employees
     assert household not in remote_firm.employees
+
+
+def test_backup_purchases_are_zero_in_baseline() -> None:
+    """Without hazard, no backup supplier search should occur."""
+    model = build_closed_economy_model(adaptation_enabled=True)
+
+    for _ in range(12):
+        model.step()
+
+    df = model.results_to_dataframe()
+    assert np.allclose(df["Total_Backup_Purchases"].to_numpy(), 0.0, atol=1e-9)
+    assert all(
+        np.isclose(f.backup_purchases_this_step, 0.0, atol=1e-9)
+        for f in model._firms
+    )
+
+
+def test_money_conserved_during_backup_purchases() -> None:
+    """Backup supplier transactions should not create or destroy money."""
+    model = build_closed_economy_model(adaptation_enabled=True)
+    buyer = next(f for f in model._firms if f.connected_firms)
+    primary_supplier = buyer.connected_firms[0]
+
+    backup = next(
+        f for f in model._firms
+        if f.sector == primary_supplier.sector
+        and f is not buyer
+        and f is not primary_supplier
+    )
+
+    # Damage the primary supplier so backup search triggers
+    primary_supplier.inventory_output = 0.0
+    primary_supplier.damage_factor = 0.5
+    primary_supplier.adapted_direct_loss_fraction_this_step = 0.3
+
+    backup.inventory_output = 20.0
+    backup.price = 2.0
+
+    buyer.continuity_capital = 0.8
+    buyer.money = 300.0
+    initial_total_money = model.total_money()
+
+    # Perform the backup purchase directly via sell_goods_to_firm
+    bought = backup.sell_goods_to_firm(buyer, 5.0)
+
+    assert bought > 0.0
+    assert np.isclose(model.total_money(), initial_total_money, atol=1e-6)

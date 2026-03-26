@@ -24,7 +24,7 @@ def test_member_summary_helpers_match_and_track_ensemble_size() -> None:
             "Year": [2030.0, 2030.0, 2030.0, 2030.25, 2030.25, 2030.25],
             "Seed": [1, 2, 3, 1, 2, 3],
             "Meta_ApplyHazards": [True] * 6,
-            "Meta_UCB_C": [1.0] * 6,
+            "Meta_AdaptationSensitivityMin": [2.0] * 6,
             "Meta_ParamFile": ["params.json"] * 6,
             "Firm_Production": [10.0, 14.0, 16.0, 12.0, 18.0, 24.0],
             "Household_Consumption": [4.0, 5.0, 7.0, 6.0, 8.0, 10.0],
@@ -47,4 +47,4 @@ def test_member_summary_helpers_match_and_track_ensemble_size() -> None:
     assert mean_step0["EnsembleSize"] == 3
     assert mean_step0["Firm_Production"] == 40.0 / 3.0
     assert mean_step0["Household_Consumption"] == 16.0 / 3.0
-    assert "Meta_UCB_C" not in runner_summary.columns
+    assert "Meta_AdaptationSensitivityMin" not in runner_summary.columns

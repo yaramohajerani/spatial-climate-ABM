@@ -81,6 +81,7 @@ class EconomyModel(Model):
         self.replacement_frequency: int = self.adaptation_config.get("replacement_frequency", 10)
         self.adaptation_observation_radius: int = int(self.adaptation_config.get("observation_radius", 4))
         self.adaptation_updates_this_step: int = 0
+        self.max_backup_suppliers: int = int(self.adaptation_config.get("max_backup_suppliers", 5))
 
         # Household consumption ratios across final-good sectors.
         # Upstream sectors sell to firms, not directly to households.
@@ -221,12 +222,23 @@ class EconomyModel(Model):
                 "Input_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "input"),
                 "Demand_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "demand"),
                 "Firm_Adaptation_Spending": lambda m: sum(f.adaptation_spending_this_step for f in m._firms),
+                "Average_Continuity_Capital": lambda m: np.mean([f.continuity_capital for f in m._firms]) if m._firms else 0.0,
                 "Average_Resilience_Capital": lambda m: np.mean([f.resilience_capital for f in m._firms]) if m._firms else 0.0,
                 "Average_Expected_Direct_Loss": lambda m: np.mean([f.expected_direct_loss_ewma for f in m._firms]) if m._firms else 0.0,
                 "Average_Realized_Direct_Loss": lambda m: np.mean([f.realized_direct_loss_ewma for f in m._firms]) if m._firms else 0.0,
                 "Average_Local_Observed_Loss": lambda m: np.mean([f.local_observed_loss_ewma for f in m._firms]) if m._firms else 0.0,
                 "Average_Supplier_Disruption": lambda m: np.mean([f.supplier_disruption_ewma for f in m._firms]) if m._firms else 0.0,
-                "Average_Adaptation_Reward": lambda m: float(np.nanmean([f.last_adaptation_reward for f in m._firms])) if any(np.isfinite(f.last_adaptation_reward) for f in m._firms) else 0.0,
+                "Average_Expected_Operating_Shortfall": lambda m: np.mean([f.expected_operating_shortfall_ewma for f in m._firms]) if m._firms else 0.0,
+                "Average_Local_Observed_Shortfall": lambda m: np.mean([f.local_observed_shortfall_ewma for f in m._firms]) if m._firms else 0.0,
+                "Average_Continuity_Target": lambda m: np.mean([f.last_continuity_target for f in m._firms]) if m._firms else 0.0,
+                "Average_Perceived_Continuity_Risk": lambda m: np.mean([f.last_perceived_continuity_risk for f in m._firms]) if m._firms else 0.0,
+                "Average_Continuity_Gap_Coverage": lambda m: np.mean([f.continuity_gap_coverage_this_step for f in m._firms]) if m._firms else 0.0,
+                "Average_Continuity_Input_Coverage": lambda m: np.mean([f.continuity_input_coverage_this_step for f in m._firms]) if m._firms else 0.0,
+                "Average_Raw_Supplier_Disruption": lambda m: np.mean([f.raw_supplier_disruption_this_step for f in m._firms]) if m._firms else 0.0,
+                "Average_Backup_Purchases": lambda m: np.mean([f.backup_purchases_this_step for f in m._firms]) if m._firms else 0.0,
+                "Total_Backup_Purchases": lambda m: sum(f.backup_purchases_this_step for f in m._firms),
+                "Average_Adaptation_Target": lambda m: np.mean([f.last_adaptation_target for f in m._firms]) if m._firms else 0.0,
+                "Average_Perceived_Hazard_Risk": lambda m: np.mean([f.last_perceived_hazard_risk for f in m._firms]) if m._firms else 0.0,
                 "Average_Working_Capital_Credit_Used": lambda m: np.mean([f.working_capital_credit_used_this_step for f in m._firms]) if m._firms else 0.0,
                 "Average_Working_Capital_Credit_Limit": lambda m: np.mean([f.working_capital_credit_limit for f in m._firms]) if m._firms else 0.0,
                 "Adaptation_Updates": lambda m: m.adaptation_updates_this_step,
@@ -273,13 +285,23 @@ class EconomyModel(Model):
                 "adaptation_spending": lambda a: getattr(a, "adaptation_spending_this_step", np.nan),
                 "working_capital_credit_used": lambda a: getattr(a, "working_capital_credit_used_this_step", np.nan),
                 "working_capital_credit_limit": lambda a: getattr(a, "working_capital_credit_limit", np.nan),
+                "continuity_capital": lambda a: getattr(a, "continuity_capital", np.nan),
                 "resilience_capital": lambda a: getattr(a, "resilience_capital", np.nan),
                 "expected_direct_loss": lambda a: getattr(a, "expected_direct_loss_ewma", np.nan),
                 "realized_direct_loss": lambda a: getattr(a, "realized_direct_loss_ewma", np.nan),
                 "local_observed_loss": lambda a: getattr(a, "local_observed_loss_ewma", np.nan),
                 "supplier_disruption": lambda a: getattr(a, "supplier_disruption_ewma", np.nan),
-                "adaptation_reward": lambda a: getattr(a, "last_adaptation_reward", np.nan),
+                "raw_supplier_disruption": lambda a: getattr(a, "raw_supplier_disruption_this_step", np.nan),
+                "expected_operating_shortfall": lambda a: getattr(a, "expected_operating_shortfall_ewma", np.nan),
+                "local_observed_shortfall": lambda a: getattr(a, "local_observed_shortfall_ewma", np.nan),
+                "continuity_target": lambda a: getattr(a, "last_continuity_target", np.nan),
+                "perceived_continuity_risk": lambda a: getattr(a, "last_perceived_continuity_risk", np.nan),
+                "adaptation_target": lambda a: getattr(a, "last_adaptation_target", np.nan),
+                "perceived_hazard_risk": lambda a: getattr(a, "last_perceived_hazard_risk", np.nan),
                 "adaptation_action": lambda a: getattr(a, "last_adaptation_action", ""),
+                "continuity_gap_coverage": lambda a: getattr(a, "continuity_gap_coverage_this_step", np.nan),
+                "continuity_input_coverage": lambda a: getattr(a, "continuity_input_coverage_this_step", np.nan),
+                "backup_purchases": lambda a: getattr(a, "backup_purchases_this_step", np.nan),
                 "counterfactual_direct_loss": lambda a: getattr(a, "counterfactual_direct_loss_this_step", np.nan),
                 "realized_direct_loss_value": lambda a: getattr(a, "realized_direct_loss_this_step", np.nan),
                 "adaptation_updates": lambda a: getattr(a, "adaptation_update_count", np.nan),
@@ -455,6 +477,67 @@ class EconomyModel(Model):
             return 0.0
         return weighted_loss / total_weight
 
+    def get_local_observed_shortfall_fraction(self, focal_firm: FirmAgent) -> float:
+        """Return the weighted mean nearby hazard-induced operating shortfall."""
+
+        radius = max(0, int(self.adaptation_observation_radius))
+        if radius <= 0:
+            return 0.0
+
+        weighted_shortfall = 0.0
+        total_weight = 0.0
+        x0, y0 = focal_firm.pos
+        for other in self._firms:
+            if other is focal_firm:
+                continue
+            dist = abs(x0 - other.pos[0]) + abs(y0 - other.pos[1])
+            if dist > radius:
+                continue
+            shortfall = getattr(other, "hazard_operating_shortfall_this_step", 0.0)
+            if shortfall <= 0:
+                continue
+            weight = 1.0 / (1.0 + dist)
+            weighted_shortfall += weight * shortfall
+            total_weight += weight
+
+        if total_weight <= 0:
+            return 0.0
+        return weighted_shortfall / total_weight
+
+    def find_backup_suppliers(
+        self,
+        buyer: FirmAgent,
+        max_count: int,
+    ) -> List[FirmAgent]:
+        """Return non-primary firms in the buyer's supplier sectors with inventory.
+
+        Backup suppliers are firms in the same sector(s) as the buyer's primary
+        suppliers, excluding the buyer itself and its existing ``connected_firms``.
+        Results are shuffled for fairness then sorted by price (cheapest first).
+        """
+        if max_count <= 0:
+            return []
+
+        supplier_sectors: set[str] = {s.sector for s in buyer.connected_firms}
+        if not supplier_sectors:
+            return []
+
+        primary_ids = {s.unique_id for s in buyer.connected_firms}
+        candidates: List[FirmAgent] = []
+        for sector in supplier_sectors:
+            for firm in self._firms_by_sector.get(sector, []):
+                if firm is buyer or firm.unique_id in primary_ids:
+                    continue
+                if firm.inventory_output > 0:
+                    candidates.append(firm)
+
+        if not candidates:
+            return []
+
+        self.random.shuffle(candidates)
+        candidates.sort(key=lambda f: f.price)
+        return candidates[:max_count]
+
     @staticmethod
     def _safe_share(numerator: float, denominator: float) -> float:
         if denominator <= 0:
@@ -524,7 +607,7 @@ class EconomyModel(Model):
         )
 
     def _advance_adaptation_learning(self) -> None:
-        """Reset period adaptation state, update firm-level rewards, and choose new actions."""
+        """Reset adaptation accounting and periodically refresh firm resilience targets."""
 
         self.adaptation_updates_this_step = 0
 
@@ -534,23 +617,15 @@ class EconomyModel(Model):
         if not self.firm_adaptation_enabled:
             return
 
-        completed_firms: List[FirmAgent] = []
-
-        for firm in self._firms:
-            if not firm.has_completed_adaptation_window():
-                continue
-            completed_firms.append(firm)
-            if firm._update_adaptation_policy_from_window():
-                self.adaptation_updates_this_step += 1
-
-        for firm in completed_firms:
-            firm._reset_adaptation_window()
-
         for firm in self._firms:
             if not firm.adaptation_enabled:
                 continue
-            if not firm._adaptation_policy_initialized or firm in completed_firms:
-                firm._select_adaptation_action()
+            interval = max(1, int(firm.decision_interval))
+            if (self.current_step - 1) % interval != 0:
+                continue
+            firm._select_adaptation_action()
+            if firm.pending_adaptation_increment > 0:
+                self.adaptation_updates_this_step += 1
 
     def _sector_priority(self, firm: FirmAgent) -> tuple[int, float]:
         """Sort firms by broad supply-chain tier with random tie breaks."""

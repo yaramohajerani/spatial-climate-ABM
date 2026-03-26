@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from math import log, sqrt
 from typing import Tuple, List, TYPE_CHECKING
 
 import numpy as np
@@ -320,9 +319,9 @@ class FirmAgent(Agent):
     WORKING_CAPITAL_CREDIT_REVENUE_SHARE: float = 1.0
     LABOR_SHARE: float = 0.5  # fixed labour share of revenue in wage targeting
     NO_WORKER_WAGE_PREMIUM: float = 1.02
-    ACTION_LABELS: tuple[str, str, str] = ("maintain", "small", "large")
-    LOSS_STATE_THRESHOLDS: tuple[float, float] = (0.05, 0.20)
-    RESILIENCE_STATE_THRESHOLDS: tuple[float, float] = (0.33, 0.66)
+    ADAPTATION_EXPECTED_WEIGHT: float = 0.5
+    ADAPTATION_LOCAL_WEIGHT: float = 0.3
+    ADAPTATION_SUPPLIER_WEIGHT: float = 0.2
 
     def __init__(
         self,
@@ -402,6 +401,11 @@ class FirmAgent(Agent):
         self.raw_direct_loss_fraction_this_step: float = 0.0
         self.adapted_direct_loss_fraction_this_step: float = 0.0
         self.supplier_disruption_this_step: float = 0.0
+        self.raw_supplier_disruption_this_step: float = 0.0
+        self.hazard_operating_shortfall_this_step: float = 0.0
+        self.continuity_gap_coverage_this_step: float = 0.0
+        self.continuity_input_coverage_this_step: float = 0.0
+        self.backup_purchases_this_step: float = 0.0
 
         # Capital coefficient parameters
         self.original_capital_coeff: float = self.CAPITAL_COEFF
@@ -412,6 +416,7 @@ class FirmAgent(Agent):
         self.target_labor: int = 0
         self.target_input_units: float = 0.0
         self.expected_sales: float = 0.0
+        self.demand_driven_output: float = 0.0
         self.base_inventory_target: float = 1.0
         self.base_capital_target: float = self.capital_stock
         self.target_capital_stock: float = self.capital_stock
@@ -423,37 +428,39 @@ class FirmAgent(Agent):
         adaptation_config = getattr(model, "adaptation_config", {})
         self.adaptation_enabled: bool = getattr(model, "firm_adaptation_enabled", True)
         self.decision_interval: int = int(adaptation_config.get("decision_interval", 4))
-        self.reward_window: int = int(adaptation_config.get("reward_window", self.decision_interval))
         self.ewma_alpha: float = float(adaptation_config.get("ewma_alpha", 0.2))
-        self.ucb_c: float = float(adaptation_config.get("ucb_c", 1.0))
-        self.resilience_decay: float = float(adaptation_config.get("resilience_decay", 0.01))
+        self.resilience_decay: float = float(
+            adaptation_config.get(
+                "continuity_decay",
+                adaptation_config.get("resilience_decay", 0.01),
+            )
+        )
         self.maintenance_cost_rate: float = float(adaptation_config.get("maintenance_cost_rate", 0.005))
-        self.loss_reduction_max: float = float(adaptation_config.get("loss_reduction_max", 0.6))
-        action_increments = list(adaptation_config.get("action_increments", [0.0, 0.05, 0.10]))
-        if len(action_increments) < 3:
-            action_increments = [0.0, 0.05, 0.10]
-        self.action_increments: list[float] = [float(x) for x in action_increments[:3]]
-        self.action_increments[0] = 0.0
+        sensitivity_min = float(adaptation_config.get("adaptation_sensitivity_min", 2.0))
+        sensitivity_max = float(adaptation_config.get("adaptation_sensitivity_max", 4.0))
+        if sensitivity_max < sensitivity_min:
+            sensitivity_max = sensitivity_min
+        self.adaptation_sensitivity: float = float(
+            self.random.uniform(sensitivity_min, sensitivity_max)
+        )
+        self.max_adaptation_increment: float = float(
+            adaptation_config.get("max_adaptation_increment", 0.25)
+        )
 
-        self.resilience_capital: float = 0.0
+        self.continuity_capital: float = 0.0
         self.expected_direct_loss_ewma: float = 0.0
         self.realized_direct_loss_ewma: float = 0.0
         self.local_observed_loss_ewma: float = 0.0
         self.supplier_disruption_ewma: float = 0.0
-        self.last_adaptation_action: str = self.ACTION_LABELS[0]
-        self.last_adaptation_reward: float = np.nan
-        self.current_action_index: int = 0
-        self.current_policy_context: tuple[int, int, int, int] | None = None
-        self.ucb_action_counts: dict[tuple[int, int, int, int], list[int]] = {}
-        self.ucb_action_values: dict[tuple[int, int, int, int], list[float]] = {}
+        self.expected_operating_shortfall_ewma: float = 0.0
+        self.local_observed_shortfall_ewma: float = 0.0
+        self.last_adaptation_action: str = "dormant"
+        self.last_adaptation_target: float = 0.0
+        self.last_perceived_hazard_risk: float = 0.0
+        self.last_continuity_target: float = 0.0
+        self.last_perceived_continuity_risk: float = 0.0
         self.pending_adaptation_increment: float = 0.0
-        self.steps_in_current_window: int = 0
-        self.window_raw_direct_loss: float = 0.0
-        self.window_adapted_direct_loss: float = 0.0
-        self.window_adaptation_cost: float = 0.0
-        self.window_peak_raw_loss_signal: float = 0.0
         self.adaptation_update_count: int = 0
-        self._adaptation_policy_initialized: bool = False
 
         # Exposure-state diagnostics for cascading-risk analysis.
         self.ever_directly_hit: bool = False
@@ -474,120 +481,68 @@ class FirmAgent(Agent):
         self.raw_direct_loss_fraction_this_step = 0.0
         self.adapted_direct_loss_fraction_this_step = 0.0
         self.supplier_disruption_this_step = 0.0
+        self.raw_supplier_disruption_this_step = 0.0
+        self.hazard_operating_shortfall_this_step = 0.0
+        self.continuity_gap_coverage_this_step = 0.0
+        self.continuity_input_coverage_this_step = 0.0
+        self.backup_purchases_this_step = 0.0
 
         if not self.adaptation_enabled:
             return
 
         self.pending_adaptation_increment = 0.0
-        self.resilience_capital = max(0.0, self.resilience_capital * (1.0 - self.resilience_decay))
+        self.continuity_capital = max(0.0, self.continuity_capital * (1.0 - self.resilience_decay))
 
-    def has_completed_adaptation_window(self) -> bool:
-        return bool(self.adaptation_enabled and self.steps_in_current_window >= self.reward_window)
+    @property
+    def resilience_capital(self) -> float:
+        """Backward-compatible alias for the continuity stock."""
+        return self.continuity_capital
 
-    def _update_adaptation_policy_from_window(self) -> bool:
-        """Update this firm's contextual bandit from its completed reward window."""
-        if self.current_policy_context is None:
-            self.last_adaptation_reward = np.nan
-            return False
-        if self.window_raw_direct_loss <= 0:
-            self.last_adaptation_reward = np.nan
-            return False
-        if self.window_peak_raw_loss_signal <= self.LOSS_STATE_THRESHOLDS[0]:
-            self.last_adaptation_reward = np.nan
-            return False
+    @resilience_capital.setter
+    def resilience_capital(self, value: float) -> None:
+        self.continuity_capital = float(value)
 
-        reward_numerator = (
-            (self.window_raw_direct_loss - self.window_adapted_direct_loss)
-            - self.window_adaptation_cost
-        )
-        reward = reward_numerator / (1e-6 + self.window_raw_direct_loss)
-        if not np.isfinite(reward):
-            self.last_adaptation_reward = np.nan
-            return False
+    def _perceived_hazard_risk(self) -> float:
+        """Perceived continuity risk from own and nearby hazard-induced output gaps."""
+        risk = max(self.expected_operating_shortfall_ewma, self.local_observed_shortfall_ewma)
+        return float(min(1.0, max(0.0, risk)))
 
-        context = self.current_policy_context
-        counts = self.ucb_action_counts.setdefault(context, [0] * len(self.action_increments))
-        values = self.ucb_action_values.setdefault(context, [0.0] * len(self.action_increments))
-        counts[self.current_action_index] += 1
-        count = counts[self.current_action_index]
-        previous = values[self.current_action_index]
-        values[self.current_action_index] = previous + (reward - previous) / count
-        self.last_adaptation_reward = float(reward)
-        self.adaptation_update_count += 1
-        return True
+    def _target_resilience_from_risk(self, perceived_risk: float) -> float:
+        """Map quarterly continuity risk into a continuity-capital target.
 
-    def _reset_adaptation_window(self) -> None:
-        self.steps_in_current_window = 0
-        self.window_raw_direct_loss = 0.0
-        self.window_adapted_direct_loss = 0.0
-        self.window_adaptation_cost = 0.0
-        self.window_peak_raw_loss_signal = 0.0
-
-    def _adaptation_should_activate(self) -> bool:
-        return bool(
-            self.expected_direct_loss_ewma > self.LOSS_STATE_THRESHOLDS[0]
-            or self.realized_direct_loss_ewma > self.LOSS_STATE_THRESHOLDS[0]
-            or self.local_observed_loss_ewma > self.LOSS_STATE_THRESHOLDS[0]
-            or self.supplier_disruption_ewma > self.LOSS_STATE_THRESHOLDS[0]
-            or self.resilience_capital > self.LOSS_STATE_THRESHOLDS[0]
-        )
-
-    def _bin_metric(self, value: float, thresholds: tuple[float, float]) -> int:
-        if value <= thresholds[0]:
-            return 0
-        if value <= thresholds[1]:
-            return 1
-        return 2
-
-    def _build_adaptation_context(self) -> tuple[int, int, int, int]:
-        return (
-            self._bin_metric(self.expected_direct_loss_ewma, self.LOSS_STATE_THRESHOLDS),
-            self._bin_metric(self.local_observed_loss_ewma, self.LOSS_STATE_THRESHOLDS),
-            self._bin_metric(self.supplier_disruption_ewma, self.LOSS_STATE_THRESHOLDS),
-            self._bin_metric(self.resilience_capital, self.RESILIENCE_STATE_THRESHOLDS),
-        )
+        Hazard-induced operating shortfall is measured per simulation step
+        (quarterly in the current experiments). Firms react to the recurring
+        annual burden implied by those shortfalls rather than to one quarter in
+        isolation, so we annualize the perceived signal before applying the
+        firm-specific continuity sensitivity.
+        """
+        steps_per_year = max(1, int(getattr(self.model, "steps_per_year", 4)))
+        annualized_risk = min(1.0, max(0.0, perceived_risk) * steps_per_year)
+        return float(min(1.0, self.adaptation_sensitivity * annualized_risk))
 
     def _select_adaptation_action(self) -> None:
-        self._adaptation_policy_initialized = True
-        if not self._adaptation_should_activate():
-            self.current_policy_context = None
-            self.current_action_index = 0
-            self.last_adaptation_action = self.ACTION_LABELS[0]
-            return
+        """Choose a continuity-capital target from adaptive hazard expectations."""
+        perceived_risk = self._perceived_hazard_risk()
+        self.last_perceived_hazard_risk = perceived_risk
+        self.last_perceived_continuity_risk = perceived_risk
 
-        context = self._build_adaptation_context()
-        action_index = self._choose_ucb_action(context)
-        self.current_policy_context = context
-        self.current_action_index = action_index
-        self.last_adaptation_action = self.ACTION_LABELS[action_index]
-        self._queue_adaptation_investment(action_index)
+        target = self._target_resilience_from_risk(perceived_risk)
+        self.last_adaptation_target = target
+        self.last_continuity_target = target
+        gap = max(0.0, target - self.continuity_capital)
+        increment = min(gap, self.max_adaptation_increment)
+        self.pending_adaptation_increment = increment
 
-    def _choose_ucb_action(self, context: tuple[int, int, int, int]) -> int:
-        counts = self.ucb_action_counts.setdefault(
-            context,
-            [0] * len(self.action_increments),
-        )
-        values = self.ucb_action_values.setdefault(
-            context,
-            [0.0] * len(self.action_increments),
-        )
-
-        for idx, count in enumerate(counts):
-            if count == 0:
-                return idx
-
-        total_pulls = max(1, sum(counts))
-        scores = [
-            values[idx] + self.ucb_c * sqrt(log(total_pulls) / counts[idx])
-            for idx in range(len(counts))
-        ]
-        return int(np.argmax(scores))
+        if perceived_risk <= 1e-9 and self.continuity_capital <= 1e-9:
+            self.last_adaptation_action = "dormant"
+        elif increment > 1e-9:
+            self.last_adaptation_action = "adjust"
+            self.adaptation_update_count += 1
+        else:
+            self.last_adaptation_action = "hold"
 
     def _adaptation_scale(self) -> float:
         return max(1.0, self.base_capital_target)
-
-    def _queue_adaptation_investment(self, action_index: int) -> None:
-        self.pending_adaptation_increment = max(0.0, self.action_increments[action_index])
 
     def _fund_adaptation_after_operations(
         self,
@@ -602,7 +557,7 @@ class FirmAgent(Agent):
         only affects resilience capital going into the next period.
         """
         scale = self._adaptation_scale()
-        desired_spending = self.maintenance_cost_rate * self.resilience_capital * self._adaptation_scale()
+        desired_spending = self.maintenance_cost_rate * self.continuity_capital * self._adaptation_scale()
         maintenance_spending = min(desired_spending, available_cash, investable_profit)
         if maintenance_spending > 0:
             self.money -= maintenance_spending
@@ -620,7 +575,7 @@ class FirmAgent(Agent):
             if investment_spending > 0:
                 realized_increment = investment_spending / scale
                 self.money -= investment_spending
-                self.resilience_capital = min(1.0, self.resilience_capital + realized_increment)
+                self.continuity_capital = min(1.0, self.continuity_capital + realized_increment)
                 self.adaptation_spending_this_step += investment_spending
                 self.adaptation_investment_this_step += investment_spending
                 self.model.distribute_household_income(investment_spending, income_kind="adaptation")
@@ -716,7 +671,7 @@ class FirmAgent(Agent):
             )
 
     def _update_post_step_state(self) -> None:
-        """Update direct-loss state, adaptation windows, and demand expectations."""
+        """Update direct-loss diagnostics, continuity beliefs, and demand expectations."""
         downtime_value = max(
             self.expected_sales,
             self.sales_last_step,
@@ -732,12 +687,20 @@ class FirmAgent(Agent):
         observed_raw_loss = max(self.raw_direct_loss_fraction_this_step, raw_recovery_drag)
         observed_adapted_loss = max(self.adapted_direct_loss_fraction_this_step, adapted_recovery_drag)
         local_observed_loss = self.model.get_local_observed_loss_fraction(self)
-        self.window_peak_raw_loss_signal = max(self.window_peak_raw_loss_signal, observed_raw_loss)
+        local_observed_shortfall = self.model.get_local_observed_shortfall_fraction(self)
         self.expected_direct_loss_ewma = (1.0 - alpha) * self.expected_direct_loss_ewma + alpha * observed_raw_loss
         self.realized_direct_loss_ewma = (1.0 - alpha) * self.realized_direct_loss_ewma + alpha * observed_adapted_loss
         self.local_observed_loss_ewma = (
             (1.0 - alpha) * self.local_observed_loss_ewma
             + alpha * local_observed_loss
+        )
+        self.expected_operating_shortfall_ewma = (
+            (1.0 - alpha) * self.expected_operating_shortfall_ewma
+            + alpha * self.hazard_operating_shortfall_this_step
+        )
+        self.local_observed_shortfall_ewma = (
+            (1.0 - alpha) * self.local_observed_shortfall_ewma
+            + alpha * local_observed_shortfall
         )
         self.supplier_disruption_ewma = (
             (1.0 - alpha) * self.supplier_disruption_ewma
@@ -745,10 +708,6 @@ class FirmAgent(Agent):
         )
         if self.supplier_disruption_this_step > 0 and not self.ever_directly_hit:
             self.ever_indirectly_disrupted_before_direct_hit = True
-        self.window_raw_direct_loss += self.counterfactual_direct_loss_this_step
-        self.window_adapted_direct_loss += self.realized_direct_loss_this_step
-        self.window_adaptation_cost += self.adaptation_spending_this_step
-        self.steps_in_current_window += 1
 
         self.expected_sales = 0.7 * self.expected_sales + 0.3 * self.sales_this_step
         self.sales_last_step = self.sales_this_step
@@ -768,9 +727,13 @@ class FirmAgent(Agent):
         return max(1.0, self.capital_stock + inventory_value + input_value + downtime_value)
 
     def get_adapted_loss_fraction(self, raw_loss_fraction: float) -> float:
-        attenuation = 1.0 - self.loss_reduction_max * self.resilience_capital
-        attenuation = min(1.0, max(0.0, attenuation))
-        return raw_loss_fraction * attenuation
+        """Return the raw loss fraction (no direct damage attenuation).
+
+        Adaptation operates through backup-supplier search, not through
+        phantom damage reduction.  This pass-through preserves the API so
+        that callers (model.py hazard application, tests) do not break.
+        """
+        return raw_loss_fraction
 
     def record_direct_losses(
         self,
@@ -786,27 +749,21 @@ class FirmAgent(Agent):
             self.ever_directly_hit = True
 
     def copy_adaptation_state_from(self, parent: "FirmAgent") -> None:
-        self.resilience_capital = parent.resilience_capital
+        self.continuity_capital = parent.continuity_capital
         self.expected_direct_loss_ewma = parent.expected_direct_loss_ewma
         self.realized_direct_loss_ewma = parent.realized_direct_loss_ewma
         self.local_observed_loss_ewma = parent.local_observed_loss_ewma
         self.supplier_disruption_ewma = parent.supplier_disruption_ewma
-        self.current_policy_context = None
-        self.current_action_index = 0
-        self.last_adaptation_action = self.ACTION_LABELS[0]
-        self.last_adaptation_reward = np.nan
-        self.ucb_action_counts = {
-            context: counts.copy()
-            for context, counts in parent.ucb_action_counts.items()
-        }
-        self.ucb_action_values = {
-            context: values.copy()
-            for context, values in parent.ucb_action_values.items()
-        }
+        self.expected_operating_shortfall_ewma = parent.expected_operating_shortfall_ewma
+        self.local_observed_shortfall_ewma = parent.local_observed_shortfall_ewma
+        self.adaptation_sensitivity = parent.adaptation_sensitivity
+        self.last_adaptation_action = "inherited"
+        self.last_adaptation_target = parent.last_adaptation_target
+        self.last_perceived_hazard_risk = parent.last_perceived_hazard_risk
+        self.last_continuity_target = parent.last_continuity_target
+        self.last_perceived_continuity_risk = parent.last_perceived_continuity_risk
         self.pending_adaptation_increment = 0.0
-        self.adaptation_update_count = parent.adaptation_update_count
-        self._adaptation_policy_initialized = False
-        self._reset_adaptation_window()
+        self.adaptation_update_count = 0
 
     # ---------------- Interaction helpers ----------------------------- #
     def hire_labor(self, household: HouseholdAgent, wage: float) -> bool:
@@ -888,7 +845,7 @@ class FirmAgent(Agent):
         buyer.input_spend_this_step += cost
 
         # Register under this supplier's id inside buyer
-        buyer.inventory_inputs[self.unique_id] += qty
+        buyer.inventory_inputs[self.unique_id] = buyer.inventory_inputs.get(self.unique_id, 0.0) + qty
 
         # Track sales for demand-based pricing
         self.sales_this_step += qty
@@ -913,6 +870,7 @@ class FirmAgent(Agent):
         self.required_working_capital = 0.0
         self.working_capital_credit_limit = 0.0
         self.working_capital_credit_used_this_step = 0.0
+        self.demand_driven_output = 0.0
 
         self.capital_coeff = self.original_capital_coeff
 
@@ -920,6 +878,7 @@ class FirmAgent(Agent):
 
         inventory_target = max(1.0, self.expected_sales * self.INVENTORY_BUFFER_RATIO)
         demand_driven_output = max(0.0, self.expected_sales + inventory_target - self.inventory_output)
+        self.demand_driven_output = demand_driven_output
         desired_output = demand_driven_output
 
         avg_input_price = 0.0
@@ -1000,10 +959,11 @@ class FirmAgent(Agent):
         wage_floor = getattr(self.model, 'initial_mean_wage', 1.0) * 0.4
         self.wage_offer = float(max(wage_floor, self.wage_offer))
 
-        # Liquidity-dependent recovery with a resilience boost.
+        # Liquidity-dependent recovery.  Adaptation operates through backup
+        # supplier search, not through accelerated physical recovery.
         liquidity_ratio = min(1.0, self.money / 200.0)
         base_recovery_rate = 0.2 + 0.3 * liquidity_ratio
-        actual_recovery_rate = min(0.7, base_recovery_rate + 0.1 * self.resilience_capital)
+        actual_recovery_rate = base_recovery_rate
         self.damage_factor += (1.0 - self.damage_factor) * actual_recovery_rate
         self.damage_factor = min(1.0, max(0.0, self.damage_factor))
         self.counterfactual_damage_factor += (1.0 - self.counterfactual_damage_factor) * base_recovery_rate
@@ -1086,18 +1046,43 @@ class FirmAgent(Agent):
             or supplier.adapted_direct_loss_fraction_this_step > 0
             for supplier in self.connected_firms
         )
-        self.supplier_disruption_this_step = input_shortfall_ratio if hazard_affected_suppliers else 0.0
+        raw_supplier_disruption = input_shortfall_ratio if hazard_affected_suppliers else 0.0
+        self.raw_supplier_disruption_this_step = raw_supplier_disruption
+        self.supplier_disruption_this_step = raw_supplier_disruption
+
+        # --- Backup supplier search (continuity-capital mechanism) ---
+        # Instead of fabricating phantom inputs, firms with continuity capital
+        # search for real backup suppliers with actual inventory and buy at
+        # market prices using actual cash.  This preserves macro closure.
+        backup_purchases = 0.0
+        if (
+            hazard_affected_suppliers
+            and remaining_inputs_needed > 1e-9
+            and self.continuity_capital > 0
+            and self._operating_cash_capacity() > 1e-9
+        ):
+            max_backup_count = getattr(self.model, "max_backup_suppliers", 5)
+            n_backup = max(1, int(self.continuity_capital * max_backup_count))
+            backup_suppliers = self.model.find_backup_suppliers(self, n_backup)
+            for supplier in backup_suppliers:
+                if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
+                    break
+                bought = supplier.sell_goods_to_firm(self, remaining_inputs_needed)
+                if bought > 0:
+                    remaining_inputs_needed -= bought
+                    backup_purchases += bought
+        self.backup_purchases_this_step = backup_purchases
+        self.continuity_input_coverage_this_step = backup_purchases  # backward compat
 
         # ----------------------------------------------------------------
         # 2. Compute possible output: demand target capped by technical limits
         # ----------------------------------------------------------------
         if self.connected_firms and self.INPUT_COEFF > 0:
-            total_input_units = sum(
-                self.inventory_inputs.get(supplier.unique_id, 0.0)
-                for supplier in self.connected_firms
-            )
+            # sum(values()) captures both primary and backup-purchased inputs
+            total_input_units = sum(self.inventory_inputs.values())
             max_output_from_inputs = total_input_units / self.INPUT_COEFF
         else:
+            total_input_units = 0.0
             max_output_from_inputs = float("inf")
 
         max_output_from_capital = self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf")
@@ -1111,12 +1096,39 @@ class FirmAgent(Agent):
         technical_output_limit = min(actual_limits.values())
         possible_output = min(self.target_output, technical_output_limit)
 
+        # Update supplier disruption to reflect actual residual shortfall
+        # after backup search.
+        if desired_input_units > 1e-9:
+            self.supplier_disruption_this_step = (
+                min(1.0, max(0.0, remaining_inputs_needed / desired_input_units))
+                if hazard_affected_suppliers
+                else 0.0
+            )
+        else:
+            self.supplier_disruption_this_step = 0.0
+        self.continuity_gap_coverage_this_step = backup_purchases
+
+        no_hazard_output_ceiling = min(self.demand_driven_output, max_output_from_labor)
+        hazard_related_gap = (
+            self.raw_direct_loss_fraction_this_step > 1e-9
+            or self.adapted_direct_loss_fraction_this_step > 1e-9
+            or raw_supplier_disruption > 1e-9
+            or self.damage_factor < 0.999999
+        )
+
         if self.target_output + 1e-9 < technical_output_limit:
             self.limiting_factor = "demand"
         else:
             self.limiting_factor = min(actual_limits, key=actual_limits.get)
 
         self.production = possible_output
+        if no_hazard_output_ceiling > 1e-9 and hazard_related_gap:
+            self.hazard_operating_shortfall_this_step = min(
+                1.0,
+                max(0.0, no_hazard_output_ceiling - possible_output) / no_hazard_output_ceiling,
+            )
+        else:
+            self.hazard_operating_shortfall_this_step = 0.0
         if possible_output > 0:
             # Damage lowers effective output per unit input, so input use scales with
             # the pre-damage quantity required to achieve the realised output.
@@ -1130,6 +1142,18 @@ class FirmAgent(Agent):
                     use_qty = min(available, remaining_to_consume)
                     self.inventory_inputs[supp_id] -= use_qty
                     remaining_to_consume -= use_qty
+
+            # Consume backup-sourced inputs (stored under non-primary supplier IDs)
+            if remaining_to_consume > 1e-9:
+                primary_ids = {s.unique_id for s in self.connected_firms}
+                for supp_id in list(self.inventory_inputs.keys()):
+                    if supp_id in primary_ids or remaining_to_consume <= 1e-9:
+                        continue
+                    available = self.inventory_inputs[supp_id]
+                    if available > 0:
+                        use_qty = min(available, remaining_to_consume)
+                        self.inventory_inputs[supp_id] -= use_qty
+                        remaining_to_consume -= use_qty
 
             # Add production to inventory
             self.inventory_output += possible_output

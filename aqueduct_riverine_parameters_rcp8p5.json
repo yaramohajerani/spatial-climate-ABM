@@ -33,14 +33,14 @@
   "adaptation": {
     "enabled": true,
     "decision_interval": 4,
-    "reward_window": 4,
     "ewma_alpha": 0.2,
-    "ucb_c": 1.0,
     "observation_radius": 4,
-    "action_increments": [0.0, 0.05, 0.1],
+    "adaptation_sensitivity_min": 2.0,
+    "adaptation_sensitivity_max": 4.0,
+    "max_adaptation_increment": 0.25,
     "resilience_decay": 0.01,
     "maintenance_cost_rate": 0.005,
-    "loss_reduction_max": 0.6,
+    "max_backup_suppliers": 5,
     "min_money_survival": 1.0,
     "replacement_frequency": 10
   },

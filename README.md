@@ -34,10 +34,10 @@ The model simulates economic agents (households and firms) on a spatial grid whi
 - **Agent Types**: Households (labor suppliers) and firms (producers with Leontief technology)
 - **Economic Markets**: Endogenous wages, dynamic pricing, labor mobility, demand-driven production, and supply chain networks
 - **Climate Integration**: Lazy hazard sampling from full-resolution GeoTIFF rasters with JRC region-specific damage curves
-- **Adaptive Behaviors**: Optional household relocation plus hazard-conditional firm resilience investment with local observation and firm-level learning
+- **Adaptive Behaviors**: Optional household relocation plus hazard-conditional firm continuity investment with local observation and adaptive expectations
 - **Liquidity-Dependent Recovery**: Post-disaster recovery speed scales with firm liquidity (firms with more capital can afford faster repairs)
 - **Minimum Wage Floor**: Wage offers bounded below at 40% of initial wage, a proxy consistent with ILO (2016) observations on minimum wages in high-income economies
-- **Firm Adaptation System**: Hazard-conditional resilience capital with neighborhood hazard observation and a firm-level contextual bandit over discrete adaptation investments
+- **Firm Adaptation System**: Hazard-conditional continuity capital with neighborhood observation of hazard-induced operating shortfalls, adaptive expectations, and proportional target adjustment
 - **Multiple Sectors**: Commodity, manufacturing, and retail sectors with sector-specific production coefficients and configurable household final-demand ratios over final-good sectors
 - **Circular-Flow Closure**: Households receive wages plus firm payouts, firms can use bounded sales-backed working-capital credit for current operations, and total money is tracked explicitly so the household-firm system remains stock-flow closed in no-entry/no-exit runs
 
@@ -48,7 +48,7 @@ The model simulates economic agents (households and firms) on a spatial grid whi
 - **No preprocessing required**: Works directly with full-resolution Aqueduct flood rasters (~90MB each)
 - **Sector-local labor market**: Households search nearby same-sector firms first, then fall back to the broader market with a distance penalty
 - **Final-goods market discipline**: Households buy only from final-good sectors; upstream sectors sell to firms rather than directly to households
-- **Adaptation System**: Hazard-conditional resilience learning with end-of-period adaptation funding, avoided-loss rewards, and stock-flow-consistent firm reorganization
+- **Adaptation System**: Hazard-conditional continuity targeting with end-of-period funding and stock-flow-consistent firm reorganization
 - **Principled Operating Finance**: Payroll and intermediate-input purchases can use a bounded revenue-backed overdraft, while dividends, expansion, and adaptation still require residual cash after operations
 
 ## Core Architecture
@@ -71,7 +71,7 @@ The model uses a `mesa.space.MultiGrid` with configurable resolution (default 1�
   - Commodity: labor=0.6, input=0.0, capital=0.7 (capital-intensive extraction, no upstream inputs)
   - Manufacturing: labor=0.3, input=0.6, capital=0.6 (automated, capital & input intensive)
   - Retail: labor=0.5, input=0.4, capital=0.2 (moderate labor, low capital needs)
-- **Adaptation System**: A resilience-capital stock, firm-level hazard beliefs, neighborhood loss observation, firm-level UCB policy learning, end-of-period adaptation funding from residual cash, and bankruptcy reorganization with parent-state inheritance
+- **Adaptation System**: A continuity-capital stock, firm-level adaptive expectations over hazard-induced operating shortfall, neighborhood shortfall observation, a proportional target-adjustment rule, end-of-period adaptation funding from residual cash, and bankruptcy reorganization with parent-state inheritance
 - **Wage Setting**: Revenue-based wage targeting — wages track revenue per worker × a fixed labor share of 0.5, with smooth adjustment (10% toward target per step); firms with no workers use a modest 2% premium over the market mean wage as an entry fallback; minimum wage floor at 40% of initial wage
 - **Dynamic Pricing**: Markup pricing — price = unit cost × (1 + markup), where markup is set by sell-through rate; prices track costs bidirectionally with no cost-floor ratchet
 - **Damage Recovery**: Liquidity-dependent recovery rate (20%–50% per step) so stressed firms recover more slowly
@@ -106,14 +106,14 @@ Damage is calculated using JRC Global Flood Depth-Damage Functions:
 - **Interpolation**: Linear interpolation between depth-damage points
 
 ### Firm Adaptation System
-- **Adaptation Stock**: Each firm carries a `resilience_capital` stock in `[0, 1]` that attenuates direct hazard losses and speeds recovery
-- **Hazard Context**: Firms maintain EWMAs of expected direct loss, realized direct loss, nearby observed direct loss, supplier disruption, and current resilience stock
-- **Neighborhood Observation**: Firms observe flood-related losses among nearby firms within a configurable radius, allowing anticipatory adaptation before own exposure
-- **Action Set**: Every 4 steps, firms choose among `maintain`, `small`, and `large` resilience investments
-- **Funding Timing**: Adaptation actions are chosen before the hazard is sampled, but maintenance and new resilience spending are funded only at period close from residual post-operations cash; newly installed resilience capital affects the next period rather than the current one
-- **Firm-Level Policy Learning**: Each firm maintains its own tabular contextual-UCB rule over the discretized hazard state; nearby observations affect the state, but action values are updated from the firm's own informative hazard windows
-- **Reward Signal**: Completed adaptation windows are updated with avoided direct loss minus adaptation cost, normalized by the firm's own direct loss over the window
-- **Population Dynamics**: Bankrupt firms are reorganized in place, preserving stock-flow closure while inheriting adaptation state and firm-level bandit memory from successful same-sector parents
+- **Adaptation Stock**: Each firm carries a `continuity_capital` stock in `[0, 1]` that covers a fraction of residual climate-disrupted inputs while also attenuating direct flood damage and speeding recovery
+- **Hazard Context**: Firms maintain EWMAs of expected operating shortfall, nearby observed operating shortfall, direct loss diagnostics, and supplier disruption
+- **Neighborhood Observation**: Firms observe hazard-induced operating shortfalls among nearby firms within a configurable radius, allowing anticipatory continuity investment before own exposure
+- **Funding Timing**: Continuity targets are evaluated before the hazard is sampled, but maintenance and new continuity spending are funded only at period close from residual post-operations cash; newly installed continuity capital affects the next period rather than the current one
+- **Perceived Continuity Risk**: Firms use the stronger of own expected operating shortfall and nearby observed shortfall as a parsimonious continuity-risk signal
+- **Target Rule**: Every `decision_interval` steps, each firm annualizes that per-step continuity risk, sets a target `C* = min(1, sensitivity_i × annualized_risk_i)`, and invests up to a capped increment toward that target
+- **Operating Effect**: During production, continuity capital covers a fraction of residual climate-disrupted input shortages after normal procurement. Production is then computed from the usual Leontief bottlenecks using those effective inputs, so continuity acts at the source of scarcity rather than adding output ex post
+- **Population Dynamics**: Bankrupt firms are reorganized in place, preserving stock-flow closure while inheriting continuity state and firm-specific continuity sensitivity from successful same-sector parents
 - **Systemic Cascade Diagnostics**: The model now tracks which firms have ever been directly hit and reports how much supplier disruption, output, and capital are borne by firms that remain never directly hit, making it easier to quantify indirect network transmission for paper figures
 
 ## Usage
@@ -148,7 +148,7 @@ Multi-seed runs execute the requested seeds sequentially in one invocation and w
 - `simulation_*_agents.csv`: optional combined agent ensemble when `--save-agent-ensemble` is enabled
 - `simulation_*_ensemble.png`: a quick ensemble plot with faint member traces plus a highlighted mean/median line
 
-Both the summary and member CSVs now include `Meta_*` columns so each file is self-describing without needing the original command line. These metadata columns include the scenario label, hazard/adaptation toggles, parameter/topology file names, hazard event signature, seed range, and key adaptation settings such as `Meta_UCB_C`, `Meta_DecisionInterval`, and `Meta_ObservationRadius`.
+Both the summary and member CSVs now include `Meta_*` columns so each file is self-describing without needing the original command line. These metadata columns include the scenario label, hazard/adaptation toggles, parameter/topology file names, hazard event signature, seed range, and key adaptation settings such as `Meta_DecisionInterval`, `Meta_ObservationRadius`, `Meta_ContinuitySensitivityMin`, `Meta_ContinuitySensitivityMax`, `Meta_MaxAdaptIncrement`, and `Meta_ContinuityDecay` (with legacy `Meta_AdaptationSensitivity*` / `Meta_ResilienceDecay` aliases preserved for backward compatibility).
 
 This provenance guarantee applies to files produced with the current runner. Legacy CSVs generated before the `Meta_*` fields were added can still be merged, but the merge script cannot reconstruct missing historical settings that were never written to those files.
 
@@ -166,10 +166,10 @@ If you build the ensemble in batches, merge the resulting `*_members.csv` files 
     "10:81:320:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00010.tif",
     "100:81:320:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00100.tif"
   ],
-  "steps": 320,
+  "steps": 400,
   "seed": 42,
   "topology": "small_firm_topology.json",
-  "start_year": 2020,
+  "start_year": 2000,
   "steps_per_year": 4,
   "consumption_ratios": {
     "retail": 1.0
@@ -177,12 +177,12 @@ If you build the ensemble in batches, merge the resulting `*_members.csv` files 
   "adaptation": {
     "enabled": true,
     "decision_interval": 4,
-    "reward_window": 4,
     "ewma_alpha": 0.2,
-    "ucb_c": 1.0,
     "observation_radius": 4,
-    "action_increments": [0.0, 0.05, 0.1],
-    "resilience_decay": 0.01,
+    "adaptation_sensitivity_min": 2.0,
+    "adaptation_sensitivity_max": 4.0,
+    "max_adaptation_increment": 0.25,
+    "continuity_decay": 0.01,
     "maintenance_cost_rate": 0.005,
     "loss_reduction_max": 0.6,
     "min_money_survival": 1.0,
@@ -195,10 +195,10 @@ Using `None` as the path lets you encode a shared no-hazard warm-up period direc
 
 ### Sensitivity Analysis
 
-Run a UCB exploration sweep to verify robustness of the hazard-conditional adaptation results:
+Run a continuity-sensitivity sweep to verify robustness of the hazard-conditional adaptation results:
 
 ```bash
-# Full ensemble sensitivity analysis with matched seeds across all tested UCB values
+# Full ensemble sensitivity analysis with matched seeds across all tested sensitivity ranges
 python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --n-seeds 10 --seed-start 41
 
 # Quick test (50 steps, 3-seed ensemble)
@@ -208,7 +208,7 @@ python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.
 python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --from-csv sensitivity_analysis_timeseries.csv
 ```
 
-This runs the hazard+adaptation scenario across four UCB exploration strengths (`c = 0.25, 0.5, 1.0, 2.0`) using the same seed list for each value and produces:
+This runs the hazard+adaptation scenario across four firm continuity-sensitivity ranges (`1.0-2.0`, `2.0-4.0`, `4.0-6.0`, `7.0-9.0`) using the same seed list for each value and produces:
 - `sensitivity_analysis.png`: ensemble time-series comparison
 - `sensitivity_analysis_timeseries.csv`: per-step ensemble summary
 - `sensitivity_analysis_timeseries_members.csv`: per-seed member panel
@@ -281,7 +281,7 @@ Include at least one final-good sector (`retail`, `wholesale`, or `services`) in
 - **Working-capital diagnostics in `simulation_*.csv`**: `Firm_Working_Capital_Credit_Used`, `Average_Working_Capital_Credit_Used`, and `Average_Working_Capital_Credit_Limit` track the bounded operating overdraft used to finance payroll and intermediate inputs before sales are realised
 - **Cascade diagnostics in `simulation_*.csv`**: `Ever_Directly_Hit_Firm_Share`, `Never_Hit_Currently_Disrupted_Firm_Share`, `Never_Hit_Supplier_Disruption_Burden_Share`, `Never_Hit_Production_Share`, `Never_Hit_Capital_Share`, and the corresponding count variables used for paper-ready systemic-risk figures
 - **simulation_*_members.csv**: Member-level aggregate ensemble panel with one row per step and seed, plus `Meta_*` scenario/config provenance fields
-- **simulation_*_agents.csv**: Agent-level panel data (money, capital, production, sector, type, seller-sector demand, and firm-level adaptation states including `resilience_capital`, `local_observed_loss`, `adaptation_action`, and `adaptation_reward`). Household `sector` values in this file are initialization/placement cohort tags, not purchased-good categories. In ensemble mode this file is only written when `--save-agent-ensemble` is enabled.
+- **simulation_*_agents.csv**: Agent-level panel data (money, capital, production, sector, type, seller-sector demand, and firm-level adaptation states including `resilience_capital`, `local_observed_loss`, `adaptation_target`, `perceived_hazard_risk`, and `adaptation_action`). Household `sector` values in this file are initialization/placement cohort tags, not purchased-good categories. In ensemble mode this file is only written when `--save-agent-ensemble` is enabled.
 - **simulation_*_ensemble.png**: Ensemble quick-look plot with faint member traces, a highlighted mean/median trajectory, and a p10-p90 band
 - **simulation_*_timeseries.png**: Multi-panel plots of key metrics. Household consumption panels use actual household purchases, and any sector breakdown of final demand is derived from seller sectors rather than household cohort labels.
 - **simulation_*_sector_bottlenecks.png**: Sector-level bottleneck analysis
@@ -330,12 +330,12 @@ python plot_from_csv_paper.py \
 
 ### Adaptation Parameters
 - `adaptation.enabled`: Enable/disable hazard-conditional firm adaptation (default: true)
-- `adaptation.decision_interval`: Steps between bandit decisions (default: 4)
-- `adaptation.reward_window`: Steps used to evaluate each action (default: 4)
+- `adaptation.decision_interval`: Steps between resilience-target updates (default: 4)
 - `adaptation.ewma_alpha`: Smoothing parameter for hazard-state expectations (default: 0.2)
-- `adaptation.ucb_c`: Firm-level contextual-bandit exploration coefficient (default: 1.0)
 - `adaptation.observation_radius`: Manhattan-radius threshold for observing nearby firm losses (default: 4 grid cells)
-- `adaptation.action_increments`: Resilience-capital increments for maintain/small/large actions (default: `[0.0, 0.05, 0.1]`)
+- `adaptation.adaptation_sensitivity_min`: Lower bound of the uniform draw for firm-specific resilience sensitivity (default: 2.0)
+- `adaptation.adaptation_sensitivity_max`: Upper bound of the uniform draw for firm-specific resilience sensitivity (default: 4.0)
+- `adaptation.max_adaptation_increment`: Maximum resilience-capital increment per decision update (default: 0.25)
 - `adaptation.resilience_decay`: Per-step depreciation of resilience capital (default: 0.01)
 - `adaptation.maintenance_cost_rate`: Per-step carrying cost on resilience capital (default: 0.005)
 - `adaptation.loss_reduction_max`: Maximum fraction of direct loss that resilience can attenuate at full stock (default: 0.6)
@@ -355,7 +355,7 @@ python plot_from_csv_paper.py \
 ├── agents.py             # HouseholdAgent and FirmAgent classes
 ├── run_simulation.py     # CLI runner with parameter file support
 ├── plot_cascade_risk.py  # Paper-oriented figure for indirect risk on never-directly-hit firms
-├── sensitivity_analysis.py # Matched-seed ensemble sensitivity analysis for the main ML hyperparameter (ucb_c)
+├── sensitivity_analysis.py # Matched-seed ensemble sensitivity analysis for firm resilience sensitivity
 ├── hazard_utils.py       # LazyHazard class for memory-efficient sampling
 ├── damage_functions.py   # JRC damage functions from Excel
 ├── trophic_utils.py      # Network topology analysis utilities (not used in core runtime logic)
