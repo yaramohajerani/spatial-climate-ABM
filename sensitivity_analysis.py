@@ -129,7 +129,7 @@ def _parse_args():
     )
     parser.add_argument(
         "--adaptation-strategy",
-        choices=("backup_suppliers", "capital_hardening", "stockpiling"),
+        choices=("backup_suppliers", "capital_hardening", "stockpiling", "reserved_capacity"),
         default=None,
         help="Override adaptation strategy from the parameter file",
     )
@@ -205,6 +205,8 @@ def _sensitivity_metadata(
         f"{METADATA_PREFIX}ContinuityDecay": float(adaptation_config.get("continuity_decay", adaptation_config.get("resilience_decay", 0.01))),
         f"{METADATA_PREFIX}MaintenanceCostRate": float(adaptation_config.get("maintenance_cost_rate", 0.005)),
         f"{METADATA_PREFIX}MaxBackupSuppliers": int(adaptation_config.get("max_backup_suppliers", 5)),
+        f"{METADATA_PREFIX}ReservedCapacityShare": float(adaptation_config.get("reserved_capacity_share", 0.35)),
+        f"{METADATA_PREFIX}ReservedCapacityMarkupCap": float(adaptation_config.get("reserved_capacity_markup_cap", 0.10)),
         f"{METADATA_PREFIX}MaxAdaptIncrement": float(adaptation_config.get("max_adaptation_increment", 0.25)),
         f"{METADATA_PREFIX}SeedCount": len(seed_list),
         f"{METADATA_PREFIX}SeedList": ",".join(str(seed) for seed in seed_list),

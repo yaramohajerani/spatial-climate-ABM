@@ -268,7 +268,7 @@ def test_firm_reorganization_preserves_total_money_and_inherits_adaptation_state
 
 
 def test_adapted_loss_fraction_strategy_dependent() -> None:
-    """backup_suppliers and stockpiling pass through; capital_hardening attenuates."""
+    """Non-hardening strategies pass through; capital_hardening attenuates."""
     model = build_closed_economy_model(adaptation_enabled=True)
     firm = model._firms[0]
 
@@ -279,6 +279,11 @@ def test_adapted_loss_fraction_strategy_dependent() -> None:
 
     # stockpiling: always pass-through
     firm.adaptation_strategy = "stockpiling"
+    firm.continuity_capital = 0.5
+    assert np.isclose(firm.get_adapted_loss_fraction(0.4), 0.4, atol=1e-12)
+
+    # reserved_capacity: always pass-through
+    firm.adaptation_strategy = "reserved_capacity"
     firm.continuity_capital = 0.5
     assert np.isclose(firm.get_adapted_loss_fraction(0.4), 0.4, atol=1e-12)
 
@@ -377,6 +382,7 @@ def test_backup_supplier_search_purchases_real_goods() -> None:
         if f.sector == primary_supplier.sector
         and f is not buyer
         and f is not primary_supplier
+        and f not in buyer.connected_firms
     )
 
     # Set up: primary supplier is damaged and has no inventory
@@ -595,9 +601,62 @@ def test_money_conserved_during_backup_purchases() -> None:
     assert np.isclose(model.total_money(), initial_total_money, atol=1e-6)
 
 
+def test_reserved_capacity_contracts_reserve_inventory_and_cap_price() -> None:
+    """Reserved-capacity contracts should block a bounded slice and buy below spot when capped."""
+    model = build_closed_economy_model(adaptation_enabled=True, adaptation_strategy="reserved_capacity")
+    buyer = next(f for f in model._firms if f.connected_firms)
+    primary_supplier = buyer.connected_firms[0]
+    backup = next(
+        f for f in model._firms
+        if f.sector == primary_supplier.sector
+        and f is not buyer
+        and f is not primary_supplier
+    )
+    for firm in model._firms:
+        if firm is not buyer:
+            firm.continuity_capital = 0.0
+            firm.last_perceived_hazard_risk = 0.0
+            firm.last_perceived_continuity_risk = 0.0
+        if (
+            firm.sector == primary_supplier.sector
+            and firm is not buyer
+            and firm is not primary_supplier
+            and firm is not backup
+        ):
+            firm.inventory_output = 0.0
+
+    buyer.continuity_capital = 0.8
+    buyer.last_perceived_hazard_risk = 0.8
+    buyer.last_perceived_continuity_risk = 0.8
+    buyer.target_input_units = 10.0
+    buyer.money = 300.0
+    buyer.connected_firms = [primary_supplier]
+    primary_supplier.price = 1.0
+    backup.inventory_output = 20.0
+    backup.price = 4.0
+
+    model._prepare_reserved_capacity_contracts()
+
+    contracts = model.get_reserved_capacity_contracts(buyer)
+    assert contracts
+    supplier, reserved_units, contract_price = contracts[0]
+    assert supplier is backup
+    assert reserved_units > 0.0
+    assert contract_price < backup.price
+    assert model.available_inventory_for_spot_sales(backup) < backup.inventory_output
+
+    initial_total_money = model.total_money()
+    remaining_needed, reserved_purchases, reserved_savings = buyer._purchase_from_reserved_capacity(5.0)
+
+    assert remaining_needed < 5.0
+    assert reserved_purchases > 0.0
+    assert reserved_savings > 0.0
+    assert np.isclose(model.total_money(), initial_total_money, atol=1e-6)
+
+
 def test_all_strategies_dormant_in_baseline() -> None:
-    """All three adaptation strategies should produce zero adaptation spending without hazard."""
-    for strategy in ("backup_suppliers", "capital_hardening", "stockpiling"):
+    """All adaptation strategies should produce zero adaptation spending without hazard."""
+    for strategy in ("backup_suppliers", "capital_hardening", "stockpiling", "reserved_capacity"):
         model = build_closed_economy_model(adaptation_enabled=True, adaptation_strategy=strategy)
         for _ in range(12):
             model.step()
@@ -657,6 +716,17 @@ def test_money_conserved_with_capital_hardening() -> None:
 def test_money_conserved_with_stockpiling() -> None:
     """Stockpiling strategy should preserve money closure."""
     model = build_closed_economy_model(adaptation_enabled=True, adaptation_strategy="stockpiling")
+    initial_total_money = model.total_money()
+    for _ in range(20):
+        model.step()
+    df = model.results_to_dataframe()
+    assert np.allclose(df["Money_Drift"].to_numpy(), 0.0, atol=1e-6)
+    assert np.allclose(df["Total_Money"].to_numpy(), initial_total_money, atol=1e-6)
+
+
+def test_money_conserved_with_reserved_capacity() -> None:
+    """Reserved-capacity strategy should preserve money closure."""
+    model = build_closed_economy_model(adaptation_enabled=True, adaptation_strategy="reserved_capacity")
     initial_total_money = model.total_money()
     for _ in range(20):
         model.step()

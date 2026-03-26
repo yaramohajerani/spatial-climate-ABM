@@ -82,7 +82,13 @@ class EconomyModel(Model):
         self.adaptation_observation_radius: int = int(self.adaptation_config.get("observation_radius", 4))
         self.adaptation_updates_this_step: int = 0
         self.max_backup_suppliers: int = int(self.adaptation_config.get("max_backup_suppliers", 5))
+        self.reserved_capacity_share: float = float(self.adaptation_config.get("reserved_capacity_share", 0.35))
+        self.reserved_capacity_markup_cap: float = float(
+            self.adaptation_config.get("reserved_capacity_markup_cap", 0.10)
+        )
         self.adaptation_strategy: str = str(self.adaptation_config.get("adaptation_strategy", "backup_suppliers"))
+        self._reserved_capacity_contracts: Dict[int, List[dict[str, object]]] = {}
+        self._supplier_reserved_inventory: Dict[int, float] = {}
 
         # Household consumption ratios across final-good sectors.
         # Upstream sectors sell to firms, not directly to households.
@@ -238,6 +244,11 @@ class EconomyModel(Model):
                 "Average_Raw_Supplier_Disruption": lambda m: np.mean([f.raw_supplier_disruption_this_step for f in m._firms]) if m._firms else 0.0,
                 "Average_Backup_Purchases": lambda m: np.mean([f.backup_purchases_this_step for f in m._firms]) if m._firms else 0.0,
                 "Total_Backup_Purchases": lambda m: sum(f.backup_purchases_this_step for f in m._firms),
+                "Average_Reserved_Capacity_Purchases": lambda m: np.mean([f.reserved_capacity_purchases_this_step for f in m._firms]) if m._firms else 0.0,
+                "Total_Reserved_Capacity_Purchases": lambda m: sum(f.reserved_capacity_purchases_this_step for f in m._firms),
+                "Average_Reserved_Capacity_Price_Savings": lambda m: np.mean([f.reserved_capacity_price_savings_this_step for f in m._firms]) if m._firms else 0.0,
+                "Total_Reserved_Capacity_Price_Savings": lambda m: sum(f.reserved_capacity_price_savings_this_step for f in m._firms),
+                "Reserved_Capacity_Contracts": lambda m: m._count_reserved_capacity_contracts(),
                 "Adaptation_Strategy": lambda m: getattr(m, "adaptation_strategy", "backup_suppliers"),
                 "Average_Adaptation_Target": lambda m: np.mean([f.last_adaptation_target for f in m._firms]) if m._firms else 0.0,
                 "Average_Perceived_Hazard_Risk": lambda m: np.mean([f.last_perceived_hazard_risk for f in m._firms]) if m._firms else 0.0,
@@ -304,6 +315,8 @@ class EconomyModel(Model):
                 "continuity_gap_coverage": lambda a: getattr(a, "continuity_gap_coverage_this_step", np.nan),
                 "continuity_input_coverage": lambda a: getattr(a, "continuity_input_coverage_this_step", np.nan),
                 "backup_purchases": lambda a: getattr(a, "backup_purchases_this_step", np.nan),
+                "reserved_capacity_purchases": lambda a: getattr(a, "reserved_capacity_purchases_this_step", np.nan),
+                "reserved_capacity_price_savings": lambda a: getattr(a, "reserved_capacity_price_savings_this_step", np.nan),
                 "counterfactual_direct_loss": lambda a: getattr(a, "counterfactual_direct_loss_this_step", np.nan),
                 "realized_direct_loss_value": lambda a: getattr(a, "realized_direct_loss_this_step", np.nan),
                 "adaptation_updates": lambda a: getattr(a, "adaptation_update_count", np.nan),
@@ -539,6 +552,126 @@ class EconomyModel(Model):
         self.random.shuffle(candidates)
         candidates.sort(key=lambda f: f.price)
         return candidates[:max_count]
+
+    def _reset_reserved_capacity_contracts(self) -> None:
+        self._reserved_capacity_contracts = {}
+        self._supplier_reserved_inventory = {}
+
+    def _prepare_reserved_capacity_contracts(self) -> None:
+        """Reserve a bounded backup slice for the reserved-capacity strategy."""
+        self._reset_reserved_capacity_contracts()
+        if not self.firm_adaptation_enabled or self.adaptation_strategy != "reserved_capacity":
+            return
+
+        buyers = [
+            firm
+            for firm in self._firms
+            if firm.adaptation_enabled
+            and getattr(firm, "continuity_capital", 0.0) > 0
+            and getattr(firm, "target_input_units", 0.0) > 0
+            and firm.connected_firms
+        ]
+        if not buyers:
+            return
+
+        self.random.shuffle(buyers)
+        reservable_inventory: Dict[int, float] = {}
+        for buyer in buyers:
+            remaining_reserved_units = buyer._reserved_capacity_target_units()
+            if remaining_reserved_units <= 1e-9:
+                continue
+
+            contract_price_cap = buyer._reserved_capacity_price_cap()
+            backup_suppliers = self.find_backup_suppliers(buyer, buyer._backup_supplier_count())
+            for supplier in backup_suppliers:
+                if remaining_reserved_units <= 1e-9:
+                    break
+                supplier_limit = reservable_inventory.setdefault(
+                    supplier.unique_id,
+                    max(0.0, supplier.inventory_output * self.reserved_capacity_share),
+                )
+                reserved_units = min(supplier_limit, remaining_reserved_units)
+                if reserved_units <= 1e-9:
+                    continue
+
+                contract_unit_price = min(max(supplier.price, 0.5), contract_price_cap)
+                self._reserved_capacity_contracts.setdefault(buyer.unique_id, []).append(
+                    {
+                        "supplier": supplier,
+                        "quantity": reserved_units,
+                        "unit_price": contract_unit_price,
+                    }
+                )
+                self._supplier_reserved_inventory[supplier.unique_id] = (
+                    self._supplier_reserved_inventory.get(supplier.unique_id, 0.0) + reserved_units
+                )
+                reservable_inventory[supplier.unique_id] -= reserved_units
+                remaining_reserved_units -= reserved_units
+
+    def get_reserved_capacity_contracts(
+        self,
+        buyer: FirmAgent,
+    ) -> List[tuple[FirmAgent, float, float]]:
+        contracts = []
+        for contract in self._reserved_capacity_contracts.get(buyer.unique_id, []):
+            quantity = float(contract.get("quantity", 0.0))
+            if quantity <= 1e-9:
+                continue
+            contracts.append(
+                (
+                    contract["supplier"],
+                    quantity,
+                    float(contract.get("unit_price", 0.0)),
+                )
+            )
+        return contracts
+
+    def _reserved_inventory_for_buyer(self, supplier: FirmAgent, buyer_id: int) -> float:
+        for contract in self._reserved_capacity_contracts.get(buyer_id, []):
+            if contract.get("supplier") is supplier:
+                return float(contract.get("quantity", 0.0))
+        return 0.0
+
+    def available_inventory_for_spot_sales(self, supplier: FirmAgent) -> float:
+        reserved_total = self._supplier_reserved_inventory.get(supplier.unique_id, 0.0)
+        return max(0.0, supplier.inventory_output - reserved_total)
+
+    def available_reserved_inventory_for_buyer(self, supplier: FirmAgent, buyer_id: int) -> float:
+        reserved_for_buyer = self._reserved_inventory_for_buyer(supplier, buyer_id)
+        if reserved_for_buyer <= 0:
+            return 0.0
+        reserved_for_others = max(
+            0.0,
+            self._supplier_reserved_inventory.get(supplier.unique_id, 0.0) - reserved_for_buyer,
+        )
+        return max(
+            0.0,
+            min(reserved_for_buyer, supplier.inventory_output - reserved_for_others),
+        )
+
+    def consume_reserved_capacity(self, supplier: FirmAgent, buyer_id: int, quantity: float) -> None:
+        if quantity <= 0:
+            return
+        for contract in self._reserved_capacity_contracts.get(buyer_id, []):
+            if contract.get("supplier") is not supplier:
+                continue
+            used_quantity = min(float(contract.get("quantity", 0.0)), quantity)
+            if used_quantity <= 0:
+                return
+            contract["quantity"] = max(0.0, float(contract.get("quantity", 0.0)) - used_quantity)
+            self._supplier_reserved_inventory[supplier.unique_id] = max(
+                0.0,
+                self._supplier_reserved_inventory.get(supplier.unique_id, 0.0) - used_quantity,
+            )
+            return
+
+    def _count_reserved_capacity_contracts(self) -> int:
+        return sum(
+            1
+            for contracts in self._reserved_capacity_contracts.values()
+            for contract in contracts
+            if float(contract.get("quantity", 0.0)) > 1e-9
+        )
 
     @staticmethod
     def _safe_share(numerator: float, denominator: float) -> float:
@@ -939,6 +1072,7 @@ class EconomyModel(Model):
         # ---------------- Demand planning phase --------------------- #
         for firm in self._firms:
             firm.plan_operations()
+        self._prepare_reserved_capacity_contracts()
 
         # Agent actions are phased so labour is hired before production and
         # households consume after firms have produced in the same period.

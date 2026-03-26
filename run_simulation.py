@@ -53,7 +53,7 @@ def _parse():
     p.add_argument(
         "--adaptation-strategy",
         type=str,
-        choices=["backup_suppliers", "capital_hardening", "stockpiling"],
+        choices=["backup_suppliers", "capital_hardening", "stockpiling", "reserved_capacity"],
         default=None,
         help="Adaptation strategy for firms (only used when adaptation is enabled)",
     )
@@ -88,6 +88,7 @@ STRATEGY_DISPLAY_NAMES = {
     "backup_suppliers": "Backup Suppliers",
     "capital_hardening": "Capital Hardening",
     "stockpiling": "Stockpiling",
+    "reserved_capacity": "Reserved Capacity",
 }
 
 
@@ -182,6 +183,8 @@ def _base_metadata(
         f"{METADATA_PREFIX}ContinuityDecay": float(adaptation_config.get("continuity_decay", adaptation_config.get("resilience_decay", 0.01))),
         f"{METADATA_PREFIX}MaintenanceCostRate": float(adaptation_config.get("maintenance_cost_rate", 0.005)),
         f"{METADATA_PREFIX}MaxBackupSuppliers": int(adaptation_config.get("max_backup_suppliers", 5)),
+        f"{METADATA_PREFIX}ReservedCapacityShare": float(adaptation_config.get("reserved_capacity_share", 0.35)),
+        f"{METADATA_PREFIX}ReservedCapacityMarkupCap": float(adaptation_config.get("reserved_capacity_markup_cap", 0.10)),
         f"{METADATA_PREFIX}MinMoneySurvival": float(adaptation_config.get("min_money_survival", 1.0)),
         f"{METADATA_PREFIX}ReplacementFrequency": int(adaptation_config.get("replacement_frequency", 10)),
         f"{METADATA_PREFIX}RunTimestamp": timestamp,

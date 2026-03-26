@@ -112,10 +112,11 @@ Damage is calculated using JRC Global Flood Depth-Damage Functions:
 - **Funding Timing**: Continuity targets are evaluated before the hazard is sampled, but maintenance and new continuity spending are funded only at period close from residual post-operations cash; newly installed continuity capital affects the next period rather than the current one
 - **Perceived Continuity Risk**: Firms use the stronger of own expected operating shortfall and nearby observed shortfall as a parsimonious continuity-risk signal
 - **Target Rule**: Every `decision_interval` steps, each firm annualizes that per-step continuity risk, sets a target `C* = min(1, sensitivity_i × annualized_risk_i)`, and invests up to a capped increment toward that target
-- **Three Adaptation Strategies** (configurable via `adaptation_strategy`):
+- **Four Adaptation Strategies** (configurable via `adaptation_strategy`):
   1. **Backup supplier search** (`backup_suppliers`): Continuity capital enables firms to search for non-primary suppliers with available inventory when primary suppliers are disrupted. All transactions use real cash and real inventory via `sell_goods_to_firm()`, preserving macro closure. Maintains production but can cause scarcity-driven inflation.
   2. **Capital hardening** (`capital_hardening`): Continuity capital directly attenuates physical damage from hazard events. At full continuity stock, damage to capital, inventory, and operational capacity is fully offset. Preserves productive capacity but does not address supply-chain disruptions.
   3. **Precautionary stockpiling** (`stockpiling`): Continuity capital increases the firm's target inventory buffer proportionally to perceived hazard risk. Firms build excess inventory during calm periods and draw down during disruptions. Absorbs supply-chain shocks without competing for scarce goods during crises.
+  4. **Reserved capacity** (`reserved_capacity`): Continuity capital reserves a bounded slice of backup-supplier inventory before the crisis hits and, during hazard-driven shortages, lets the buyer draw on that reserved slice at a capped contract price rather than pure spot conditions. This is designed to preserve input access while muting crisis-time price escalation.
 - **Population Dynamics**: Bankrupt firms are reorganized in place, preserving stock-flow closure while inheriting continuity state, adaptation strategy, and firm-specific continuity sensitivity from successful same-sector parents
 - **Systemic Cascade Diagnostics**: The model tracks which firms have ever been directly hit and reports how much supplier disruption, output, and capital are borne by firms that remain never directly hit, making it easier to quantify indirect network transmission for paper figures
 
@@ -342,8 +343,10 @@ python plot_from_csv_paper.py \
 - `adaptation.max_adaptation_increment`: Maximum resilience-capital increment per decision update (default: 0.25)
 - `adaptation.resilience_decay`: Per-step depreciation of resilience capital (default: 0.01)
 - `adaptation.maintenance_cost_rate`: Per-step carrying cost on resilience capital (default: 0.005)
-- `adaptation.adaptation_strategy`: Which adaptation channel continuity capital operates through: `backup_suppliers`, `capital_hardening`, or `stockpiling` (default: `backup_suppliers`)
-- `adaptation.max_backup_suppliers`: Maximum number of backup suppliers to search (only used by `backup_suppliers` strategy; default: 5)
+- `adaptation.adaptation_strategy`: Which adaptation channel continuity capital operates through: `backup_suppliers`, `capital_hardening`, `stockpiling`, or `reserved_capacity` (default: `backup_suppliers`)
+- `adaptation.max_backup_suppliers`: Maximum number of backup suppliers to search or contract with (used by `backup_suppliers` and `reserved_capacity`; default: 5)
+- `adaptation.reserved_capacity_share`: Maximum share of a backup supplier's current inventory that can be reserved across buyers in a period (only used by `reserved_capacity`; default: 0.35)
+- `adaptation.reserved_capacity_markup_cap`: Maximum contract-price markup above the buyer's mean primary-supplier price for reserved-capacity purchases (only used by `reserved_capacity`; default: 0.10)
 - `adaptation.min_money_survival`: Minimum money before firm failure (default: 1.0)
 - `adaptation.replacement_frequency`: Steps between replacement cycles (default: 10)
 

@@ -406,6 +406,8 @@ class FirmAgent(Agent):
         self.continuity_gap_coverage_this_step: float = 0.0
         self.continuity_input_coverage_this_step: float = 0.0
         self.backup_purchases_this_step: float = 0.0
+        self.reserved_capacity_purchases_this_step: float = 0.0
+        self.reserved_capacity_price_savings_this_step: float = 0.0
 
         # Capital coefficient parameters
         self.original_capital_coeff: float = self.CAPITAL_COEFF
@@ -487,6 +489,8 @@ class FirmAgent(Agent):
         self.continuity_gap_coverage_this_step = 0.0
         self.continuity_input_coverage_this_step = 0.0
         self.backup_purchases_this_step = 0.0
+        self.reserved_capacity_purchases_this_step = 0.0
+        self.reserved_capacity_price_savings_this_step = 0.0
 
         if not self.adaptation_enabled:
             return
@@ -580,7 +584,7 @@ class FirmAgent(Agent):
         return any(supplier._has_hazard_disruption_signal() for supplier in self.connected_firms)
 
     def _backup_supplier_count(self) -> int:
-        if not self._uses_adaptation_strategy("backup_suppliers") or self.continuity_capital <= 0:
+        if self.continuity_capital <= 0:
             return 0
         max_backup_count = max(0, int(getattr(self.model, "max_backup_suppliers", 5)))
         if max_backup_count <= 0:
@@ -601,6 +605,39 @@ class FirmAgent(Agent):
                 remaining_inputs_needed -= bought
                 backup_purchases += bought
         return remaining_inputs_needed, backup_purchases
+
+    def _reserved_capacity_target_units(self) -> float:
+        risk_scale = max(self.last_perceived_hazard_risk, self.last_perceived_continuity_risk)
+        return max(0.0, self.target_input_units * self.continuity_capital * risk_scale)
+
+    def _reserved_capacity_price_cap(self) -> float:
+        if not self.connected_firms:
+            return float("inf")
+        anchor_price = float(np.mean([max(s.price, 0.5) for s in self.connected_firms]))
+        markup_cap = float(getattr(self.model, "reserved_capacity_markup_cap", 0.1))
+        return max(0.5, anchor_price * (1.0 + markup_cap))
+
+    def _purchase_from_reserved_capacity(self, remaining_inputs_needed: float) -> tuple[float, float, float]:
+        if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
+            return remaining_inputs_needed, 0.0, 0.0
+
+        reserved_purchases = 0.0
+        reserved_price_savings = 0.0
+        for supplier, reserved_units, contract_unit_price in self.model.get_reserved_capacity_contracts(self):
+            if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
+                break
+            requested_quantity = min(remaining_inputs_needed, reserved_units)
+            bought = supplier.sell_goods_to_firm(
+                self,
+                requested_quantity,
+                unit_price=contract_unit_price,
+                reservation_buyer_id=self.unique_id,
+            )
+            if bought > 0:
+                remaining_inputs_needed -= bought
+                reserved_purchases += bought
+                reserved_price_savings += bought * max(0.0, supplier.price - contract_unit_price)
+        return remaining_inputs_needed, reserved_purchases, reserved_price_savings
 
     def _fund_adaptation_after_operations(
         self,
@@ -857,10 +894,11 @@ class FirmAgent(Agent):
         no transaction occurs.
         """
 
-        if quantity <= 0 or self.inventory_output <= 0:
+        available_inventory = self.model.available_inventory_for_spot_sales(self)
+        if quantity <= 0 or available_inventory <= 0:
             return 0.0
 
-        qty = min(quantity, self.inventory_output)
+        qty = min(quantity, available_inventory)
         total_cost = qty * self.price
         if household.money < total_cost:
             # Adjust quantity downward to what buyer can afford
@@ -880,28 +918,45 @@ class FirmAgent(Agent):
         self.revenue_this_step += total_cost
         return qty
 
-    def sell_goods_to_firm(self, buyer: "FirmAgent", quantity: float = 1.0) -> float:
+    def sell_goods_to_firm(
+        self,
+        buyer: "FirmAgent",
+        quantity: float = 1.0,
+        *,
+        unit_price: float | None = None,
+        reservation_buyer_id: int | None = None,
+    ) -> float:
         """Sell intermediate goods to another firm."""
-        if quantity <= 0 or self.inventory_output <= 0:
+        if reservation_buyer_id is None:
+            available_inventory = self.model.available_inventory_for_spot_sales(self)
+        else:
+            available_inventory = self.model.available_reserved_inventory_for_buyer(
+                self,
+                reservation_buyer_id,
+            )
+        if quantity <= 0 or available_inventory <= 0:
             return 0.0
 
-        qty = min(quantity, self.inventory_output)
+        qty = min(quantity, available_inventory)
+        price = self.price if unit_price is None else max(0.0, float(unit_price))
         available_cash = buyer._operating_cash_capacity()
-        if available_cash <= 0 or self.price <= 0:
+        if available_cash <= 0 or price <= 0:
             return 0.0
 
-        max_affordable = available_cash / self.price
+        max_affordable = available_cash / price
         qty = min(qty, max_affordable)
         if qty <= 0:
             return 0.0
 
-        cost = qty * self.price
+        cost = qty * price
 
         # Transfer money & inventory
         if not buyer._spend_operating_cash(cost):
             return 0.0
         self.money += cost
         self.inventory_output -= qty
+        if reservation_buyer_id is not None:
+            self.model.consume_reserved_capacity(self, reservation_buyer_id, qty)
         buyer.input_spend_this_step += cost
 
         # Register under this supplier's id inside buyer
@@ -1112,6 +1167,8 @@ class FirmAgent(Agent):
         # search for real backup suppliers with actual inventory and buy at
         # market prices using actual cash.  This preserves macro closure.
         backup_purchases = 0.0
+        reserved_capacity_purchases = 0.0
+        reserved_capacity_price_savings = 0.0
         if (
             self._uses_adaptation_strategy("backup_suppliers")
             and hazard_affected_suppliers
@@ -1122,8 +1179,23 @@ class FirmAgent(Agent):
             remaining_inputs_needed, backup_purchases = self._purchase_from_backup_suppliers(
                 remaining_inputs_needed
             )
+        elif (
+            self._uses_adaptation_strategy("reserved_capacity")
+            and hazard_affected_suppliers
+            and remaining_inputs_needed > 1e-9
+            and self.continuity_capital > 0
+            and self._operating_cash_capacity() > 1e-9
+        ):
+            (
+                remaining_inputs_needed,
+                reserved_capacity_purchases,
+                reserved_capacity_price_savings,
+            ) = self._purchase_from_reserved_capacity(remaining_inputs_needed)
         self.backup_purchases_this_step = backup_purchases
-        self.continuity_input_coverage_this_step = backup_purchases  # backward compat
+        self.reserved_capacity_purchases_this_step = reserved_capacity_purchases
+        self.reserved_capacity_price_savings_this_step = reserved_capacity_price_savings
+        continuity_purchase_coverage = backup_purchases + reserved_capacity_purchases
+        self.continuity_input_coverage_this_step = continuity_purchase_coverage  # backward compat
 
         # ----------------------------------------------------------------
         # 2. Compute possible output: demand target capped by technical limits
@@ -1157,7 +1229,7 @@ class FirmAgent(Agent):
             )
         else:
             self.supplier_disruption_this_step = 0.0
-        self.continuity_gap_coverage_this_step = backup_purchases
+        self.continuity_gap_coverage_this_step = continuity_purchase_coverage
 
         no_hazard_output_ceiling = min(self.demand_driven_output, max_output_from_labor)
         hazard_related_gap = (

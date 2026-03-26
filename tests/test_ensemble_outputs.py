@@ -74,3 +74,5 @@ def test_base_metadata_matches_model_adaptation_defaults() -> None:
 
     assert metadata["Meta_ObservationRadius"] == 4.0
     assert metadata["Meta_MinMoneySurvival"] == 1.0
+    assert metadata["Meta_ReservedCapacityShare"] == 0.35
+    assert metadata["Meta_ReservedCapacityMarkupCap"] == 0.10
