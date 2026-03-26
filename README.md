@@ -106,15 +106,18 @@ Damage is calculated using JRC Global Flood Depth-Damage Functions:
 - **Interpolation**: Linear interpolation between depth-damage points
 
 ### Firm Adaptation System
-- **Adaptation Stock**: Each firm carries a `continuity_capital` stock in `[0, 1]` that covers a fraction of residual climate-disrupted inputs while also attenuating direct flood damage and speeding recovery
+- **Adaptation Stock**: Each firm carries a `continuity_capital` stock in `[0, 1]` that is built up under hazard stress and decays during calm periods
 - **Hazard Context**: Firms maintain EWMAs of expected operating shortfall, nearby observed operating shortfall, direct loss diagnostics, and supplier disruption
 - **Neighborhood Observation**: Firms observe hazard-induced operating shortfalls among nearby firms within a configurable radius, allowing anticipatory continuity investment before own exposure
 - **Funding Timing**: Continuity targets are evaluated before the hazard is sampled, but maintenance and new continuity spending are funded only at period close from residual post-operations cash; newly installed continuity capital affects the next period rather than the current one
 - **Perceived Continuity Risk**: Firms use the stronger of own expected operating shortfall and nearby observed shortfall as a parsimonious continuity-risk signal
 - **Target Rule**: Every `decision_interval` steps, each firm annualizes that per-step continuity risk, sets a target `C* = min(1, sensitivity_i × annualized_risk_i)`, and invests up to a capped increment toward that target
-- **Operating Effect**: During production, continuity capital covers a fraction of residual climate-disrupted input shortages after normal procurement. Production is then computed from the usual Leontief bottlenecks using those effective inputs, so continuity acts at the source of scarcity rather than adding output ex post
-- **Population Dynamics**: Bankrupt firms are reorganized in place, preserving stock-flow closure while inheriting continuity state and firm-specific continuity sensitivity from successful same-sector parents
-- **Systemic Cascade Diagnostics**: The model now tracks which firms have ever been directly hit and reports how much supplier disruption, output, and capital are borne by firms that remain never directly hit, making it easier to quantify indirect network transmission for paper figures
+- **Three Adaptation Strategies** (configurable via `adaptation_strategy`):
+  1. **Backup supplier search** (`backup_suppliers`): Continuity capital enables firms to search for non-primary suppliers with available inventory when primary suppliers are disrupted. All transactions use real cash and real inventory via `sell_goods_to_firm()`, preserving macro closure. Maintains production but can cause scarcity-driven inflation.
+  2. **Capital hardening** (`capital_hardening`): Continuity capital directly attenuates physical damage from hazard events. At full continuity stock, damage to capital, inventory, and operational capacity is fully offset. Preserves productive capacity but does not address supply-chain disruptions.
+  3. **Precautionary stockpiling** (`stockpiling`): Continuity capital increases the firm's target inventory buffer proportionally to perceived hazard risk. Firms build excess inventory during calm periods and draw down during disruptions. Absorbs supply-chain shocks without competing for scarce goods during crises.
+- **Population Dynamics**: Bankrupt firms are reorganized in place, preserving stock-flow closure while inheriting continuity state, adaptation strategy, and firm-specific continuity sensitivity from successful same-sector parents
+- **Systemic Cascade Diagnostics**: The model tracks which firms have ever been directly hit and reports how much supplier disruption, output, and capital are borne by firms that remain never directly hit, making it easier to quantify indirect network transmission for paper figures
 
 ## Usage
 
@@ -184,7 +187,8 @@ If you build the ensemble in batches, merge the resulting `*_members.csv` files 
     "max_adaptation_increment": 0.25,
     "continuity_decay": 0.01,
     "maintenance_cost_rate": 0.005,
-    "loss_reduction_max": 0.6,
+    "adaptation_strategy": "backup_suppliers",
+    "max_backup_suppliers": 5,
     "min_money_survival": 1.0,
     "replacement_frequency": 10
   }
@@ -338,7 +342,8 @@ python plot_from_csv_paper.py \
 - `adaptation.max_adaptation_increment`: Maximum resilience-capital increment per decision update (default: 0.25)
 - `adaptation.resilience_decay`: Per-step depreciation of resilience capital (default: 0.01)
 - `adaptation.maintenance_cost_rate`: Per-step carrying cost on resilience capital (default: 0.005)
-- `adaptation.loss_reduction_max`: Maximum fraction of direct loss that resilience can attenuate at full stock (default: 0.6)
+- `adaptation.adaptation_strategy`: Which adaptation channel continuity capital operates through: `backup_suppliers`, `capital_hardening`, or `stockpiling` (default: `backup_suppliers`)
+- `adaptation.max_backup_suppliers`: Maximum number of backup suppliers to search (only used by `backup_suppliers` strategy; default: 5)
 - `adaptation.min_money_survival`: Minimum money before firm failure (default: 1.0)
 - `adaptation.replacement_frequency`: Steps between replacement cycles (default: 10)
 

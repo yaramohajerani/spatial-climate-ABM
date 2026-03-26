@@ -9,7 +9,7 @@ from model import EconomyModel
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def build_closed_economy_model(*, adaptation_enabled: bool) -> EconomyModel:
+def build_closed_economy_model(*, adaptation_enabled: bool, adaptation_strategy: str = "backup_suppliers") -> EconomyModel:
     """Return a small no-hazard economy for accounting and adaptation tests."""
     return EconomyModel(
         num_households=300,
@@ -19,6 +19,7 @@ def build_closed_economy_model(*, adaptation_enabled: bool) -> EconomyModel:
         apply_hazard_impacts=False,
         adaptation_params={
             "enabled": adaptation_enabled,
+            "adaptation_strategy": adaptation_strategy,
             "decision_interval": 4,
             "ewma_alpha": 0.2,
             "observation_radius": 4,
@@ -266,19 +267,31 @@ def test_firm_reorganization_preserves_total_money_and_inherits_adaptation_state
     assert np.isclose(failed_firm.last_perceived_hazard_risk, parent.last_perceived_hazard_risk, atol=1e-9)
 
 
-def test_adapted_loss_fraction_is_pass_through() -> None:
-    """get_adapted_loss_fraction should return the raw loss unchanged (no attenuation)."""
+def test_adapted_loss_fraction_strategy_dependent() -> None:
+    """backup_suppliers and stockpiling pass through; capital_hardening attenuates."""
     model = build_closed_economy_model(adaptation_enabled=True)
     firm = model._firms[0]
 
-    firm.resilience_capital = 0.0
+    # backup_suppliers: always pass-through
+    firm.adaptation_strategy = "backup_suppliers"
+    firm.continuity_capital = 0.5
     assert np.isclose(firm.get_adapted_loss_fraction(0.4), 0.4, atol=1e-12)
 
-    firm.resilience_capital = 0.5
+    # stockpiling: always pass-through
+    firm.adaptation_strategy = "stockpiling"
+    firm.continuity_capital = 0.5
     assert np.isclose(firm.get_adapted_loss_fraction(0.4), 0.4, atol=1e-12)
 
-    firm.resilience_capital = 1.0
+    # capital_hardening: attenuates proportionally
+    firm.adaptation_strategy = "capital_hardening"
+    firm.continuity_capital = 0.0
     assert np.isclose(firm.get_adapted_loss_fraction(0.4), 0.4, atol=1e-12)
+
+    firm.continuity_capital = 0.5
+    assert np.isclose(firm.get_adapted_loss_fraction(0.4), 0.2, atol=1e-12)
+
+    firm.continuity_capital = 1.0
+    assert np.isclose(firm.get_adapted_loss_fraction(0.4), 0.0, atol=1e-12)
 
 
 def test_proportional_targeting_scales_with_signal_strength() -> None:
@@ -531,3 +544,73 @@ def test_money_conserved_during_backup_purchases() -> None:
 
     assert bought > 0.0
     assert np.isclose(model.total_money(), initial_total_money, atol=1e-6)
+
+
+def test_all_strategies_dormant_in_baseline() -> None:
+    """All three adaptation strategies should produce zero adaptation spending without hazard."""
+    for strategy in ("backup_suppliers", "capital_hardening", "stockpiling"):
+        model = build_closed_economy_model(adaptation_enabled=True, adaptation_strategy=strategy)
+        for _ in range(12):
+            model.step()
+        df = model.results_to_dataframe()
+        assert np.allclose(df["Firm_Adaptation_Spending"].to_numpy(), 0.0, atol=1e-9), (
+            f"Strategy {strategy} spent on adaptation without hazard"
+        )
+        assert np.allclose(df["Average_Resilience_Capital"].to_numpy(), 0.0, atol=1e-9), (
+            f"Strategy {strategy} built resilience capital without hazard"
+        )
+
+
+def test_stockpiling_increases_inventory_buffer_under_risk() -> None:
+    """Stockpiling strategy should raise inventory target when hazard risk is perceived."""
+    model = build_closed_economy_model(adaptation_enabled=True, adaptation_strategy="stockpiling")
+    firm = model._firms[0]
+
+    # Without perceived risk, buffer should be default
+    firm.continuity_capital = 0.8
+    firm.last_perceived_hazard_risk = 0.0
+    firm.expected_sales = 10.0
+    firm.inventory_output = 0.0
+    firm.plan_operations()
+    default_target = firm.demand_driven_output
+
+    # With perceived risk, buffer should increase
+    firm.continuity_capital = 0.8
+    firm.last_perceived_hazard_risk = 0.5
+    firm.expected_sales = 10.0
+    firm.inventory_output = 0.0
+    firm.plan_operations()
+    risk_target = firm.demand_driven_output
+
+    assert risk_target > default_target
+
+    # backup_suppliers strategy should NOT increase buffer
+    firm.adaptation_strategy = "backup_suppliers"
+    firm.continuity_capital = 0.8
+    firm.last_perceived_hazard_risk = 0.5
+    firm.expected_sales = 10.0
+    firm.inventory_output = 0.0
+    firm.plan_operations()
+    assert np.isclose(firm.demand_driven_output, default_target, atol=1e-9)
+
+
+def test_money_conserved_with_capital_hardening() -> None:
+    """Capital hardening strategy should preserve money closure."""
+    model = build_closed_economy_model(adaptation_enabled=True, adaptation_strategy="capital_hardening")
+    initial_total_money = model.total_money()
+    for _ in range(20):
+        model.step()
+    df = model.results_to_dataframe()
+    assert np.allclose(df["Money_Drift"].to_numpy(), 0.0, atol=1e-6)
+    assert np.allclose(df["Total_Money"].to_numpy(), initial_total_money, atol=1e-6)
+
+
+def test_money_conserved_with_stockpiling() -> None:
+    """Stockpiling strategy should preserve money closure."""
+    model = build_closed_economy_model(adaptation_enabled=True, adaptation_strategy="stockpiling")
+    initial_total_money = model.total_money()
+    for _ in range(20):
+        model.step()
+    df = model.results_to_dataframe()
+    assert np.allclose(df["Money_Drift"].to_numpy(), 0.0, atol=1e-6)
+    assert np.allclose(df["Total_Money"].to_numpy(), initial_total_money, atol=1e-6)

@@ -427,6 +427,7 @@ class FirmAgent(Agent):
 
         adaptation_config = getattr(model, "adaptation_config", {})
         self.adaptation_enabled: bool = getattr(model, "firm_adaptation_enabled", True)
+        self.adaptation_strategy: str = str(adaptation_config.get("adaptation_strategy", "backup_suppliers"))
         self.decision_interval: int = int(adaptation_config.get("decision_interval", 4))
         self.ewma_alpha: float = float(adaptation_config.get("ewma_alpha", 0.2))
         self.resilience_decay: float = float(
@@ -727,12 +728,13 @@ class FirmAgent(Agent):
         return max(1.0, self.capital_stock + inventory_value + input_value + downtime_value)
 
     def get_adapted_loss_fraction(self, raw_loss_fraction: float) -> float:
-        """Return the raw loss fraction (no direct damage attenuation).
+        """Return adapted loss fraction, strategy-dependent.
 
-        Adaptation operates through backup-supplier search, not through
-        phantom damage reduction.  This pass-through preserves the API so
-        that callers (model.py hazard application, tests) do not break.
+        For capital_hardening, continuity_capital directly attenuates physical
+        damage.  For other strategies this is a pass-through.
         """
+        if self.adaptation_strategy == "capital_hardening" and self.continuity_capital > 0:
+            return raw_loss_fraction * (1.0 - self.continuity_capital)
         return raw_loss_fraction
 
     def record_direct_losses(
@@ -749,6 +751,7 @@ class FirmAgent(Agent):
             self.ever_directly_hit = True
 
     def copy_adaptation_state_from(self, parent: "FirmAgent") -> None:
+        self.adaptation_strategy = parent.adaptation_strategy
         self.continuity_capital = parent.continuity_capital
         self.expected_direct_loss_ewma = parent.expected_direct_loss_ewma
         self.realized_direct_loss_ewma = parent.realized_direct_loss_ewma
@@ -876,7 +879,10 @@ class FirmAgent(Agent):
 
         self._liquidity_buffer = max(self.MIN_LIQUIDITY_BUFFER, self.money * self.LIQUIDITY_BUFFER_RATIO)
 
-        inventory_target = max(1.0, self.expected_sales * self.INVENTORY_BUFFER_RATIO)
+        effective_buffer_ratio = self.INVENTORY_BUFFER_RATIO
+        if self.adaptation_strategy == "stockpiling" and self.continuity_capital > 0:
+            effective_buffer_ratio += self.continuity_capital * self.last_perceived_hazard_risk
+        inventory_target = max(1.0, self.expected_sales * effective_buffer_ratio)
         demand_driven_output = max(0.0, self.expected_sales + inventory_target - self.inventory_output)
         self.demand_driven_output = demand_driven_output
         desired_output = demand_driven_output
@@ -1056,7 +1062,8 @@ class FirmAgent(Agent):
         # market prices using actual cash.  This preserves macro closure.
         backup_purchases = 0.0
         if (
-            hazard_affected_suppliers
+            self.adaptation_strategy == "backup_suppliers"
+            and hazard_affected_suppliers
             and remaining_inputs_needed > 1e-9
             and self.continuity_capital > 0
             and self._operating_cash_capacity() > 1e-9

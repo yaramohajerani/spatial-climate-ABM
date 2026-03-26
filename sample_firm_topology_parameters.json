@@ -29,6 +29,7 @@
     "max_adaptation_increment": 0.25,
     "resilience_decay": 0.01,
     "maintenance_cost_rate": 0.005,
+    "adaptation_strategy": "backup_suppliers",
     "max_backup_suppliers": 5,
     "min_money_survival": 1.0,
     "replacement_frequency": 10

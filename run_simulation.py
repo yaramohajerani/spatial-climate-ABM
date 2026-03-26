@@ -50,6 +50,13 @@ def _parse():
     )
     p.add_argument("--no-hazards", action="store_true", help="Run baseline scenario without hazard impacts")
     p.add_argument("--no-adaptation", action="store_true", help="Disable hazard-conditional adaptation in firms")
+    p.add_argument(
+        "--adaptation-strategy",
+        type=str,
+        choices=["backup_suppliers", "capital_hardening", "stockpiling"],
+        default=None,
+        help="Adaptation strategy for firms (only used when adaptation is enabled)",
+    )
     p.add_argument("--no-learning", action="store_true", help="Deprecated alias for --no-adaptation")
     p.add_argument("--save-agent-ensemble", action="store_true", help="When running multiple seeds, also save the combined agent panel")
     p.add_argument("--ensemble-plot-stat", choices=("mean", "median"), default="mean", help="Statistic to highlight in ensemble plots and summaries")
@@ -77,15 +84,32 @@ def _resolve_seed_list(args) -> list[int]:
     return [int(args.seed)]
 
 
-def _scenario_display(apply_hazards: bool, adaptation_enabled: bool) -> str:
+STRATEGY_DISPLAY_NAMES = {
+    "backup_suppliers": "Backup Suppliers",
+    "capital_hardening": "Capital Hardening",
+    "stockpiling": "Stockpiling",
+}
+
+
+def _scenario_display(apply_hazards: bool, adaptation_enabled: bool, adaptation_strategy: str = "") -> str:
     base = "Hazard" if apply_hazards else "Baseline"
-    suffix = "Adaptation" if adaptation_enabled else "No Adaptation"
+    if not adaptation_enabled:
+        suffix = "No Adaptation"
+    elif adaptation_strategy:
+        suffix = STRATEGY_DISPLAY_NAMES.get(adaptation_strategy, adaptation_strategy)
+    else:
+        suffix = "Adaptation"
     return f"{base} + {suffix}"
 
 
-def _scenario_label(apply_hazards: bool, adaptation_enabled: bool) -> str:
+def _scenario_label(apply_hazards: bool, adaptation_enabled: bool, adaptation_strategy: str = "") -> str:
     parts = ["hazard" if apply_hazards else "baseline"]
-    parts.append("adaptation" if adaptation_enabled else "noadaptation")
+    if not adaptation_enabled:
+        parts.append("noadaptation")
+    elif adaptation_strategy:
+        parts.append(adaptation_strategy)
+    else:
+        parts.append("adaptation")
     return "_".join(parts)
 
 
@@ -125,6 +149,7 @@ def _base_metadata(
         f"{METADATA_PREFIX}ScenarioLabel": scenario_label,
         f"{METADATA_PREFIX}ApplyHazards": bool(apply_hazards),
         f"{METADATA_PREFIX}AdaptationEnabled": bool(adaptation_enabled),
+        f"{METADATA_PREFIX}AdaptationStrategy": str(adaptation_config.get("adaptation_strategy", "backup_suppliers")) if adaptation_enabled else "",
         f"{METADATA_PREFIX}ParamFile": param_path,
         f"{METADATA_PREFIX}ParamFileStem": Path(param_path).stem if param_path else "",
         f"{METADATA_PREFIX}TopologyPath": topology_path,
@@ -454,8 +479,13 @@ def main() -> None:  # noqa: D401
         adaptation_config = args.adaptation_params
     adaptation_enabled = bool(adaptation_config.get("enabled", True))
 
+    # CLI override for adaptation strategy
+    if getattr(args, "adaptation_strategy", None) and adaptation_enabled:
+        adaptation_config = {**adaptation_config, "adaptation_strategy": args.adaptation_strategy}
+    adaptation_strategy = str(adaptation_config.get("adaptation_strategy", "")) if adaptation_enabled else ""
+
     # Generate scenario label for output files
-    scenario_label = _scenario_label(apply_hazards, adaptation_enabled)
+    scenario_label = _scenario_label(apply_hazards, adaptation_enabled, adaptation_strategy)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     topo_tag = ""
     if args.topology:
@@ -474,7 +504,7 @@ def main() -> None:  # noqa: D401
         tags.append(f"ensemble{len(seed_list)}")
     tags.append(timestamp)
     scenario_label_ts = "_".join(tags)
-    scenario_display = _scenario_display(apply_hazards, adaptation_enabled)
+    scenario_display = _scenario_display(apply_hazards, adaptation_enabled, adaptation_strategy)
     metadata = {
         **_base_metadata(
             args=args,

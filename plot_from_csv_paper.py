@@ -10,6 +10,22 @@ import pandas as pd
 import numpy as np
 
 
+STRATEGY_KEYWORDS = {
+    "backup_suppliers": "Backup Suppliers",
+    "capital_hardening": "Capital Hardening",
+    "stockpiling": "Stockpiling",
+}
+
+SMOOTHABLE_METRICS = {"Firm_Production", "Household_Consumption"}
+
+
+def _smooth_series(y_vals, window):
+    """Apply centered rolling-mean smoothing to a 1-D array."""
+    if window is None or window <= 1:
+        return y_vals
+    return pd.Series(y_vals).rolling(window=window, min_periods=1, center=True).mean().to_numpy()
+
+
 def infer_scenario_name(csv_path: Path) -> str:
     """Infer a human-readable scenario name from a results filename."""
     stem = csv_path.stem.lower()
@@ -20,6 +36,11 @@ def infer_scenario_name(csv_path: Path) -> str:
         base = "Hazard"
     else:
         base = csv_path.stem.replace("simulation_", "").replace("_", " ").title()
+
+    # Check for specific adaptation strategies first
+    for key, display in STRATEGY_KEYWORDS.items():
+        if key in stem:
+            return f"{base} + {display}"
 
     if "noadaptation" in stem or "no_adaptation" in stem:
         mode = "No Adaptation"
@@ -51,10 +72,23 @@ def is_no_adaptation_scenario(scenario: str) -> bool:
 
 def is_adaptation_scenario(scenario: str) -> bool:
     scenario_lower = scenario.lower()
+    # Check for specific strategy names
+    for key in STRATEGY_KEYWORDS:
+        if key in scenario_lower or STRATEGY_KEYWORDS[key].lower() in scenario_lower:
+            return True
     return (
         ("adaptation" in scenario_lower and not is_no_adaptation_scenario(scenario))
         or ("learning" in scenario_lower and not is_no_adaptation_scenario(scenario))
     )
+
+
+STRATEGY_ABBREVS = {
+    "backup suppliers": "BS",
+    "backup_suppliers": "BS",
+    "capital hardening": "CH",
+    "capital_hardening": "CH",
+    "stockpiling": "SP",
+}
 
 
 def scenario_abbrev(scenario: str) -> str:
@@ -68,21 +102,43 @@ def scenario_abbrev(scenario: str) -> str:
 
     if is_no_adaptation_scenario(scenario):
         return f"{base}-NA"
+
+    # Check for specific strategy abbreviation
+    for key, abbrev in STRATEGY_ABBREVS.items():
+        if key in scenario_lower:
+            return f"{base}-{abbrev}"
+
     if is_adaptation_scenario(scenario):
         return f"{base}-A"
     return base
 
 
+def _get_strategy_key(scenario: str) -> str:
+    """Return the strategy key from a scenario name, or empty string if none."""
+    scenario_lower = scenario.lower()
+    for key in STRATEGY_KEYWORDS:
+        if key in scenario_lower or STRATEGY_KEYWORDS[key].lower() in scenario_lower:
+            return key
+    return ""
+
+
 def scenario_main_color(scenario: str) -> str:
     """Return a unique main color for each core paper scenario."""
     if "baseline" in scenario.lower():
-        return "#4C78A8"
-    if is_hazard_scenario(scenario) and is_adaptation_scenario(scenario):
-        return "#59A14F"
+        return "#4C78A8"       # blue
+    strategy = _get_strategy_key(scenario)
+    if strategy == "backup_suppliers":
+        return "#59A14F"       # green
+    if strategy == "capital_hardening":
+        return "#F28E2B"       # orange
+    if strategy == "stockpiling":
+        return "#B07AA1"       # purple
     if is_hazard_scenario(scenario) and is_no_adaptation_scenario(scenario):
-        return "#E15759"
+        return "#E15759"       # red
+    if is_hazard_scenario(scenario) and is_adaptation_scenario(scenario):
+        return "#59A14F"       # green (legacy "Adaptation")
     if is_hazard_scenario(scenario):
-        return "#F28E2B"
+        return "#F28E2B"       # orange
     return "#7F7F7F"
 
 
@@ -141,6 +197,14 @@ def parse_args():
         "--plot-start-year",
         type=float,
         help="If provided, discard data before this calendar year when plotting",
+    )
+    parser.add_argument(
+        "--smooth",
+        type=int,
+        nargs="?",
+        const=8,
+        default=None,
+        help="Apply rolling-mean smoothing to production and consumption panels (window size in steps; default 8)",
     )
     return parser.parse_args()
 
@@ -205,6 +269,16 @@ def main():
             scenario_name = infer_scenario_name(csv_path)
             df["Scenario"] = scenario_name
         else:
+            # Refine generic "Adaptation" scenarios using Meta_AdaptationStrategy
+            if "Meta_AdaptationStrategy" in df.columns:
+                strategy_col = df["Meta_AdaptationStrategy"].dropna()
+                if not strategy_col.empty:
+                    strategy_val = str(strategy_col.iloc[0])
+                    if strategy_val in STRATEGY_KEYWORDS:
+                        display_name = STRATEGY_KEYWORDS[strategy_val]
+                        df["Scenario"] = df["Scenario"].replace(
+                            {"Hazard + Adaptation": f"Hazard + {display_name}"},
+                        )
             non_null_scenarios = df["Scenario"].dropna()
             scenario_name = (
                 str(non_null_scenarios.iloc[0])
@@ -399,6 +473,9 @@ def main():
     scenario_sector_palettes = {
         "baseline": ["#9ecae9", "#6baed6", "#3182bd"],
         "hazard_adaptation": ["#A1D99B", "#74C476", "#31A354"],
+        "hazard_backup_suppliers": ["#A1D99B", "#74C476", "#31A354"],
+        "hazard_capital_hardening": ["#FDD0A2", "#FDAE6B", "#E6550D"],
+        "hazard_stockpiling": ["#D4B9DA", "#C994C7", "#88419D"],
         "hazard_noadaptation": ["#FCAE91", "#FB6A4A", "#CB181D"],
         "hazard": ["#FDD0A2", "#FDAE6B", "#E6550D"],
         "default": ["#D0D0D0", "#A0A0A0", "#707070"],
@@ -406,8 +483,13 @@ def main():
 
     def get_sector_style(scenario, sector_idx):
         """Get color and style for a sector line based on scenario and sector index."""
+        strategy = _get_strategy_key(scenario)
         if "baseline" in scenario.lower():
             palette = scenario_sector_palettes["baseline"]
+        elif strategy:
+            palette = scenario_sector_palettes.get(
+                f"hazard_{strategy}", scenario_sector_palettes["hazard_adaptation"]
+            )
         elif is_hazard_scenario(scenario) and is_adaptation_scenario(scenario):
             palette = scenario_sector_palettes["hazard_adaptation"]
         elif is_hazard_scenario(scenario) and is_no_adaptation_scenario(scenario):
@@ -536,6 +618,8 @@ def main():
                         metric_name,
                         source_df=member_grp,
                     )
+                    if args.smooth and metric_name in SMOOTHABLE_METRICS:
+                        y_vals = _smooth_series(y_vals, args.smooth)
                     ax.plot(
                         x_vals,
                         y_vals,
@@ -588,6 +672,9 @@ def main():
                         source_df=band,
                         deflator_col="Mean_Price_p90",
                     )
+                    if args.smooth and metric_name in SMOOTHABLE_METRICS:
+                        lower_vals = _smooth_series(lower_vals, args.smooth)
+                        upper_vals = _smooth_series(upper_vals, args.smooth)
                     ax.fill_between(
                         x_vals,
                         lower_vals,
@@ -691,6 +778,8 @@ def main():
                         metric_name,
                         source_df=grp,
                     )
+                    if args.smooth and metric_name in SMOOTHABLE_METRICS:
+                        y_vals = _smooth_series(y_vals, args.smooth)
                     ax.plot(
                         x_vals,
                         y_vals,
@@ -723,6 +812,8 @@ def main():
 
                     x_vals = np.array(main_grp.index)
                     y_vals = deflate(x_vals, main_grp.values, scenario, metric_name)
+                    if args.smooth and metric_name in SMOOTHABLE_METRICS:
+                        y_vals = _smooth_series(y_vals, args.smooth)
                     style = scenario_style_map[scenario]
                     ax.plot(
                         x_vals,
@@ -782,6 +873,8 @@ def main():
                     x_vals = grp[x_col].values
                     plot_ensemble_context(aggregate_col, metric_name, scenario, ax)
                     y_vals = grp[aggregate_col].values
+                    if args.smooth and metric_name in SMOOTHABLE_METRICS:
+                        y_vals = _smooth_series(y_vals, args.smooth)
                     ax.plot(
                         x_vals,
                         y_vals,
@@ -814,6 +907,8 @@ def main():
 
                     x_vals = np.array(main_grp.index)
                     y_vals = main_grp.values
+                    if args.smooth and metric_name in SMOOTHABLE_METRICS:
+                        y_vals = _smooth_series(y_vals, args.smooth)
                     style = scenario_style_map[scenario]
                     ax.plot(
                         x_vals,

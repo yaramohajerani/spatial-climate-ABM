@@ -82,6 +82,7 @@ class EconomyModel(Model):
         self.adaptation_observation_radius: int = int(self.adaptation_config.get("observation_radius", 4))
         self.adaptation_updates_this_step: int = 0
         self.max_backup_suppliers: int = int(self.adaptation_config.get("max_backup_suppliers", 5))
+        self.adaptation_strategy: str = str(self.adaptation_config.get("adaptation_strategy", "backup_suppliers"))
 
         # Household consumption ratios across final-good sectors.
         # Upstream sectors sell to firms, not directly to households.
@@ -237,6 +238,7 @@ class EconomyModel(Model):
                 "Average_Raw_Supplier_Disruption": lambda m: np.mean([f.raw_supplier_disruption_this_step for f in m._firms]) if m._firms else 0.0,
                 "Average_Backup_Purchases": lambda m: np.mean([f.backup_purchases_this_step for f in m._firms]) if m._firms else 0.0,
                 "Total_Backup_Purchases": lambda m: sum(f.backup_purchases_this_step for f in m._firms),
+                "Adaptation_Strategy": lambda m: getattr(m, "adaptation_strategy", "backup_suppliers"),
                 "Average_Adaptation_Target": lambda m: np.mean([f.last_adaptation_target for f in m._firms]) if m._firms else 0.0,
                 "Average_Perceived_Hazard_Risk": lambda m: np.mean([f.last_perceived_hazard_risk for f in m._firms]) if m._firms else 0.0,
                 "Average_Working_Capital_Credit_Used": lambda m: np.mean([f.working_capital_credit_used_this_step for f in m._firms]) if m._firms else 0.0,

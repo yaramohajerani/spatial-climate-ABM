@@ -127,6 +127,12 @@ def _parse_args():
         default=None,
         help="Path to an existing sensitivity summary or member CSV; skips simulation and just plots/summarizes",
     )
+    parser.add_argument(
+        "--adaptation-strategy",
+        choices=("backup_suppliers", "capital_hardening", "stockpiling"),
+        default=None,
+        help="Override adaptation strategy from the parameter file",
+    )
     return parser.parse_args()
 
 
@@ -172,6 +178,7 @@ def _sensitivity_metadata(
     adaptation_config = params.get("adaptation", params.get("learning", {}))
     return {
         f"{METADATA_PREFIX}SensitivityParameter": "adaptation_sensitivity",
+        f"{METADATA_PREFIX}AdaptationStrategy": str(adaptation_config.get("adaptation_strategy", "backup_suppliers")),
         f"{METADATA_PREFIX}ParamFile": str(param_file),
         f"{METADATA_PREFIX}ParamFileStem": Path(param_file).stem,
         f"{METADATA_PREFIX}TopologyPath": topology_path,
@@ -199,8 +206,6 @@ def _sensitivity_metadata(
         f"{METADATA_PREFIX}MaintenanceCostRate": float(adaptation_config.get("maintenance_cost_rate", 0.005)),
         f"{METADATA_PREFIX}MaxBackupSuppliers": int(adaptation_config.get("max_backup_suppliers", 5)),
         f"{METADATA_PREFIX}MaxAdaptIncrement": float(adaptation_config.get("max_adaptation_increment", 0.25)),
-        f"{METADATA_PREFIX}ContinuitySensitivityMin": float(sensitivity_min),
-        f"{METADATA_PREFIX}ContinuitySensitivityMax": float(sensitivity_max),
         f"{METADATA_PREFIX}SeedCount": len(seed_list),
         f"{METADATA_PREFIX}SeedList": ",".join(str(seed) for seed in seed_list),
         f"{METADATA_PREFIX}SeedMin": min(seed_list) if seed_list else "",
@@ -240,6 +245,7 @@ def run_scenario(
     sensitivity_max: float,
     n_steps: int,
     seed: int,
+    adaptation_strategy: str | None = None,
 ) -> pd.DataFrame:
     adaptation_config = params.get("adaptation", params.get("learning", {}))
     adaptation_config = {
@@ -248,6 +254,8 @@ def run_scenario(
         "adaptation_sensitivity_min": float(sensitivity_min),
         "adaptation_sensitivity_max": float(sensitivity_max),
     }
+    if adaptation_strategy:
+        adaptation_config["adaptation_strategy"] = adaptation_strategy
 
     model = EconomyModel(
         num_households=int(params.get("num_households", 100)),
@@ -418,17 +426,23 @@ def plot_sensitivity(
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=4, fontsize=9, bbox_to_anchor=(0.5, -0.02))
 
+    strategy_label = ""
+    if "Meta_AdaptationStrategy" in summary_df.columns:
+        strategy_val = summary_df["Meta_AdaptationStrategy"].dropna()
+        if not strategy_val.empty:
+            strategy_label = f" [{str(strategy_val.iloc[0])}]"
+
     if is_ensemble:
         ensemble_size = int(summary_df["EnsembleSize"].max())
         stat_label = ensemble_stat.title()
         fig.suptitle(
-            f"Sensitivity of Outcomes to Adaptation Sensitivity\n(Hazard + Adaptation scenario; {ensemble_size}-seed ensemble {stat_label})",
+            f"Sensitivity of Outcomes to Adaptation Sensitivity{strategy_label}\n(Hazard + Adaptation scenario; {ensemble_size}-seed ensemble {stat_label})",
             fontsize=13,
             y=1.02,
         )
     else:
         fig.suptitle(
-            "Sensitivity of Outcomes to Adaptation Sensitivity\n(Hazard + Adaptation scenario; single seed)",
+            f"Sensitivity of Outcomes to Adaptation Sensitivity{strategy_label}\n(Hazard + Adaptation scenario; single seed)",
             fontsize=13,
             y=1.02,
         )
@@ -596,6 +610,7 @@ def main():
                     sensitivity_max,
                     n_steps,
                     seed,
+                    adaptation_strategy=args.adaptation_strategy,
                 )
                 seed_df = apply_metadata(
                     seed_df,
