@@ -90,7 +90,7 @@ The model uses memory-efficient lazy loading for hazard data:
 - **Performance**: ~6ms sampling time vs ~4.5s for full load
 
 #### Hazard Events
-- **Format**: `"RP:START_STEP:END_STEP:HAZARD_TYPE:path/to/geotiff.tif"`
+- **Format**: `"RP:START_STEP:END_STEP:HAZARD_TYPE:path/to/geotiff.tif"` or `"RP:START_STEP:END_STEP:HAZARD_TYPE:None"` for an explicit no-hazard warm-up interval
 - **Return Periods**: RP2 (50% annual), RP10 (10% annual), RP100 (1% annual)
 - **Sampling**: Independent per-cell draws each step based on return period frequencies
 - **Intensity Combination**: Maximum depth used when multiple events affect same cell
@@ -161,9 +161,10 @@ If you build the ensemble in batches, merge the resulting `*_members.csv` files 
   "num_households": 650,
   "grid_resolution": 0.25,
   "rp_files": [
-    "2:1:80:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00002.tif",
-    "10:1:80:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00010.tif",
-    "100:1:80:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00100.tif"
+    "10:1:80:FL:None",
+    "2:81:320:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00002.tif",
+    "10:81:320:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00010.tif",
+    "100:81:320:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00100.tif"
   ],
   "steps": 320,
   "seed": 42,
@@ -189,6 +190,8 @@ If you build the ensemble in batches, merge the resulting `*_members.csv` files 
   }
 }
 ```
+
+Using `None` as the path lets you encode a shared no-hazard warm-up period directly in the scenario schedule. This is useful when baseline, hazard, and adaptation scenarios should all equilibrate under identical no-forcing conditions before the hazard files become active.
 
 ### Sensitivity Analysis
 

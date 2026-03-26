@@ -14,6 +14,7 @@ import numpy as np
 import rasterio
 
 Coords = Tuple[int, int]
+HazardEventSpec = Tuple[int, int, int, str, str | None]
 
 
 class LazyHazard:
@@ -129,6 +130,35 @@ class LazyHazard:
             intensities[i, :] = self.sample_at_coords(coords, i)
 
         return intensities
+
+
+def parse_hazard_event_specs(rp_files: list[str] | str | None) -> list[HazardEventSpec]:
+    """Parse CLI/JSON hazard specifications into event tuples.
+
+    Supports warm-up windows by allowing the path segment to be ``None``.
+    Entries with ``None`` still define a no-hazard interval in the scenario
+    metadata, but no raster is loaded for that window.
+    """
+    if not rp_files:
+        return []
+    if isinstance(rp_files, str):
+        rp_files = [rp_files]
+
+    events: list[HazardEventSpec] = []
+    for item in rp_files:
+        try:
+            rp_str, start_str, end_str, type_str, path_str = item.split(":", 4)
+        except ValueError as exc:  # noqa: BLE001
+            raise ValueError(
+                f"Invalid hazard specification: {item}. Expected <RP>:<START>:<END>:<TYPE>:<path|None>."
+            ) from exc
+        path_value: str | None
+        if path_str.strip().lower() in {"none", "null", ""}:
+            path_value = None
+        else:
+            path_value = path_str
+        events.append((int(rp_str), int(start_str), int(end_str), type_str, path_value))
+    return events
 
 
 def lazy_hazard_from_geotiffs(

@@ -16,6 +16,7 @@ from ensemble_utils import (
     build_ensemble_summary as summarize_ensemble,
     ensemble_seed_metadata as summarize_seed_metadata,
 )
+from hazard_utils import parse_hazard_event_specs
 # Runner now expects one or more --rp-file arguments in the form
 # "<RP>:<START_STEP>:<END_STEP>:<TYPE>:<path>"
 
@@ -26,9 +27,9 @@ def _parse():
         action="append",
         metavar="RP:START:END:TYPE:PATH",
         help=(
-            "Add a GeoTIFF file. Format: <RP>:<START_STEP>:<END_STEP>:<HAZARD_TYPE>:<path>. "
+            "Add a GeoTIFF file. Format: <RP>:<START_STEP>:<END_STEP>:<HAZARD_TYPE>:<path|None>. "
             "Required unless provided via --param-file. "
-            "Example: --rp-file 100:1:20:FL:rp100_2030.tif"
+            "Example: --rp-file 100:1:20:FL:rp100_2030.tif or --rp-file 10:1:80:FL:None"
         ),
     )
     p.add_argument("--viz", action="store_true", help="Launch interactive Solara dashboard instead of headless run")
@@ -101,8 +102,11 @@ def _safe_git_commit() -> str:
     return proc.stdout.strip()
 
 
-def _event_signature(events: list[tuple[int, int, int, str, str]]) -> str:
-    return ";".join(f"{rp}:{start}:{end}:{haz_type}:{path}" for rp, start, end, haz_type, path in events)
+def _event_signature(events: list[tuple[int, int, int, str, str | None]]) -> str:
+    return ";".join(
+        f"{rp}:{start}:{end}:{haz_type}:{path if path is not None else 'None'}"
+        for rp, start, end, haz_type, path in events
+    )
 
 
 def _base_metadata(
@@ -381,20 +385,13 @@ def main() -> None:  # noqa: D401
 
     # First, parse the RP files into a list irrespective of --viz so we can
     # pass them on to a potential Solara dashboard.
-    # Parsed as (return_period, start_step, end_step, hazard_type, path)
-    events: list[tuple[int, int, int, str, str]] = []
+    # Parsed as (return_period, start_step, end_step, hazard_type, path|None)
+    events: list[tuple[int, int, int, str, str | None]] = []
     if args.rp_file:
-        for item in args.rp_file:
-            try:
-                rp_str, start_str, end_str, type_str, path_str = item.split(":", 4)
-                events.append((int(rp_str), int(start_str), int(end_str), type_str, path_str))
-            except ValueError as exc:  # noqa: BLE001
-                raise SystemExit(
-                    (
-                        f"Invalid --rp-file format: {item}. Expected "
-                        "<RP>:<START>:<END>:<TYPE>:<path>."
-                    )
-                ) from exc
+        try:
+            events = parse_hazard_event_specs(args.rp_file)
+        except ValueError as exc:  # noqa: BLE001
+            raise SystemExit(str(exc)) from exc
 
     seed_list = _resolve_seed_list(args)
     if args.viz and len(seed_list) > 1:

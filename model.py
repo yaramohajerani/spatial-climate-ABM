@@ -42,7 +42,7 @@ class EconomyModel(Model):
         num_households: int = 100,
         num_firms: int = 20,
         # Iterable of (return_period, start_step, end_step, hazard_type, path) tuples
-        hazard_events: Iterable[Tuple[int, int, int, str, str]] | None = None,
+        hazard_events: Iterable[Tuple[int, int, int, str, str | None]] | None = None,
         seed: int | None = None,
         start_year: int = 0,
         steps_per_year: int = 4,
@@ -122,6 +122,8 @@ class EconomyModel(Model):
         grouped_ranges: dict[str, list[Tuple[int, int]]] = defaultdict(list)
 
         for rp, start, end, htype, path in hazard_events:
+            if path is None:
+                continue
             grouped_files[htype].append((rp, path))
             grouped_ranges[htype].append((start, end))
 

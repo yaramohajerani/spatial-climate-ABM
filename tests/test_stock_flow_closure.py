@@ -2,6 +2,7 @@ from pathlib import Path
 
 import numpy as np
 
+from hazard_utils import parse_hazard_event_specs
 from model import EconomyModel
 
 
@@ -200,6 +201,32 @@ def test_bounded_working_capital_credit_finances_operations_without_money_leakag
     assert np.isclose(buyer.money, -10.0, atol=1e-9)
     assert np.isclose(buyer.working_capital_credit_used_this_step, 20.0, atol=1e-9)
     assert np.isclose(model.total_money(), initial_total_money, atol=1e-9)
+
+
+def test_none_hazard_entries_allow_explicit_warmup_windows() -> None:
+    """`None` hazard paths should encode no-hazard intervals without raster loading."""
+    events = parse_hazard_event_specs(["10:1:8:FL:None"])
+    assert events == [(10, 1, 8, "FL", None)]
+
+    model = EconomyModel(
+        num_households=50,
+        hazard_events=events,
+        seed=7,
+        firm_topology_path=str(REPO_ROOT / "sample_firm_topology.json"),
+        apply_hazard_impacts=True,
+        adaptation_params={"enabled": False},
+        consumption_ratios={"services": 0.7, "retail": 0.3},
+        household_relocation=False,
+    )
+
+    assert model.hazards == {}
+    for _ in range(8):
+        model.step()
+
+    df = model.results_to_dataframe()
+    assert np.allclose(df["Average_Risk"].to_numpy(), 0.0, atol=1e-12)
+    assert np.allclose(df["Flooded_Firms"].to_numpy(), 0.0, atol=1e-12)
+    assert np.allclose(df["Flooded_Households"].to_numpy(), 0.0, atol=1e-12)
 
 
 def test_firm_reorganization_preserves_total_money_and_inherits_adaptation_state() -> None:
