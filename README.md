@@ -292,6 +292,7 @@ When plotting ensemble summaries later, `plot_from_csv_paper.py` can use the sav
 python plot_from_csv_paper.py \
   --csv-files simulation_baseline_noadaptation_...csv simulation_hazard_noadaptation_...csv simulation_hazard_adaptation_...csv \
   --ensemble-stat median \
+  --plot-start-year 2015 \
   --show-ensemble-band \
   --show-ensemble-members \
   --out paper_ensemble_timeseries.png

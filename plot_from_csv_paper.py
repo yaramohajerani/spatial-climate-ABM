@@ -137,6 +137,11 @@ def parse_args():
         action="store_true",
         help="Shade the p10-p90 band when ensemble summary CSVs are provided"
     )
+    parser.add_argument(
+        "--plot-start-year",
+        type=float,
+        help="If provided, discard data before this calendar year when plotting",
+    )
     return parser.parse_args()
 
 
@@ -287,11 +292,6 @@ def main():
         firm_agents_df = pd.DataFrame()
         household_agents_df = pd.DataFrame()
 
-    household_demand_sectors = []
-    if not firm_agents_df.empty and "household_sales_last_step" in firm_agents_df.columns:
-        demand_totals = firm_agents_df.groupby("sector")["household_sales_last_step"].sum(min_count=1)
-        household_demand_sectors = sorted(demand_totals[demand_totals > 0].index.tolist())
-    
     # Determine x-axis column - prefer Year column if available
     if "Year" in df_combined.columns:
         x_col = "Year"
@@ -340,6 +340,48 @@ def main():
         df_copy = df.copy()
         df_copy["Year"] = df_copy["Step"].map(year_map)
         return df_copy
+
+    def filter_plot_start_year(df, scenario_hint="__all__"):
+        """Filter a dataframe to the requested minimum plot year, if possible."""
+        if args.plot_start_year is None or df.empty:
+            return df
+        if "Year" in df.columns:
+            return df[df["Year"] >= args.plot_start_year].copy()
+        if "Step" not in df.columns:
+            return df
+
+        if "Scenario" in df.columns:
+            frames = []
+            for scenario, sub in df.groupby("Scenario", dropna=False):
+                scenario_key = str(scenario) if pd.notna(scenario) else scenario_hint
+                sub_with_year = add_year_from_step(sub, scenario_key)
+                if "Year" in sub_with_year.columns:
+                    sub_with_year = sub_with_year[sub_with_year["Year"] >= args.plot_start_year]
+                frames.append(sub_with_year)
+            return pd.concat(frames, ignore_index=True) if frames else df.iloc[0:0].copy()
+
+        df_with_year = add_year_from_step(df, scenario_hint)
+        if "Year" in df_with_year.columns:
+            return df_with_year[df_with_year["Year"] >= args.plot_start_year].copy()
+        return df_with_year
+
+    if args.plot_start_year is not None:
+        if "Year" not in df_combined.columns and not step_to_year_map:
+            raise ValueError("--plot-start-year requires Year information in the results CSVs.")
+        df_combined = filter_plot_start_year(df_combined)
+        member_df_combined = filter_plot_start_year(member_df_combined)
+        band_df_combined = filter_plot_start_year(band_df_combined)
+        firm_agents_df = filter_plot_start_year(firm_agents_df)
+        household_agents_df = filter_plot_start_year(household_agents_df)
+        if df_combined.empty:
+            raise ValueError(
+                f"No rows remain after applying --plot-start-year {args.plot_start_year}."
+            )
+
+    household_demand_sectors = []
+    if not firm_agents_df.empty and "household_sales_last_step" in firm_agents_df.columns:
+        demand_totals = firm_agents_df.groupby("sector")["household_sales_last_step"].sum(min_count=1)
+        household_demand_sectors = sorted(demand_totals[demand_totals > 0].index.tolist())
     
     # Use distinct colors for each scenario so ensemble bands remain visually separable.
     scenario_style_map = {}
