@@ -418,6 +418,55 @@ def test_backup_supplier_search_purchases_real_goods() -> None:
     assert np.isclose(model.total_money(), initial_total_money, atol=1e-6)
 
 
+def test_indirect_supplier_stress_triggers_backup_search() -> None:
+    """Upstream cascade stress should count as hazard-related for backup sourcing."""
+    model = build_closed_economy_model(adaptation_enabled=True)
+    buyer = next(f for f in model._firms if f.connected_firms)
+    primary_supplier = buyer.connected_firms[0]
+
+    backup = next(
+        f for f in model._firms
+        if f.sector == primary_supplier.sector
+        and f is not buyer
+        and f is not primary_supplier
+    )
+
+    primary_supplier.inventory_output = 0.0
+    primary_supplier.damage_factor = 1.0
+    primary_supplier.counterfactual_damage_factor = 1.0
+    primary_supplier.raw_direct_loss_fraction_this_step = 0.0
+    primary_supplier.adapted_direct_loss_fraction_this_step = 0.0
+    primary_supplier.raw_supplier_disruption_this_step = 0.4
+    primary_supplier.supplier_disruption_this_step = 0.4
+    primary_supplier.supplier_disruption_ewma = 0.4
+    primary_supplier.hazard_operating_shortfall_this_step = 0.4
+
+    backup.inventory_output = 10.0
+    backup.price = 1.0
+
+    buyer.continuity_capital = 0.5
+    buyer.money = 200.0
+    buyer.inventory_inputs = {primary_supplier.unique_id: 0.0}
+    buyer.connected_firms = [primary_supplier]
+    buyer.employees.clear()
+    buyer.employees.extend([object()] * 5)
+    buyer.target_output = 10.0
+    buyer.demand_driven_output = 10.0
+    buyer.capital_stock = 20.0
+    buyer.capital_coeff = buyer.original_capital_coeff
+    buyer.damage_factor = 1.0
+    buyer.counterfactual_damage_factor = 1.0
+    buyer.raw_direct_loss_fraction_this_step = 0.0
+    buyer.adapted_direct_loss_fraction_this_step = 0.0
+    buyer.price = 1.0
+    buyer.wage_offer = 1.0
+
+    buyer.step()
+
+    assert buyer.raw_supplier_disruption_this_step > 0.0
+    assert buyer.backup_purchases_this_step > 0.0
+
+
 def test_cascade_reporters_track_never_hit_firm_burden() -> None:
     """Systemic-risk reporters should separate directly hit firms from never-hit disrupted firms."""
     model = build_closed_economy_model(adaptation_enabled=True)

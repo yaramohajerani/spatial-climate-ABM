@@ -545,6 +545,63 @@ class FirmAgent(Agent):
     def _adaptation_scale(self) -> float:
         return max(1.0, self.base_capital_target)
 
+    def _uses_adaptation_strategy(self, strategy: str) -> bool:
+        return self.adaptation_strategy == strategy
+
+    def _effective_inventory_buffer_ratio(self) -> float:
+        buffer_ratio = self.INVENTORY_BUFFER_RATIO
+        if self._uses_adaptation_strategy("stockpiling") and self.continuity_capital > 0:
+            buffer_ratio += self.continuity_capital * self.last_perceived_hazard_risk
+        return buffer_ratio
+
+    def _has_hazard_disruption_signal(self) -> bool:
+        """Return whether this firm shows direct or indirect hazard stress.
+
+        The continuity module should react not only to directly flooded suppliers
+        but also to suppliers that are short because they were disrupted further
+        upstream. Including both current-period and recent-period disruption
+        indicators preserves the hazard-conditioned interpretation while making
+        multi-hop cascades visible to buyers.
+        """
+        eps = 1e-9
+        return bool(
+            self.raw_direct_loss_fraction_this_step > eps
+            or self.adapted_direct_loss_fraction_this_step > eps
+            or self.damage_factor < 0.999
+            or self.counterfactual_damage_factor < 0.999
+            or self.raw_supplier_disruption_this_step > eps
+            or self.supplier_disruption_this_step > eps
+            or self.hazard_operating_shortfall_this_step > eps
+            or self.expected_operating_shortfall_ewma > eps
+            or self.supplier_disruption_ewma > eps
+        )
+
+    def _primary_supplier_shortage_is_hazard_related(self) -> bool:
+        return any(supplier._has_hazard_disruption_signal() for supplier in self.connected_firms)
+
+    def _backup_supplier_count(self) -> int:
+        if not self._uses_adaptation_strategy("backup_suppliers") or self.continuity_capital <= 0:
+            return 0
+        max_backup_count = max(0, int(getattr(self.model, "max_backup_suppliers", 5)))
+        if max_backup_count <= 0:
+            return 0
+        return max(1, int(self.continuity_capital * max_backup_count))
+
+    def _purchase_from_backup_suppliers(self, remaining_inputs_needed: float) -> tuple[float, float]:
+        if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
+            return remaining_inputs_needed, 0.0
+
+        backup_purchases = 0.0
+        backup_suppliers = self.model.find_backup_suppliers(self, self._backup_supplier_count())
+        for supplier in backup_suppliers:
+            if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
+                break
+            bought = supplier.sell_goods_to_firm(self, remaining_inputs_needed)
+            if bought > 0:
+                remaining_inputs_needed -= bought
+                backup_purchases += bought
+        return remaining_inputs_needed, backup_purchases
+
     def _fund_adaptation_after_operations(
         self,
         *,
@@ -733,7 +790,7 @@ class FirmAgent(Agent):
         For capital_hardening, continuity_capital directly attenuates physical
         damage.  For other strategies this is a pass-through.
         """
-        if self.adaptation_strategy == "capital_hardening" and self.continuity_capital > 0:
+        if self._uses_adaptation_strategy("capital_hardening") and self.continuity_capital > 0:
             return raw_loss_fraction * (1.0 - self.continuity_capital)
         return raw_loss_fraction
 
@@ -879,9 +936,7 @@ class FirmAgent(Agent):
 
         self._liquidity_buffer = max(self.MIN_LIQUIDITY_BUFFER, self.money * self.LIQUIDITY_BUFFER_RATIO)
 
-        effective_buffer_ratio = self.INVENTORY_BUFFER_RATIO
-        if self.adaptation_strategy == "stockpiling" and self.continuity_capital > 0:
-            effective_buffer_ratio += self.continuity_capital * self.last_perceived_hazard_risk
+        effective_buffer_ratio = self._effective_inventory_buffer_ratio()
         inventory_target = max(1.0, self.expected_sales * effective_buffer_ratio)
         demand_driven_output = max(0.0, self.expected_sales + inventory_target - self.inventory_output)
         self.demand_driven_output = demand_driven_output
@@ -1047,11 +1102,7 @@ class FirmAgent(Agent):
             input_shortfall_ratio = min(1.0, max(0.0, remaining_inputs_needed / desired_input_units))
         else:
             input_shortfall_ratio = 0.0
-        hazard_affected_suppliers = any(
-            supplier.damage_factor < 0.999
-            or supplier.adapted_direct_loss_fraction_this_step > 0
-            for supplier in self.connected_firms
-        )
+        hazard_affected_suppliers = self._primary_supplier_shortage_is_hazard_related()
         raw_supplier_disruption = input_shortfall_ratio if hazard_affected_suppliers else 0.0
         self.raw_supplier_disruption_this_step = raw_supplier_disruption
         self.supplier_disruption_this_step = raw_supplier_disruption
@@ -1062,22 +1113,15 @@ class FirmAgent(Agent):
         # market prices using actual cash.  This preserves macro closure.
         backup_purchases = 0.0
         if (
-            self.adaptation_strategy == "backup_suppliers"
+            self._uses_adaptation_strategy("backup_suppliers")
             and hazard_affected_suppliers
             and remaining_inputs_needed > 1e-9
             and self.continuity_capital > 0
             and self._operating_cash_capacity() > 1e-9
         ):
-            max_backup_count = getattr(self.model, "max_backup_suppliers", 5)
-            n_backup = max(1, int(self.continuity_capital * max_backup_count))
-            backup_suppliers = self.model.find_backup_suppliers(self, n_backup)
-            for supplier in backup_suppliers:
-                if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
-                    break
-                bought = supplier.sell_goods_to_firm(self, remaining_inputs_needed)
-                if bought > 0:
-                    remaining_inputs_needed -= bought
-                    backup_purchases += bought
+            remaining_inputs_needed, backup_purchases = self._purchase_from_backup_suppliers(
+                remaining_inputs_needed
+            )
         self.backup_purchases_this_step = backup_purchases
         self.continuity_input_coverage_this_step = backup_purchases  # backward compat
 

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 from plot_from_csv_paper import summarize_members_for_plot
-from run_simulation import _build_ensemble_summary, _resolve_seed_list
+from run_simulation import _base_metadata, _build_ensemble_summary, _resolve_seed_list
 
 
 def test_resolve_seed_list_deduplicates_explicit_seeds() -> None:
@@ -48,3 +48,29 @@ def test_member_summary_helpers_match_and_track_ensemble_size() -> None:
     assert mean_step0["Firm_Production"] == 40.0 / 3.0
     assert mean_step0["Household_Consumption"] == 16.0 / 3.0
     assert "Meta_AdaptationSensitivityMin" not in runner_summary.columns
+
+
+def test_base_metadata_matches_model_adaptation_defaults() -> None:
+    args = SimpleNamespace(
+        param_file=None,
+        topology=None,
+        start_year=0,
+        steps_per_year=4,
+        steps=10,
+        num_households=100,
+        grid_resolution=1.0,
+        household_relocation=False,
+    )
+
+    metadata = _base_metadata(
+        args=args,
+        events=[],
+        apply_hazards=True,
+        adaptation_enabled=True,
+        adaptation_config={},
+        scenario_label="hazard_backup_suppliers",
+        timestamp="20260326_000000",
+    )
+
+    assert metadata["Meta_ObservationRadius"] == 4.0
+    assert metadata["Meta_MinMoneySurvival"] == 1.0
