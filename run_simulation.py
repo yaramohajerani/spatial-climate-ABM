@@ -8,7 +8,14 @@ import numpy as np
 import pandas as pd
 # Import model and agent classes
 from model import EconomyModel
-from agents import FirmAgent
+from agents import FirmAgent, HouseholdAgent
+from ensemble_utils import (
+    ENSEMBLE_STAT_ORDER,
+    METADATA_PREFIX,
+    apply_metadata as apply_ensemble_metadata,
+    build_ensemble_summary as summarize_ensemble,
+    ensemble_seed_metadata as summarize_seed_metadata,
+)
 # Runner now expects one or more --rp-file arguments in the form
 # "<RP>:<START_STEP>:<END_STEP>:<TYPE>:<path>"
 
@@ -46,18 +53,6 @@ def _parse():
     p.add_argument("--save-agent-ensemble", action="store_true", help="When running multiple seeds, also save the combined agent panel")
     p.add_argument("--ensemble-plot-stat", choices=("mean", "median"), default="mean", help="Statistic to highlight in ensemble plots and summaries")
     return p.parse_args()
-
-
-ENSEMBLE_STAT_ORDER = ["mean", "median", "std", "p10", "p90"]
-METADATA_PREFIX = "Meta_"
-MERGE_VARIABLE_METADATA = {
-    f"{METADATA_PREFIX}RunTimestamp",
-    f"{METADATA_PREFIX}SeedCount",
-    f"{METADATA_PREFIX}SeedList",
-    f"{METADATA_PREFIX}SeedMin",
-    f"{METADATA_PREFIX}SeedMax",
-    f"{METADATA_PREFIX}SourceMemberFiles",
-}
 
 
 def _resolve_seed_list(args) -> list[int]:
@@ -138,6 +133,15 @@ def _base_metadata(
         f"{METADATA_PREFIX}NumHouseholds": int(args.num_households),
         f"{METADATA_PREFIX}GridResolution": float(args.grid_resolution),
         f"{METADATA_PREFIX}HouseholdRelocation": bool(args.household_relocation),
+        f"{METADATA_PREFIX}HHConsumptionPropensityIncome": float(HouseholdAgent.CONSUMPTION_PROPENSITY_INCOME),
+        f"{METADATA_PREFIX}HHConsumptionPropensityWealth": float(HouseholdAgent.CONSUMPTION_PROPENSITY_WEALTH),
+        f"{METADATA_PREFIX}HHTargetCashBuffer": float(HouseholdAgent.TARGET_CASH_BUFFER),
+        f"{METADATA_PREFIX}FirmInventoryBufferRatio": float(FirmAgent.INVENTORY_BUFFER_RATIO),
+        f"{METADATA_PREFIX}FirmLiquidityBufferRatio": float(FirmAgent.LIQUIDITY_BUFFER_RATIO),
+        f"{METADATA_PREFIX}FirmMinLiquidityBuffer": float(FirmAgent.MIN_LIQUIDITY_BUFFER),
+        f"{METADATA_PREFIX}FirmWorkingCapitalCreditRevenueShare": float(FirmAgent.WORKING_CAPITAL_CREDIT_REVENUE_SHARE),
+        f"{METADATA_PREFIX}FirmLaborShare": float(FirmAgent.LABOR_SHARE),
+        f"{METADATA_PREFIX}NoWorkerWagePremium": float(FirmAgent.NO_WORKER_WAGE_PREMIUM),
         f"{METADATA_PREFIX}UCB_C": float(adaptation_config.get("ucb_c", 1.0)),
         f"{METADATA_PREFIX}DecisionInterval": int(adaptation_config.get("decision_interval", 4)),
         f"{METADATA_PREFIX}RewardWindow": int(adaptation_config.get("reward_window", 4)),
@@ -154,27 +158,11 @@ def _base_metadata(
 
 
 def _ensemble_seed_metadata(seed_list: list[int]) -> dict[str, object]:
-    ordered = [int(seed) for seed in seed_list]
-    if not ordered:
-        return {
-            f"{METADATA_PREFIX}SeedCount": 0,
-            f"{METADATA_PREFIX}SeedList": "",
-            f"{METADATA_PREFIX}SeedMin": "",
-            f"{METADATA_PREFIX}SeedMax": "",
-        }
-    return {
-        f"{METADATA_PREFIX}SeedCount": len(ordered),
-        f"{METADATA_PREFIX}SeedList": ",".join(str(seed) for seed in ordered),
-        f"{METADATA_PREFIX}SeedMin": min(ordered),
-        f"{METADATA_PREFIX}SeedMax": max(ordered),
-    }
+    return summarize_seed_metadata(seed_list)
 
 
 def _apply_metadata(df: pd.DataFrame, metadata: dict[str, object]) -> pd.DataFrame:
-    df = df.copy()
-    for key, value in metadata.items():
-        df[key] = value
-    return df
+    return apply_ensemble_metadata(df, metadata)
 
 
 def _finalize_main_results(df: pd.DataFrame, *, scenario_display: str, seed: int, start_year: int, steps_per_year: int) -> pd.DataFrame:
@@ -244,38 +232,7 @@ def _run_single_simulation(
 
 def _build_ensemble_summary(member_df: pd.DataFrame) -> pd.DataFrame:
     """Summarize member-level model outputs by step and scenario."""
-    if member_df.empty:
-        return member_df.copy()
-
-    group_cols = [col for col in ["Scenario", "Step", "Year"] if col in member_df.columns]
-    numeric_cols = [
-        col for col in member_df.select_dtypes(include=[np.number]).columns
-        if col not in set(group_cols + ["Seed"])
-        and not col.startswith(METADATA_PREFIX)
-    ]
-    grouped = member_df.groupby(group_cols, sort=True)
-    ensemble_size = grouped["Seed"].nunique().rename("EnsembleSize").reset_index()
-    frames: list[pd.DataFrame] = []
-    aggregations = {
-        "mean": grouped[numeric_cols].mean(),
-        "median": grouped[numeric_cols].median(),
-        "std": grouped[numeric_cols].std().fillna(0.0),
-        "p10": grouped[numeric_cols].quantile(0.10),
-        "p90": grouped[numeric_cols].quantile(0.90),
-    }
-    for stat in ENSEMBLE_STAT_ORDER:
-        stat_df = aggregations[stat].reset_index()
-        stat_df["EnsembleStatistic"] = stat
-        stat_df = stat_df.merge(ensemble_size, on=group_cols, how="left")
-        frames.append(stat_df)
-
-    summary_df = pd.concat(frames, ignore_index=True)
-    summary_df["EnsembleStatistic"] = pd.Categorical(
-        summary_df["EnsembleStatistic"],
-        categories=ENSEMBLE_STAT_ORDER,
-        ordered=True,
-    )
-    return summary_df.sort_values(group_cols + ["EnsembleStatistic"]).reset_index(drop=True)
+    return summarize_ensemble(member_df, group_cols=["Scenario", "Step", "Year"])
 
 
 def _save_ensemble_plot(summary_df: pd.DataFrame, member_df: pd.DataFrame, output_path: Path, *, highlight_stat: str) -> None:

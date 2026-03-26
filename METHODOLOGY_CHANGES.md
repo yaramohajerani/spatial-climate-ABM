@@ -246,3 +246,21 @@ Tracking changes to the model methodology that need to be reflected in the manus
 - **Why**: The previous rule capped reinvestment too aggressively relative to the no-hazard capital replacement requirement, leaving the baseline with a slow residual decline in installed capital and output even after the startup transient had mostly settled. Prioritizing replacement before dividends produces a more defensible no-hazard closure without breaking stock-flow consistency.
 - **Where**: `agents.py`, `tests/test_stock_flow_closure.py`, `README.md`, and `AGENTS.md`.
 - **Manuscript impact**: Update the methodology text so retained-earnings capital formation is described as base-capital maintenance first, then expansion/distribution. Recheck the baseline narrative and any reported equilibrium interpretation after rerunning the scenarios.
+
+## 41. Keep household wealth recirculation minimal
+- **What**: Retained the original household wealth-spending term at `0.02 × max(0, money - 50)`.
+- **Why**: A stronger wealth-recirculation tweak added another closure knob but did not materially resolve the baseline drift. Keeping the original low value avoids introducing extra calibration complexity while we address the deeper equilibrium issue more directly.
+- **Where**: `agents.py`, `README.md`, and `JASSS0/TemplateJASSS.tex`.
+- **Manuscript impact**: The household-budget equation remains the simple reduced-form baseline closure used before; no stronger wealth-spending assumption is imposed.
+
+## 42. Modest no-worker wage fallback
+- **What**: Reduced the fallback wage target for firms with zero workers in the previous period from `1.10 × mean_wage` to `1.02 × mean_wage`.
+- **Why**: The no-hazard baseline still exhibited many workerless firms alongside falling aggregate employment. The previous fallback rule could therefore ratchet wages upward in a slack labour market, increasing payroll pressure without resolving the underlying hiring shortfall. A 2\% premium is enough to make empty firms competitive without driving a wage spiral.
+- **Where**: `agents.py` and `JASSS0/TemplateJASSS.tex`.
+- **Manuscript impact**: The wage-rule description should note that firms with no workers use only a modest premium over the market mean as an entry fallback.
+
+## 43. Bounded working-capital credit for current operations
+- **What**: Added a principle-based operating-finance rule. Each firm now computes a bounded working-capital credit limit from recent/expected sales and may use that overdraft only for current payroll and intermediate-input purchases. The liquidity buffer still matters: the firm first spends cash above the buffer, then may draw the bounded overdraft, while capital expansion, adaptation spending, and dividends remain limited to residual cash after operations.
+- **Why**: The remaining baseline non-equilibrium was not mainly a household-consumption calibration problem. It reflected a missing monetary-production principle: firms had to finance current production entirely from cash already on hand, even though sales occur later in the same period. That created the pathological combination of idle household labour and firms that were still classified as labour-limited. A bounded working-capital facility is the minimal decentralized fix that makes circulating capital reproducible before profits are distributed.
+- **Where**: `agents.py`, `FirmAgent.plan_operations()`, `hire_labor()`, `sell_goods_to_firm()`, and the new working-capital helper methods; `model.py`, additional working-capital reporters; `run_simulation.py`, output metadata; `tests/test_stock_flow_closure.py`, operating-credit regression.
+- **Manuscript impact**: Replace any text that says firms must preserve the liquidity buffer before hiring/procurement in an absolute sense. The correct statement is that firms preserve a liquidity buffer but may temporarily draw a bounded sales-backed overdraft for current operations. Emphasize that profits, dividends, adaptation, and discretionary capital accumulation remain residual uses of cash after production has been financed.

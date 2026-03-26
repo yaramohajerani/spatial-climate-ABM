@@ -34,7 +34,9 @@ import numpy as np
 import pandas as pd
 
 from model import EconomyModel
-from run_simulation import ENSEMBLE_STAT_ORDER, METADATA_PREFIX, _apply_metadata, _resolve_seed_list
+from agents import FirmAgent, HouseholdAgent
+from ensemble_utils import ENSEMBLE_STAT_ORDER, METADATA_PREFIX, apply_metadata, build_ensemble_summary as summarize_ensemble
+from run_simulation import _resolve_seed_list
 
 
 UCB_CONFIGS = {
@@ -186,6 +188,14 @@ def _sensitivity_metadata(
         f"{METADATA_PREFIX}NumHouseholds": int(params.get("num_households", 100)),
         f"{METADATA_PREFIX}GridResolution": float(params.get("grid_resolution", 1.0)),
         f"{METADATA_PREFIX}HouseholdRelocation": bool(params.get("household_relocation", True)),
+        f"{METADATA_PREFIX}HHConsumptionPropensityIncome": float(HouseholdAgent.CONSUMPTION_PROPENSITY_INCOME),
+        f"{METADATA_PREFIX}HHConsumptionPropensityWealth": float(HouseholdAgent.CONSUMPTION_PROPENSITY_WEALTH),
+        f"{METADATA_PREFIX}HHTargetCashBuffer": float(HouseholdAgent.TARGET_CASH_BUFFER),
+        f"{METADATA_PREFIX}FirmInventoryBufferRatio": float(FirmAgent.INVENTORY_BUFFER_RATIO),
+        f"{METADATA_PREFIX}FirmLiquidityBufferRatio": float(FirmAgent.LIQUIDITY_BUFFER_RATIO),
+        f"{METADATA_PREFIX}FirmMinLiquidityBuffer": float(FirmAgent.MIN_LIQUIDITY_BUFFER),
+        f"{METADATA_PREFIX}FirmLaborShare": float(FirmAgent.LABOR_SHARE),
+        f"{METADATA_PREFIX}NoWorkerWagePremium": float(FirmAgent.NO_WORKER_WAGE_PREMIUM),
         f"{METADATA_PREFIX}SeedCount": len(seed_list),
         f"{METADATA_PREFIX}SeedList": ",".join(str(seed) for seed in seed_list),
         f"{METADATA_PREFIX}SeedMin": min(seed_list) if seed_list else "",
@@ -247,38 +257,10 @@ def run_scenario(params: dict, events: list, label: str, ucb_c: float, n_steps: 
 
 
 def build_ensemble_summary(member_df: pd.DataFrame) -> pd.DataFrame:
-    if member_df.empty:
-        return member_df.copy()
-
-    group_cols = [col for col in ["Scenario", "UCB_Exploration", "UCB_C", "Step", "Year"] if col in member_df.columns]
-    numeric_cols = [
-        col
-        for col in member_df.select_dtypes(include=[np.number]).columns
-        if col not in set(group_cols + ["Seed"])
-        and not col.startswith(METADATA_PREFIX)
-    ]
-    grouped = member_df.groupby(group_cols, sort=True)
-    ensemble_size = grouped["Seed"].nunique().rename("EnsembleSize").reset_index()
-    frames = []
-    aggregations = {
-        "mean": grouped[numeric_cols].mean(),
-        "median": grouped[numeric_cols].median(),
-        "std": grouped[numeric_cols].std().fillna(0.0),
-        "p10": grouped[numeric_cols].quantile(0.10),
-        "p90": grouped[numeric_cols].quantile(0.90),
-    }
-    for stat in ENSEMBLE_STAT_ORDER:
-        stat_df = aggregations[stat].reset_index()
-        stat_df["EnsembleStatistic"] = stat
-        stat_df = stat_df.merge(ensemble_size, on=group_cols, how="left")
-        frames.append(stat_df)
-    summary_df = pd.concat(frames, ignore_index=True)
-    summary_df["EnsembleStatistic"] = pd.Categorical(
-        summary_df["EnsembleStatistic"],
-        categories=ENSEMBLE_STAT_ORDER,
-        ordered=True,
+    return summarize_ensemble(
+        member_df,
+        group_cols=["Scenario", "UCB_Exploration", "UCB_C", "Step", "Year"],
     )
-    return summary_df.sort_values(group_cols + ["EnsembleStatistic"]).reset_index(drop=True)
 
 
 def _sensitivity_output_paths(out_path: str) -> tuple[Path, Path, Path]:
@@ -564,12 +546,12 @@ def main():
             print(f"{'=' * 72}")
             for seed in seed_list:
                 seed_df = run_scenario(params, events, label, ucb_c, n_steps, seed)
-                seed_df = _apply_metadata(seed_df, {**metadata, f"{METADATA_PREFIX}UCB_C": float(ucb_c)})
+                seed_df = apply_metadata(seed_df, {**metadata, f"{METADATA_PREFIX}UCB_C": float(ucb_c)})
                 member_frames.append(seed_df)
 
         member_df = pd.concat(member_frames, ignore_index=True)
         summary_df = build_ensemble_summary(member_df)
-        summary_df = _apply_metadata(summary_df, metadata)
+        summary_df = apply_metadata(summary_df, metadata)
         save_timeseries(summary_df, member_df, args.out)
 
     plot_sensitivity(

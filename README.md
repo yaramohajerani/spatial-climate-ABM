@@ -39,7 +39,7 @@ The model simulates economic agents (households and firms) on a spatial grid whi
 - **Minimum Wage Floor**: Wage offers bounded below at 40% of initial wage, a proxy consistent with ILO (2016) observations on minimum wages in high-income economies
 - **Firm Adaptation System**: Hazard-conditional resilience capital with neighborhood hazard observation and a firm-level contextual bandit over discrete adaptation investments
 - **Multiple Sectors**: Commodity, manufacturing, and retail sectors with sector-specific production coefficients and configurable household final-demand ratios over final-good sectors
-- **Circular-Flow Closure**: Households receive wages plus firm payouts, and total money is tracked explicitly so the household-firm system remains stock-flow closed in no-entry/no-exit runs
+- **Circular-Flow Closure**: Households receive wages plus firm payouts, firms can use bounded sales-backed working-capital credit for current operations, and total money is tracked explicitly so the household-firm system remains stock-flow closed in no-entry/no-exit runs
 
 ### Model Highlights
 
@@ -49,6 +49,7 @@ The model simulates economic agents (households and firms) on a spatial grid whi
 - **Sector-local labor market**: Households search nearby same-sector firms first, then fall back to the broader market with a distance penalty
 - **Final-goods market discipline**: Households buy only from final-good sectors; upstream sectors sell to firms rather than directly to households
 - **Adaptation System**: Hazard-conditional resilience learning with end-of-period adaptation funding, avoided-loss rewards, and stock-flow-consistent firm reorganization
+- **Principled Operating Finance**: Payroll and intermediate-input purchases can use a bounded revenue-backed overdraft, while dividends, expansion, and adaptation still require residual cash after operations
 
 ## Core Architecture
 
@@ -71,11 +72,11 @@ The model uses a `mesa.space.MultiGrid` with configurable resolution (default 1�
   - Manufacturing: labor=0.3, input=0.6, capital=0.6 (automated, capital & input intensive)
   - Retail: labor=0.5, input=0.4, capital=0.2 (moderate labor, low capital needs)
 - **Adaptation System**: A resilience-capital stock, firm-level hazard beliefs, neighborhood loss observation, firm-level UCB policy learning, end-of-period adaptation funding from residual cash, and bankruptcy reorganization with parent-state inheritance
-- **Wage Setting**: Revenue-based wage targeting — wages track revenue per worker × a fixed labor share of 0.5, with smooth adjustment (10% toward target per step); minimum wage floor at 40% of initial wage
+- **Wage Setting**: Revenue-based wage targeting — wages track revenue per worker × a fixed labor share of 0.5, with smooth adjustment (10% toward target per step); firms with no workers use a modest 2% premium over the market mean wage as an entry fallback; minimum wage floor at 40% of initial wage
 - **Dynamic Pricing**: Markup pricing — price = unit cost × (1 + markup), where markup is set by sell-through rate; prices track costs bidirectionally with no cost-floor ratchet
 - **Damage Recovery**: Liquidity-dependent recovery rate (20%–50% per step) so stressed firms recover more slowly
 - **Input Procurement**: Inputs from connected suppliers are treated as substitutable units and are purchased from the cheapest available suppliers first
-- **Production Planning**: Firms plan output from expected sales plus inventory buffers, hire only up to planned vacancies, seed startup inventories/capacity from labour-scaled final demand, expand capital only from residual cash above a working-capital buffer, and operate in phased within-step order (labour, production, then household consumption)
+- **Production Planning**: Firms plan output from expected sales plus inventory buffers, hire only up to planned vacancies, seed startup inventories/capacity from labour-scaled final demand, finance current payroll and intermediate-input purchases with cash above the buffer plus a bounded sales-backed overdraft, reserve capital expansion for residual post-operations cash, and operate in phased within-step order (labour, production, then household consumption)
 - **Profit Distribution**: Positive profits above the operating buffer first rebuild the firm's base capital target, then support discretionary expansion, and only then flow to household payouts; because there is no explicit capital-goods sector, investment spending is recycled to households as reduced-form investment income to preserve monetary closure
 - **Adaptation-State Reorganization**: Failed firms are reorganized in place under inherited same-sector adaptation state and, if needed, recapitalized by household equity contributions; replacements do not mint new firm cash, capital, or inventories
 
@@ -274,6 +275,7 @@ Include at least one final-good sector (`retail`, `wholesale`, or `services`) in
 
 - **simulation_*.csv**: Model-level time series for single-seed runs, or ensemble summaries for multi-seed runs (production, wealth, wages, prices, risk, bottleneck counts, adaptation diagnostics, and `Meta_*` provenance fields)
 - **Stock-flow diagnostics in `simulation_*.csv`**: `Total_Money`, `Money_Drift`, `Firm_Dividends_Paid`, `Firm_Investment_Spending`, `Household_Labor_Income`, `Household_Dividend_Income`, `Household_Capital_Income`, `Household_Adaptation_Income`, and adaptation state summaries such as `Average_Local_Observed_Loss` and `Adaptation_Updates`
+- **Working-capital diagnostics in `simulation_*.csv`**: `Firm_Working_Capital_Credit_Used`, `Average_Working_Capital_Credit_Used`, and `Average_Working_Capital_Credit_Limit` track the bounded operating overdraft used to finance payroll and intermediate inputs before sales are realised
 - **Cascade diagnostics in `simulation_*.csv`**: `Ever_Directly_Hit_Firm_Share`, `Never_Hit_Currently_Disrupted_Firm_Share`, `Never_Hit_Supplier_Disruption_Burden_Share`, `Never_Hit_Production_Share`, `Never_Hit_Capital_Share`, and the corresponding count variables used for paper-ready systemic-risk figures
 - **simulation_*_members.csv**: Member-level aggregate ensemble panel with one row per step and seed, plus `Meta_*` scenario/config provenance fields
 - **simulation_*_agents.csv**: Agent-level panel data (money, capital, production, sector, type, seller-sector demand, and firm-level adaptation states including `resilience_capital`, `local_observed_loss`, `adaptation_action`, and `adaptation_reward`). Household `sector` values in this file are initialization/placement cohort tags, not purchased-good categories. In ensemble mode this file is only written when `--save-agent-ensemble` is enabled.
@@ -312,7 +314,8 @@ python plot_from_csv_paper.py \
 - **Household Consumption Rule**: `0.9 × disposable_income + 0.02 × max(0, money - 50)`, where disposable income is current labor income plus the previous period's dividends, reduced-form investment income, and adaptation-service income
 - **Wage Mechanism**: Revenue-based targeting — firms set wages at `revenue_per_worker × labor_share`, with a fixed labour-share parameter of `0.5` and 10% smooth adjustment per step. Wages are structurally bounded by revenue and self-correct during downturns.
 - **Minimum Wage Floor**: 40% of initial mean wage, a proxy consistent with ILO (2016) observations (40–60% of median)
-- **Production Planning**: Firms target expected sales plus an inventory buffer, translate that into vacancies and input demand, preserve a working-capital buffer, initialize inventories and capital from labour-consistent demand, clear household demand after the current period's production is complete, and close the period by splitting positive profits between dividends and internally financed capital expansion subject to liquidity constraints
+- **Production Planning**: Firms target expected sales plus an inventory buffer, translate that into vacancies and input demand, preserve a working-capital buffer, initialize inventories and capital from labour-consistent demand, finance current payroll and intermediate-input purchases with cash above the buffer plus a bounded sales-backed overdraft, clear household demand after the current period's production is complete, and close the period by splitting residual profits between capital replacement, discretionary expansion, adaptation, and dividends
+- **Working-Capital Credit Rule**: Current operations may temporarily draw a bounded overdraft of up to `Meta_FirmWorkingCapitalCreditRevenueShare × revenue_anchor`, where the anchor is recent/expected sales valued at the current price. This supports production before sales are realised while preventing dividends, adaptation, or capital expansion from being debt-financed.
 
 ## Validation
 

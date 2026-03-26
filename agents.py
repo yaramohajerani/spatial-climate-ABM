@@ -317,7 +317,9 @@ class FirmAgent(Agent):
     INVENTORY_BUFFER_RATIO: float = 0.25
     LIQUIDITY_BUFFER_RATIO: float = 0.15
     MIN_LIQUIDITY_BUFFER: float = 10.0
+    WORKING_CAPITAL_CREDIT_REVENUE_SHARE: float = 1.0
     LABOR_SHARE: float = 0.5  # fixed labour share of revenue in wage targeting
+    NO_WORKER_WAGE_PREMIUM: float = 1.02
     ACTION_LABELS: tuple[str, str, str] = ("maintain", "small", "large")
     LOSS_STATE_THRESHOLDS: tuple[float, float] = (0.05, 0.20)
     RESILIENCE_STATE_THRESHOLDS: tuple[float, float] = (0.33, 0.66)
@@ -414,6 +416,9 @@ class FirmAgent(Agent):
         self.base_capital_target: float = self.capital_stock
         self.target_capital_stock: float = self.capital_stock
         self._liquidity_buffer: float = 0.0
+        self.required_working_capital: float = 0.0
+        self.working_capital_credit_limit: float = 0.0
+        self.working_capital_credit_used_this_step: float = 0.0
 
         adaptation_config = getattr(model, "adaptation_config", {})
         self.adaptation_enabled: bool = getattr(model, "firm_adaptation_enabled", True)
@@ -623,6 +628,136 @@ class FirmAgent(Agent):
         self.pending_adaptation_increment = 0.0
         return maintenance_spending, investment_spending
 
+    def _available_cash_after_reserve(self, operating_cash_reserve: float) -> float:
+        return max(0.0, self.money - operating_cash_reserve)
+
+    def _operating_credit_floor(self) -> float:
+        """Minimum cash balance allowed for operating outlays this period."""
+        return self._liquidity_buffer - self.working_capital_credit_limit
+
+    def _operating_cash_capacity(self) -> float:
+        """Remaining payroll/input capacity including bounded working-capital credit."""
+        return max(0.0, self.money - self._operating_credit_floor())
+
+    def _update_peak_working_capital_credit_use(self) -> None:
+        """Track the peak draw on the firm's bounded operating overdraft."""
+        credit_draw = max(0.0, self._liquidity_buffer - self.money)
+        self.working_capital_credit_used_this_step = max(
+            self.working_capital_credit_used_this_step,
+            min(self.working_capital_credit_limit, credit_draw),
+        )
+
+    def _spend_operating_cash(self, amount: float) -> bool:
+        """Fund payroll/input spending from cash above buffer plus bounded overdraft."""
+        if amount <= 0:
+            return True
+        if amount > self._operating_cash_capacity() + 1e-9:
+            return False
+        self.money -= amount
+        self._update_peak_working_capital_credit_use()
+        return True
+
+    def _install_capital(self, spending: float) -> float:
+        if spending <= 0:
+            return 0.0
+        installable_capital = spending / self.CAPITAL_INSTALLATION_COST
+        self.money -= spending
+        self.capital_stock += installable_capital
+        self.investment_spending_this_step += spending
+        self.model.distribute_household_income(
+            spending,
+            income_kind="capital",
+        )
+        return spending
+
+    def _allocate_positive_profit(self, *, positive_profit: float, operating_cash_reserve: float) -> None:
+        """Allocate positive profits across capital maintenance, expansion, and adaptation."""
+        investment_share = 0.5
+        available_cash = self._available_cash_after_reserve(operating_cash_reserve)
+
+        maintenance_capital_gap = max(0.0, self.base_capital_target - self.capital_stock)
+        maintenance_spending = min(
+            positive_profit,
+            maintenance_capital_gap * self.CAPITAL_INSTALLATION_COST,
+            available_cash,
+        )
+        self._install_capital(maintenance_spending)
+
+        available_cash = self._available_cash_after_reserve(operating_cash_reserve)
+        residual_profit = max(0.0, positive_profit - self.investment_spending_this_step)
+        expansion_capital_gap = max(0.0, self.target_capital_stock - self.capital_stock)
+        discretionary_investment_spending = min(
+            residual_profit * investment_share,
+            expansion_capital_gap * self.CAPITAL_INSTALLATION_COST,
+            available_cash,
+        )
+        self._install_capital(discretionary_investment_spending)
+
+        available_cash = self._available_cash_after_reserve(operating_cash_reserve)
+        investable_profit = max(0.0, positive_profit - self.investment_spending_this_step)
+        if self.adaptation_enabled and available_cash > 0 and investable_profit > 0:
+            self._fund_adaptation_after_operations(
+                available_cash=available_cash,
+                investable_profit=investable_profit,
+            )
+
+    def _pay_dividends(self, *, positive_profit: float, operating_cash_reserve: float) -> None:
+        available_cash = self._available_cash_after_reserve(operating_cash_reserve)
+        desired_dividends = min(
+            max(0.0, positive_profit - self.investment_spending_this_step - self.adaptation_spending_this_step),
+            available_cash,
+        )
+        if desired_dividends > 0:
+            self.money -= desired_dividends
+            self.dividends_paid_this_step = desired_dividends
+            self.model.distribute_household_income(
+                desired_dividends,
+                income_kind="dividend",
+            )
+
+    def _update_post_step_state(self) -> None:
+        """Update direct-loss state, adaptation windows, and demand expectations."""
+        downtime_value = max(
+            self.expected_sales,
+            self.sales_last_step,
+            self.production,
+            1.0,
+        ) * max(self.price, 0.5)
+        raw_recovery_drag = max(0.0, 1.0 - self.counterfactual_damage_factor)
+        adapted_recovery_drag = max(0.0, 1.0 - self.damage_factor)
+        self.counterfactual_direct_loss_this_step += raw_recovery_drag * downtime_value
+        self.realized_direct_loss_this_step += adapted_recovery_drag * downtime_value
+
+        alpha = self.ewma_alpha
+        observed_raw_loss = max(self.raw_direct_loss_fraction_this_step, raw_recovery_drag)
+        observed_adapted_loss = max(self.adapted_direct_loss_fraction_this_step, adapted_recovery_drag)
+        local_observed_loss = self.model.get_local_observed_loss_fraction(self)
+        self.window_peak_raw_loss_signal = max(self.window_peak_raw_loss_signal, observed_raw_loss)
+        self.expected_direct_loss_ewma = (1.0 - alpha) * self.expected_direct_loss_ewma + alpha * observed_raw_loss
+        self.realized_direct_loss_ewma = (1.0 - alpha) * self.realized_direct_loss_ewma + alpha * observed_adapted_loss
+        self.local_observed_loss_ewma = (
+            (1.0 - alpha) * self.local_observed_loss_ewma
+            + alpha * local_observed_loss
+        )
+        self.supplier_disruption_ewma = (
+            (1.0 - alpha) * self.supplier_disruption_ewma
+            + alpha * self.supplier_disruption_this_step
+        )
+        if self.supplier_disruption_this_step > 0 and not self.ever_directly_hit:
+            self.ever_indirectly_disrupted_before_direct_hit = True
+        self.window_raw_direct_loss += self.counterfactual_direct_loss_this_step
+        self.window_adapted_direct_loss += self.realized_direct_loss_this_step
+        self.window_adaptation_cost += self.adaptation_spending_this_step
+        self.steps_in_current_window += 1
+
+        self.expected_sales = 0.7 * self.expected_sales + 0.3 * self.sales_this_step
+        self.sales_last_step = self.sales_this_step
+        self.household_sales_last_step = self.household_sales_this_step
+        self.revenue_last_step = self.revenue_this_step
+        self.sales_this_step = 0.0
+        self.household_sales_this_step = 0.0
+        self.revenue_this_step = 0.0
+
     def estimate_direct_value_at_risk(self) -> float:
         avg_input_price = float(np.mean([s.price for s in self.connected_firms])) if self.connected_firms else self.price
         input_units = sum(self.inventory_inputs.values())
@@ -685,11 +820,10 @@ class FirmAgent(Agent):
         if len(self.employees) >= self.target_labor:
             return False
 
-        if self.money - wage < self._liquidity_buffer:
+        if not self._spend_operating_cash(wage):
             return False
 
-        # Transfer wage and preserve the working-capital buffer.
-        self.money -= wage
+        # Transfer wage while allowing a bounded sales-backed overdraft.
         household.money += wage
         household.labor_income_this_step += wage
         self.wage_bill_this_step += wage
@@ -735,7 +869,7 @@ class FirmAgent(Agent):
             return 0.0
 
         qty = min(quantity, self.inventory_output)
-        available_cash = max(0.0, buyer.money - getattr(buyer, "_liquidity_buffer", 0.0))
+        available_cash = buyer._operating_cash_capacity()
         if available_cash <= 0 or self.price <= 0:
             return 0.0
 
@@ -747,7 +881,8 @@ class FirmAgent(Agent):
         cost = qty * self.price
 
         # Transfer money & inventory
-        buyer.money -= cost
+        if not buyer._spend_operating_cash(cost):
+            return 0.0
         self.money += cost
         self.inventory_output -= qty
         buyer.input_spend_this_step += cost
@@ -775,6 +910,9 @@ class FirmAgent(Agent):
         self.profit_this_step = 0.0
         self.dividends_paid_this_step = 0.0
         self.investment_spending_this_step = 0.0
+        self.required_working_capital = 0.0
+        self.working_capital_credit_limit = 0.0
+        self.working_capital_credit_used_this_step = 0.0
 
         self.capital_coeff = self.original_capital_coeff
 
@@ -800,11 +938,30 @@ class FirmAgent(Agent):
             + avg_input_price * self.INPUT_COEFF
         ) / effective_damage
 
-        available_operating_cash = max(0.0, self.money - self._liquidity_buffer)
+        revenue_anchor = (
+            max(
+                self.expected_sales,
+                self.sales_last_step,
+                self.household_sales_last_step,
+                1.0,
+            )
+            * max(self.price, 0.5)
+        )
+        provisional_working_capital = max(0.0, desired_output * unit_variable_cost)
+        self.working_capital_credit_limit = min(
+            provisional_working_capital,
+            revenue_anchor * self.WORKING_CAPITAL_CREDIT_REVENUE_SHARE,
+        )
+        available_operating_cash = self._operating_cash_capacity()
         if unit_variable_cost > 0:
             desired_output = min(desired_output, available_operating_cash / unit_variable_cost)
 
         self.target_output = max(0.0, desired_output)
+        self.required_working_capital = self.target_output * unit_variable_cost
+        self.working_capital_credit_limit = min(
+            self.required_working_capital,
+            revenue_anchor * self.WORKING_CAPITAL_CREDIT_REVENUE_SHARE,
+        )
 
         required_pre_damage_output = self.target_output / effective_damage
         self.target_labor = int(np.ceil(required_pre_damage_output * self.LABOR_COEFF - 1e-9))
@@ -827,8 +984,10 @@ class FirmAgent(Agent):
             revenue_per_worker = self.revenue_last_step / self.last_hired_labor
             target_wage = revenue_per_worker * labor_share
         elif self.last_hired_labor == 0:
-            # No workers last round — offer above market mean to attract someone
-            target_wage = self.model.mean_wage * 1.1
+            # No workers last round. Use only a modest premium over the market
+            # mean so empty firms can attract an initial worker without creating
+            # a wage ratchet during slack baseline conditions.
+            target_wage = self.model.mean_wage * self.NO_WORKER_WAGE_PREMIUM
         else:
             # Had workers but no revenue — hold current wage
             target_wage = self.wage_offer
@@ -912,7 +1071,7 @@ class FirmAgent(Agent):
                 key=lambda supplier: supplier.price,
             )
             for supplier in suppliers:
-                if remaining_inputs_needed <= 1e-9 or self.money <= self._liquidity_buffer:
+                if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
                     break
                 bought = supplier.sell_goods_to_firm(self, remaining_inputs_needed)
                 if bought > 0:
@@ -1020,102 +1179,16 @@ class FirmAgent(Agent):
             self._liquidity_buffer,
             self.wage_bill_this_step + self.input_spend_this_step,
         )
-        available_cash = max(0.0, self.money - operating_cash_reserve)
         positive_profit = max(0.0, accounting_profit)
-        investment_share = 0.5
-
-        def install_capital(spending: float) -> float:
-            if spending <= 0:
-                return 0.0
-            installable_capital = spending / self.CAPITAL_INSTALLATION_COST
-            self.money -= spending
-            self.capital_stock += installable_capital
-            self.investment_spending_this_step += spending
-            self.model.distribute_household_income(
-                spending,
-                income_kind="capital",
-            )
-            return spending
-
-        maintenance_capital_gap = max(0.0, self.base_capital_target - self.capital_stock)
-        maintenance_spending = min(
-            positive_profit,
-            maintenance_capital_gap * self.CAPITAL_INSTALLATION_COST,
-            available_cash,
+        self._allocate_positive_profit(
+            positive_profit=positive_profit,
+            operating_cash_reserve=operating_cash_reserve,
         )
-        install_capital(maintenance_spending)
-
-        available_cash = max(0.0, self.money - operating_cash_reserve)
-        residual_profit = max(0.0, positive_profit - self.investment_spending_this_step)
-        expansion_capital_gap = max(0.0, self.target_capital_stock - self.capital_stock)
-        discretionary_investment_spending = min(
-            residual_profit * investment_share,
-            expansion_capital_gap * self.CAPITAL_INSTALLATION_COST,
-            available_cash,
+        self._pay_dividends(
+            positive_profit=positive_profit,
+            operating_cash_reserve=operating_cash_reserve,
         )
-        install_capital(discretionary_investment_spending)
-
-        available_cash = max(0.0, self.money - operating_cash_reserve)
-        investable_profit = max(0.0, positive_profit - self.investment_spending_this_step)
-        if self.adaptation_enabled and available_cash > 0 and investable_profit > 0:
-            self._fund_adaptation_after_operations(
-                available_cash=available_cash,
-                investable_profit=investable_profit,
-            )
-
-        available_cash = max(0.0, self.money - operating_cash_reserve)
-        desired_dividends = min(
-            max(0.0, positive_profit - self.investment_spending_this_step - self.adaptation_spending_this_step),
-            available_cash,
-        )
-        if desired_dividends > 0:
-            self.money -= desired_dividends
-            self.dividends_paid_this_step = desired_dividends
-            self.model.distribute_household_income(
-                desired_dividends,
-                income_kind="dividend",
-            )
-
-        downtime_value = max(
-            self.expected_sales,
-            self.sales_last_step,
-            self.production,
-            1.0,
-        ) * max(self.price, 0.5)
-        raw_recovery_drag = max(0.0, 1.0 - self.counterfactual_damage_factor)
-        adapted_recovery_drag = max(0.0, 1.0 - self.damage_factor)
-        self.counterfactual_direct_loss_this_step += raw_recovery_drag * downtime_value
-        self.realized_direct_loss_this_step += adapted_recovery_drag * downtime_value
-
-        alpha = self.ewma_alpha
-        observed_raw_loss = max(self.raw_direct_loss_fraction_this_step, raw_recovery_drag)
-        observed_adapted_loss = max(self.adapted_direct_loss_fraction_this_step, adapted_recovery_drag)
-        local_observed_loss = self.model.get_local_observed_loss_fraction(self)
-        self.window_peak_raw_loss_signal = max(self.window_peak_raw_loss_signal, observed_raw_loss)
-        self.expected_direct_loss_ewma = (1.0 - alpha) * self.expected_direct_loss_ewma + alpha * observed_raw_loss
-        self.realized_direct_loss_ewma = (1.0 - alpha) * self.realized_direct_loss_ewma + alpha * observed_adapted_loss
-        self.local_observed_loss_ewma = (
-            (1.0 - alpha) * self.local_observed_loss_ewma
-            + alpha * local_observed_loss
-        )
-        self.supplier_disruption_ewma = (
-            (1.0 - alpha) * self.supplier_disruption_ewma
-            + alpha * self.supplier_disruption_this_step
-        )
-        if self.supplier_disruption_this_step > 0 and not self.ever_directly_hit:
-            self.ever_indirectly_disrupted_before_direct_hit = True
-        self.window_raw_direct_loss += self.counterfactual_direct_loss_this_step
-        self.window_adapted_direct_loss += self.realized_direct_loss_this_step
-        self.window_adaptation_cost += self.adaptation_spending_this_step
-        self.steps_in_current_window += 1
-
-        self.expected_sales = 0.7 * self.expected_sales + 0.3 * self.sales_this_step
-        self.sales_last_step = self.sales_this_step
-        self.household_sales_last_step = self.household_sales_this_step
-        self.revenue_last_step = self.revenue_this_step
-        self.sales_this_step = 0.0
-        self.household_sales_this_step = 0.0
-        self.revenue_this_step = 0.0
+        self._update_post_step_state()
 
     # ------------------------------------------------------------------ #
     #                        INTERNAL HELPERS                           #

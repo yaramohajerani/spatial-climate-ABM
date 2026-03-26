@@ -133,6 +133,75 @@ def test_firms_replace_base_capital_before_paying_dividends() -> None:
     assert np.isclose(model.total_money(), initial_total_money, atol=1e-9)
 
 
+def test_households_recirculate_excess_wealth_into_consumption() -> None:
+    """Households should spend a modest share of cash above the target buffer."""
+    model = build_closed_economy_model(adaptation_enabled=False)
+    household = model._households[0]
+
+    household.money = 150.0
+    household.labor_income_this_step = 0.0
+    household.dividend_income_last_step = 0.0
+    household.capital_income_last_step = 0.0
+    household.adaptation_income_last_step = 0.0
+    household.consumption = 0.0
+
+    for seller in model._firms:
+        seller.price = 1.0
+        if seller.sector in model.get_final_consumption_ratios():
+            seller.inventory_output = 100.0
+        else:
+            seller.inventory_output = 0.0
+    initial_total_money = model.total_money()
+
+    household.consume_goods()
+
+    expected_budget = household.CONSUMPTION_PROPENSITY_WEALTH * (
+        150.0 - household.TARGET_CASH_BUFFER
+    )
+    assert np.isclose(household.consumption, expected_budget, atol=1e-9)
+    assert np.isclose(household.money, 150.0 - expected_budget, atol=1e-9)
+    assert np.isclose(model.total_money(), initial_total_money, atol=1e-9)
+
+
+def test_bounded_working_capital_credit_finances_operations_without_money_leakage() -> None:
+    """Payroll and input purchases may use bounded operating credit without breaking closure."""
+    model = build_closed_economy_model(adaptation_enabled=False)
+    buyer = next(f for f in model._firms if f.connected_firms)
+    supplier = buyer.connected_firms[0]
+    household = next(h for h in model._households if h.sector == buyer.sector)
+
+    buyer.money = 5.0
+    buyer._liquidity_buffer = 10.0
+    buyer.working_capital_credit_limit = 20.0
+    buyer.working_capital_credit_used_this_step = 0.0
+    buyer.target_labor = 1
+    buyer.employees.clear()
+
+    supplier.price = 2.0
+    supplier.inventory_output = 10.0
+    supplier.money = 100.0
+
+    wage = 8.0
+    initial_total_money = model.total_money()
+
+    assert buyer.hire_labor(household, wage) is True
+    assert np.isclose(buyer.money, -3.0, atol=1e-9)
+    assert np.isclose(buyer.wage_bill_this_step, wage, atol=1e-9)
+    assert np.isclose(buyer.working_capital_credit_used_this_step, 13.0, atol=1e-9)
+
+    bought = supplier.sell_goods_to_firm(buyer, quantity=3.0)
+    assert np.isclose(bought, 3.0, atol=1e-9)
+    assert np.isclose(buyer.money, -9.0, atol=1e-9)
+    assert np.isclose(buyer.input_spend_this_step, 6.0, atol=1e-9)
+    assert np.isclose(buyer.working_capital_credit_used_this_step, 19.0, atol=1e-9)
+
+    extra_bought = supplier.sell_goods_to_firm(buyer, quantity=2.0)
+    assert np.isclose(extra_bought, 0.5, atol=1e-9)
+    assert np.isclose(buyer.money, -10.0, atol=1e-9)
+    assert np.isclose(buyer.working_capital_credit_used_this_step, 20.0, atol=1e-9)
+    assert np.isclose(model.total_money(), initial_total_money, atol=1e-9)
+
+
 def test_firm_reorganization_preserves_total_money_and_inherits_adaptation_state() -> None:
     """Reorganization should keep money closed and copy parent adaptation state."""
     model = build_closed_economy_model(adaptation_enabled=True)
