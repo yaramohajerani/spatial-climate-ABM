@@ -1,7 +1,14 @@
 import pandas as pd
 import pytest
 
-from sensitivity_analysis import build_ensemble_summary, make_summary_table
+from sensitivity_analysis import (
+    _ordered_labels,
+    _parse_sensitivity_configs,
+    _scenario_label_for_strategy,
+    _sensitivity_metadata,
+    build_ensemble_summary,
+    make_summary_table,
+)
 
 
 def _member_frame() -> pd.DataFrame:
@@ -70,3 +77,36 @@ def test_make_summary_table_uses_seed_level_final_decade_ensemble_statistics() -
     assert row_300["Production_Mean"] > row_500["Production_Mean"]
     assert row_300["RealLiquidity_Mean"] == pytest.approx((10.125 + 10.625) / 2.0)
     assert row_300["DirectLoss_Mean"] == pytest.approx(0.05)
+
+
+def test_parse_sensitivity_configs_accepts_custom_grid() -> None:
+    configs = _parse_sensitivity_configs(["Low:0.75:1.5", "1.5:3.0"])
+
+    assert configs["Low"] == pytest.approx((0.75, 1.5))
+    assert configs["Sensitivity 2.25"] == pytest.approx((1.5, 3.0))
+
+
+def test_ordered_labels_sort_by_midpoint() -> None:
+    frame = pd.DataFrame(
+        {
+            "Sensitivity_Label": ["High", "Low", "Base"],
+            "Adaptation_Sensitivity_Midpoint": [4.0, 1.0, 2.5],
+        }
+    )
+
+    assert _ordered_labels(frame) == ["Low", "Base", "High"]
+
+
+def test_strategy_override_flows_into_metadata_and_scenario_labels() -> None:
+    metadata = _sensitivity_metadata(
+        param_file="params.json",
+        params={"adaptation": {"adaptation_strategy": "reserved_capacity"}},
+        events=[],
+        seed_list=[41, 42],
+        n_steps=120,
+        adaptation_strategy="capital_hardening",
+    )
+
+    assert metadata["Meta_AdaptationStrategy"] == "capital_hardening"
+    assert metadata["Meta_HouseholdRelocation"] is False
+    assert _scenario_label_for_strategy("backup_suppliers") == "Hazard + Backup Suppliers"

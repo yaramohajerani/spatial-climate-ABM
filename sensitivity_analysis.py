@@ -40,11 +40,18 @@ from model import EconomyModel
 from run_simulation import _resolve_seed_list
 
 
-SENSITIVITY_CONFIGS = {
+DEFAULT_SENSITIVITY_CONFIGS = {
     "Sensitivity 1.5": (1.0, 2.0),
     "Sensitivity 3.0": (2.0, 4.0),
     "Sensitivity 5.0": (4.0, 6.0),
     "Sensitivity 8.0": (7.0, 9.0),
+}
+
+STRATEGY_LABELS = {
+    "backup_suppliers": "Backup Suppliers",
+    "capital_hardening": "Capital Hardening",
+    "stockpiling": "Stockpiling",
+    "reserved_capacity": "Reserved Capacity",
 }
 
 PLOT_METRICS = [
@@ -64,6 +71,7 @@ SUMMARY_METRICS = [
     ("RealWage", "Mean_Wage", "real"),
     ("Price", "Mean_Price", "raw"),
     ("DirectLoss", "Average_Realized_Direct_Loss", "raw"),
+    ("SupplierDisruption", "Average_Supplier_Disruption", "raw"),
 ]
 
 
@@ -133,6 +141,15 @@ def _parse_args():
         default=None,
         help="Override adaptation strategy from the parameter file",
     )
+    parser.add_argument(
+        "--sensitivity-grid",
+        nargs="+",
+        default=None,
+        help=(
+            "Optional custom sensitivity ranges as 'LABEL:MIN:MAX' or 'MIN:MAX'. "
+            "Example: --sensitivity-grid Low:0.75:1.5 Base:1.5:3.0 High:3.0:4.5"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -145,6 +162,57 @@ def _load_params(param_file: str) -> dict:
 
 def _parse_events(rp_files: list[str]):
     return parse_hazard_event_specs(rp_files)
+
+
+def _strategy_display_name(strategy: str | None) -> str:
+    if not strategy:
+        return "Adaptation"
+    return STRATEGY_LABELS.get(strategy, strategy.replace("_", " ").title())
+
+
+def _scenario_label_for_strategy(strategy: str | None) -> str:
+    if not strategy:
+        return "Hazard + Adaptation"
+    return f"Hazard + {_strategy_display_name(strategy)}"
+
+
+def _parse_sensitivity_configs(grid_items: list[str] | None) -> dict[str, tuple[float, float]]:
+    if not grid_items:
+        return dict(DEFAULT_SENSITIVITY_CONFIGS)
+
+    configs: dict[str, tuple[float, float]] = {}
+    for item in grid_items:
+        parts = [part.strip() for part in str(item).split(":")]
+        if len(parts) == 2:
+            label = ""
+            min_str, max_str = parts
+        elif len(parts) == 3:
+            label, min_str, max_str = parts
+        else:
+            raise SystemExit(
+                f"Invalid sensitivity grid item '{item}'. Use 'LABEL:MIN:MAX' or 'MIN:MAX'."
+            )
+
+        try:
+            sensitivity_min = float(min_str)
+            sensitivity_max = float(max_str)
+        except ValueError as exc:
+            raise SystemExit(
+                f"Invalid numeric bounds in sensitivity grid item '{item}'."
+            ) from exc
+
+        if sensitivity_max < sensitivity_min:
+            raise SystemExit(
+                f"Sensitivity max must be >= min in grid item '{item}'."
+            )
+
+        if not label:
+            midpoint = 0.5 * (sensitivity_min + sensitivity_max)
+            label = f"Sensitivity {midpoint:.2f}"
+        if label in configs:
+            raise SystemExit(f"Duplicate sensitivity label '{label}' in --sensitivity-grid.")
+        configs[label] = (sensitivity_min, sensitivity_max)
+    return configs
 
 
 def _merge_seed_args(args, params: dict) -> list[int]:
@@ -173,12 +241,14 @@ def _sensitivity_metadata(
     events,
     seed_list: list[int],
     n_steps: int,
+    adaptation_strategy: str | None = None,
 ) -> dict[str, object]:
     topology_path = str(params.get("topology") or "")
     adaptation_config = params.get("adaptation", params.get("learning", {}))
+    strategy = adaptation_strategy or str(adaptation_config.get("adaptation_strategy", "backup_suppliers"))
     return {
         f"{METADATA_PREFIX}SensitivityParameter": "adaptation_sensitivity",
-        f"{METADATA_PREFIX}AdaptationStrategy": str(adaptation_config.get("adaptation_strategy", "backup_suppliers")),
+        f"{METADATA_PREFIX}AdaptationStrategy": strategy,
         f"{METADATA_PREFIX}ParamFile": str(param_file),
         f"{METADATA_PREFIX}ParamFileStem": Path(param_file).stem,
         f"{METADATA_PREFIX}TopologyPath": topology_path,
@@ -190,7 +260,7 @@ def _sensitivity_metadata(
         f"{METADATA_PREFIX}StepsRequested": int(n_steps),
         f"{METADATA_PREFIX}NumHouseholds": int(params.get("num_households", 100)),
         f"{METADATA_PREFIX}GridResolution": float(params.get("grid_resolution", 1.0)),
-        f"{METADATA_PREFIX}HouseholdRelocation": bool(params.get("household_relocation", True)),
+        f"{METADATA_PREFIX}HouseholdRelocation": bool(params.get("household_relocation", False)),
         f"{METADATA_PREFIX}HHConsumptionPropensityIncome": float(HouseholdAgent.CONSUMPTION_PROPENSITY_INCOME),
         f"{METADATA_PREFIX}HHConsumptionPropensityWealth": float(HouseholdAgent.CONSUMPTION_PROPENSITY_WEALTH),
         f"{METADATA_PREFIX}HHTargetCashBuffer": float(HouseholdAgent.TARGET_CASH_BUFFER),
@@ -224,9 +294,10 @@ def _finalize_results(
     seed: int,
     start_year: int,
     steps_per_year: int,
+    adaptation_strategy: str | None,
 ) -> pd.DataFrame:
     df = df.copy()
-    df["Scenario"] = "Hazard + Adaptation"
+    df["Scenario"] = _scenario_label_for_strategy(adaptation_strategy)
     df["Sensitivity_Label"] = label
     df["Adaptation_Sensitivity_Min"] = float(sensitivity_min)
     df["Adaptation_Sensitivity_Max"] = float(sensitivity_max)
@@ -258,6 +329,7 @@ def run_scenario(
     }
     if adaptation_strategy:
         adaptation_config["adaptation_strategy"] = adaptation_strategy
+    strategy = str(adaptation_config.get("adaptation_strategy", "backup_suppliers"))
 
     model = EconomyModel(
         num_households=int(params.get("num_households", 100)),
@@ -271,7 +343,7 @@ def run_scenario(
         adaptation_params=adaptation_config,
         consumption_ratios=params.get("consumption_ratios"),
         grid_resolution=float(params.get("grid_resolution", 1.0)),
-        household_relocation=bool(params.get("household_relocation", True)),
+        household_relocation=bool(params.get("household_relocation", False)),
     )
 
     for _ in range(n_steps):
@@ -285,6 +357,7 @@ def run_scenario(
         seed=seed,
         start_year=int(params.get("start_year", 0)),
         steps_per_year=int(params.get("steps_per_year", 4)),
+        adaptation_strategy=strategy,
     )
 
 
@@ -339,9 +412,24 @@ def load_timeseries(csv_path: str) -> tuple[pd.DataFrame, pd.DataFrame | None]:
 
 def _ordered_labels(frame: pd.DataFrame) -> list[str]:
     labels = list(frame["Sensitivity_Label"].dropna().unique())
-    configured = [label for label in SENSITIVITY_CONFIGS if label in labels]
-    extras = [label for label in labels if label not in configured]
-    return configured + extras
+    midpoint_by_label: dict[str, float] = {}
+    if "Adaptation_Sensitivity_Midpoint" in frame.columns:
+        midpoint_series = (
+            frame[["Sensitivity_Label", "Adaptation_Sensitivity_Midpoint"]]
+            .dropna()
+            .drop_duplicates(subset=["Sensitivity_Label"])
+        )
+        midpoint_by_label = {
+            str(row["Sensitivity_Label"]): float(row["Adaptation_Sensitivity_Midpoint"])
+            for _, row in midpoint_series.iterrows()
+        }
+    return sorted(
+        labels,
+        key=lambda label: (
+            midpoint_by_label.get(label, float("inf")),
+            label,
+        ),
+    )
 
 
 def _normalize_series(df: pd.DataFrame, column: str, mode: str, *, num_households: int) -> pd.Series:
@@ -429,22 +517,27 @@ def plot_sensitivity(
     fig.legend(handles, labels, loc="lower center", ncol=4, fontsize=9, bbox_to_anchor=(0.5, -0.02))
 
     strategy_label = ""
+    scenario_text = "Hazard + Adaptation"
     if "Meta_AdaptationStrategy" in summary_df.columns:
         strategy_val = summary_df["Meta_AdaptationStrategy"].dropna()
         if not strategy_val.empty:
-            strategy_label = f" [{str(strategy_val.iloc[0])}]"
+            strategy_label = f" [{_strategy_display_name(str(strategy_val.iloc[0]))}]"
+    if "Scenario" in summary_df.columns:
+        scenario_vals = summary_df["Scenario"].dropna().unique()
+        if len(scenario_vals) == 1:
+            scenario_text = str(scenario_vals[0])
 
     if is_ensemble:
         ensemble_size = int(summary_df["EnsembleSize"].max())
         stat_label = ensemble_stat.title()
         fig.suptitle(
-            f"Sensitivity of Outcomes to Adaptation Sensitivity{strategy_label}\n(Hazard + Adaptation scenario; {ensemble_size}-seed ensemble {stat_label})",
+            f"Sensitivity of Outcomes to Adaptation Sensitivity{strategy_label}\n({scenario_text} scenario; {ensemble_size}-seed ensemble {stat_label})",
             fontsize=13,
             y=1.02,
         )
     else:
         fig.suptitle(
-            f"Sensitivity of Outcomes to Adaptation Sensitivity{strategy_label}\n(Hazard + Adaptation scenario; single seed)",
+            f"Sensitivity of Outcomes to Adaptation Sensitivity{strategy_label}\n({scenario_text} scenario; single seed)",
             fontsize=13,
             y=1.02,
         )
@@ -523,7 +616,7 @@ def _make_summary_table_from_summary(
                 if stat_slice.empty or column not in stat_slice.columns:
                     continue
                 values = _normalize_series(stat_slice, column, mode, num_households=num_households)
-                suffix = stat_name.title() if stat_name != ensemble_stat else "Mean"
+                suffix = stat_name.title()
                 label_rows[f"{metric_name}_{suffix}"] = float(values.mean())
         rows.append(label_rows)
     return pd.DataFrame(rows)
@@ -577,6 +670,7 @@ def main():
     steps_per_year = int(params.get("steps_per_year", 4))
     num_households = int(params.get("num_households", 100))
     seed_list = _merge_seed_args(args, params)
+    sensitivity_configs = _parse_sensitivity_configs(args.sensitivity_grid)
 
     if args.from_csv:
         csv_path = Path(args.from_csv)
@@ -593,10 +687,11 @@ def main():
             events=events,
             seed_list=seed_list,
             n_steps=n_steps,
+            adaptation_strategy=args.adaptation_strategy,
         )
 
         member_frames = []
-        for label, (sensitivity_min, sensitivity_max) in SENSITIVITY_CONFIGS.items():
+        for label, (sensitivity_min, sensitivity_max) in sensitivity_configs.items():
             print(f"\n{'=' * 72}")
             print(
                 "Running sensitivity sweep: "
