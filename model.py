@@ -582,7 +582,10 @@ class EconomyModel(Model):
                 continue
 
             contract_price_cap = buyer._reserved_capacity_price_cap()
-            backup_suppliers = self.find_backup_suppliers(buyer, buyer._backup_supplier_count())
+            backup_suppliers = self.find_backup_suppliers(
+                buyer,
+                buyer._reserved_capacity_supplier_count(),
+            )
             for supplier in backup_suppliers:
                 if remaining_reserved_units <= 1e-9:
                     break

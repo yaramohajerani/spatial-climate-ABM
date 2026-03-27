@@ -591,6 +591,21 @@ class FirmAgent(Agent):
             return 0
         return max(1, int(self.continuity_capital * max_backup_count))
 
+    def _reserved_capacity_supplier_count(self) -> int:
+        """Return the number of standby suppliers to contract for reserved capacity.
+
+        Reserved capacity is a standing redundancy mechanism, so moderate
+        continuity capital should diversify across more than a single supplier
+        even before the stock becomes large enough to round up under the spot
+        backup rule.
+        """
+        if self.continuity_capital <= 0:
+            return 0
+        max_backup_count = max(0, int(getattr(self.model, "max_backup_suppliers", 5)))
+        if max_backup_count <= 0:
+            return 0
+        return max(1, int(np.ceil(self.continuity_capital * max_backup_count)))
+
     def _purchase_from_backup_suppliers(self, remaining_inputs_needed: float) -> tuple[float, float]:
         if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
             return remaining_inputs_needed, 0.0
@@ -607,8 +622,17 @@ class FirmAgent(Agent):
         return remaining_inputs_needed, backup_purchases
 
     def _reserved_capacity_target_units(self) -> float:
-        risk_scale = max(self.last_perceived_hazard_risk, self.last_perceived_continuity_risk)
-        return max(0.0, self.target_input_units * self.continuity_capital * risk_scale)
+        """Return desired reserved input coverage for the current period.
+
+        Continuity capital already embeds the firm's accumulated hazard beliefs
+        through the adaptation rule. Multiplying again by the current-period
+        risk signal made contract sizes collapse toward zero in practice, so
+        reserved capacity now scales with planned input needs and the standing
+        continuity stock itself.
+        """
+        if self.target_input_units <= 0 or self.continuity_capital <= 0:
+            return 0.0
+        return max(0.0, self.target_input_units * self.continuity_capital)
 
     def _reserved_capacity_price_cap(self) -> float:
         if not self.connected_firms:

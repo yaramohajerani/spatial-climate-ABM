@@ -654,6 +654,31 @@ def test_reserved_capacity_contracts_reserve_inventory_and_cap_price() -> None:
     assert np.isclose(model.total_money(), initial_total_money, atol=1e-6)
 
 
+def test_reserved_capacity_target_scales_with_continuity_stock() -> None:
+    """Standing reserved capacity should not vanish when current risk is modest."""
+    model = build_closed_economy_model(adaptation_enabled=True, adaptation_strategy="reserved_capacity")
+    buyer = next(f for f in model._firms if f.connected_firms)
+
+    buyer.continuity_capital = 0.5
+    buyer.last_perceived_hazard_risk = 0.05
+    buyer.last_perceived_continuity_risk = 0.05
+    buyer.target_input_units = 10.0
+
+    assert np.isclose(buyer._reserved_capacity_target_units(), 5.0, atol=1e-9)
+
+
+def test_reserved_capacity_diversifies_standby_suppliers_more_aggressively() -> None:
+    """Reserved capacity should round up standby diversification at moderate continuity levels."""
+    model = build_closed_economy_model(adaptation_enabled=True, adaptation_strategy="reserved_capacity")
+    buyer = next(f for f in model._firms if f.connected_firms)
+
+    buyer.continuity_capital = 0.21
+    assert buyer._reserved_capacity_supplier_count() == 2
+
+    buyer.continuity_capital = 0.0
+    assert buyer._reserved_capacity_supplier_count() == 0
+
+
 def test_all_strategies_dormant_in_baseline() -> None:
     """All adaptation strategies should produce zero adaptation spending without hazard."""
     for strategy in ("backup_suppliers", "capital_hardening", "stockpiling", "reserved_capacity"):
