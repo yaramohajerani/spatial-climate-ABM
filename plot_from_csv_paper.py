@@ -13,6 +13,7 @@ import numpy as np
 STRATEGY_KEYWORDS = {
     "backup_suppliers": "Backup Suppliers",
     "capital_hardening": "Capital Hardening",
+    "reserved_capacity": "Reserved Capacity",
     "stockpiling": "Stockpiling",
 }
 
@@ -87,6 +88,8 @@ STRATEGY_ABBREVS = {
     "backup_suppliers": "BS",
     "capital hardening": "CH",
     "capital_hardening": "CH",
+    "reserved capacity": "RC",
+    "reserved_capacity": "RC",
     "stockpiling": "SP",
 }
 
@@ -131,6 +134,8 @@ def scenario_main_color(scenario: str) -> str:
         return "#59A14F"       # green
     if strategy == "capital_hardening":
         return "#F28E2B"       # orange
+    if strategy == "reserved_capacity":
+        return "#76B7B2"       # teal
     if strategy == "stockpiling":
         return "#B07AA1"       # purple
     if is_hazard_scenario(scenario) and is_no_adaptation_scenario(scenario):
@@ -475,6 +480,7 @@ def main():
         "hazard_adaptation": ["#A1D99B", "#74C476", "#31A354"],
         "hazard_backup_suppliers": ["#A1D99B", "#74C476", "#31A354"],
         "hazard_capital_hardening": ["#FDD0A2", "#FDAE6B", "#E6550D"],
+        "hazard_reserved_capacity": ["#B2E2E2", "#66C2A4", "#238B8D"],
         "hazard_stockpiling": ["#D4B9DA", "#C994C7", "#88419D"],
         "hazard_noadaptation": ["#FCAE91", "#FB6A4A", "#CB181D"],
         "hazard": ["#FDD0A2", "#FDAE6B", "#E6550D"],
