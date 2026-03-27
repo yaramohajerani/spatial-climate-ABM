@@ -3,7 +3,10 @@
 from pathlib import Path
 import argparse
 from datetime import datetime
+import json
+import shlex
 import subprocess
+import sys
 import numpy as np
 import pandas as pd
 # Import model and agent classes
@@ -56,6 +59,18 @@ def _parse():
         choices=["backup_suppliers", "capital_hardening", "stockpiling", "reserved_capacity"],
         default=None,
         help="Adaptation strategy for firms (only used when adaptation is enabled)",
+    )
+    p.add_argument(
+        "--adaptation-sensitivity-min",
+        type=float,
+        default=None,
+        help="Override adaptation_sensitivity_min from the parameter file",
+    )
+    p.add_argument(
+        "--adaptation-sensitivity-max",
+        type=float,
+        default=None,
+        help="Override adaptation_sensitivity_max from the parameter file",
     )
     p.add_argument("--no-learning", action="store_true", help="Deprecated alias for --no-adaptation")
     p.add_argument("--save-agent-ensemble", action="store_true", help="When running multiple seeds, also save the combined agent panel")
@@ -134,6 +149,36 @@ def _event_signature(events: list[tuple[int, int, int, str, str | None]]) -> str
     )
 
 
+def _metadata_json(value: object | None) -> str:
+    if value is None:
+        return ""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _normalized_adaptation_config(adaptation_config: dict | None) -> dict[str, object]:
+    config = adaptation_config or {}
+    continuity_decay = float(config.get("continuity_decay", config.get("resilience_decay", 0.01)))
+    sensitivity_min = float(config.get("adaptation_sensitivity_min", 2.0))
+    sensitivity_max = float(config.get("adaptation_sensitivity_max", 4.0))
+    return {
+        "enabled": bool(config.get("enabled", True)),
+        "decision_interval": int(config.get("decision_interval", 4)),
+        "ewma_alpha": float(config.get("ewma_alpha", 0.2)),
+        "observation_radius": float(config.get("observation_radius", 4.0)),
+        "adaptation_sensitivity_min": sensitivity_min,
+        "adaptation_sensitivity_max": sensitivity_max,
+        "max_adaptation_increment": float(config.get("max_adaptation_increment", 0.25)),
+        "continuity_decay": continuity_decay,
+        "maintenance_cost_rate": float(config.get("maintenance_cost_rate", 0.005)),
+        "adaptation_strategy": str(config.get("adaptation_strategy", "backup_suppliers")),
+        "max_backup_suppliers": int(config.get("max_backup_suppliers", 5)),
+        "reserved_capacity_share": float(config.get("reserved_capacity_share", 0.35)),
+        "reserved_capacity_markup_cap": float(config.get("reserved_capacity_markup_cap", 0.10)),
+        "min_money_survival": float(config.get("min_money_survival", 1.0)),
+        "replacement_frequency": int(config.get("replacement_frequency", 10)),
+    }
+
+
 def _base_metadata(
     *,
     args,
@@ -143,18 +188,35 @@ def _base_metadata(
     adaptation_config: dict,
     scenario_label: str,
     timestamp: str,
+    param_data: dict | None = None,
 ) -> dict[str, object]:
     param_path = str(args.param_file) if args.param_file else ""
     topology_path = str(args.topology) if args.topology else ""
+    param_data = param_data or {}
+    param_adaptation_config = param_data.get("adaptation", param_data.get("learning"))
+    effective_adaptation_config = _normalized_adaptation_config(adaptation_config)
+    sensitivity_min = float(effective_adaptation_config["adaptation_sensitivity_min"])
+    sensitivity_max = float(effective_adaptation_config["adaptation_sensitivity_max"])
     return {
         f"{METADATA_PREFIX}ScenarioLabel": scenario_label,
         f"{METADATA_PREFIX}ApplyHazards": bool(apply_hazards),
         f"{METADATA_PREFIX}AdaptationEnabled": bool(adaptation_enabled),
-        f"{METADATA_PREFIX}AdaptationStrategy": str(adaptation_config.get("adaptation_strategy", "backup_suppliers")) if adaptation_enabled else "",
+        f"{METADATA_PREFIX}AdaptationStrategy": str(effective_adaptation_config["adaptation_strategy"]) if adaptation_enabled else "",
         f"{METADATA_PREFIX}ParamFile": param_path,
         f"{METADATA_PREFIX}ParamFileStem": Path(param_path).stem if param_path else "",
         f"{METADATA_PREFIX}TopologyPath": topology_path,
         f"{METADATA_PREFIX}TopologyStem": Path(topology_path).stem if topology_path else "",
+        f"{METADATA_PREFIX}RunCommand": " ".join(shlex.quote(arg) for arg in sys.argv),
+        f"{METADATA_PREFIX}NoHazardsFlag": bool(getattr(args, "no_hazards", False)),
+        f"{METADATA_PREFIX}NoAdaptationFlag": bool(getattr(args, "no_adaptation", False)),
+        f"{METADATA_PREFIX}NoLearningFlag": bool(getattr(args, "no_learning", False)),
+        f"{METADATA_PREFIX}CLIAdaptationStrategy": str(getattr(args, "adaptation_strategy", "") or ""),
+        f"{METADATA_PREFIX}CLIAdaptationSensitivityMin": (
+            "" if getattr(args, "adaptation_sensitivity_min", None) is None else float(args.adaptation_sensitivity_min)
+        ),
+        f"{METADATA_PREFIX}CLIAdaptationSensitivityMax": (
+            "" if getattr(args, "adaptation_sensitivity_max", None) is None else float(args.adaptation_sensitivity_max)
+        ),
         f"{METADATA_PREFIX}HazardEventCount": len(events),
         f"{METADATA_PREFIX}HazardEvents": _event_signature(events),
         f"{METADATA_PREFIX}StartYear": int(args.start_year),
@@ -163,6 +225,8 @@ def _base_metadata(
         f"{METADATA_PREFIX}NumHouseholds": int(args.num_households),
         f"{METADATA_PREFIX}GridResolution": float(args.grid_resolution),
         f"{METADATA_PREFIX}HouseholdRelocation": bool(args.household_relocation),
+        f"{METADATA_PREFIX}ConsumptionRatios": _metadata_json(getattr(args, "consumption_ratios", None)),
+        f"{METADATA_PREFIX}ParamConsumptionRatios": _metadata_json(param_data.get("consumption_ratios")),
         f"{METADATA_PREFIX}HHConsumptionPropensityIncome": float(HouseholdAgent.CONSUMPTION_PROPENSITY_INCOME),
         f"{METADATA_PREFIX}HHConsumptionPropensityWealth": float(HouseholdAgent.CONSUMPTION_PROPENSITY_WEALTH),
         f"{METADATA_PREFIX}HHTargetCashBuffer": float(HouseholdAgent.TARGET_CASH_BUFFER),
@@ -172,21 +236,27 @@ def _base_metadata(
         f"{METADATA_PREFIX}FirmWorkingCapitalCreditRevenueShare": float(FirmAgent.WORKING_CAPITAL_CREDIT_REVENUE_SHARE),
         f"{METADATA_PREFIX}FirmLaborShare": float(FirmAgent.LABOR_SHARE),
         f"{METADATA_PREFIX}NoWorkerWagePremium": float(FirmAgent.NO_WORKER_WAGE_PREMIUM),
-        f"{METADATA_PREFIX}DecisionInterval": int(adaptation_config.get("decision_interval", 4)),
-        f"{METADATA_PREFIX}ObservationRadius": float(adaptation_config.get("observation_radius", 4.0)),
-        f"{METADATA_PREFIX}AdaptationSensitivityMin": float(adaptation_config.get("adaptation_sensitivity_min", 2.0)),
-        f"{METADATA_PREFIX}AdaptationSensitivityMax": float(adaptation_config.get("adaptation_sensitivity_max", 4.0)),
-        f"{METADATA_PREFIX}ContinuitySensitivityMin": float(adaptation_config.get("adaptation_sensitivity_min", 2.0)),
-        f"{METADATA_PREFIX}ContinuitySensitivityMax": float(adaptation_config.get("adaptation_sensitivity_max", 4.0)),
-        f"{METADATA_PREFIX}MaxAdaptIncrement": float(adaptation_config.get("max_adaptation_increment", 0.25)),
-        f"{METADATA_PREFIX}ResilienceDecay": float(adaptation_config.get("resilience_decay", 0.01)),
-        f"{METADATA_PREFIX}ContinuityDecay": float(adaptation_config.get("continuity_decay", adaptation_config.get("resilience_decay", 0.01))),
-        f"{METADATA_PREFIX}MaintenanceCostRate": float(adaptation_config.get("maintenance_cost_rate", 0.005)),
-        f"{METADATA_PREFIX}MaxBackupSuppliers": int(adaptation_config.get("max_backup_suppliers", 5)),
-        f"{METADATA_PREFIX}ReservedCapacityShare": float(adaptation_config.get("reserved_capacity_share", 0.35)),
-        f"{METADATA_PREFIX}ReservedCapacityMarkupCap": float(adaptation_config.get("reserved_capacity_markup_cap", 0.10)),
-        f"{METADATA_PREFIX}MinMoneySurvival": float(adaptation_config.get("min_money_survival", 1.0)),
-        f"{METADATA_PREFIX}ReplacementFrequency": int(adaptation_config.get("replacement_frequency", 10)),
+        f"{METADATA_PREFIX}DecisionInterval": int(effective_adaptation_config["decision_interval"]),
+        f"{METADATA_PREFIX}EWMAAlpha": float(effective_adaptation_config["ewma_alpha"]),
+        f"{METADATA_PREFIX}ObservationRadius": float(effective_adaptation_config["observation_radius"]),
+        f"{METADATA_PREFIX}AdaptationSensitivityMin": sensitivity_min,
+        f"{METADATA_PREFIX}AdaptationSensitivityMax": sensitivity_max,
+        f"{METADATA_PREFIX}AdaptationSensitivityMidpoint": 0.5 * (sensitivity_min + sensitivity_max),
+        f"{METADATA_PREFIX}ContinuitySensitivityMin": sensitivity_min,
+        f"{METADATA_PREFIX}ContinuitySensitivityMax": sensitivity_max,
+        f"{METADATA_PREFIX}MaxAdaptIncrement": float(effective_adaptation_config["max_adaptation_increment"]),
+        f"{METADATA_PREFIX}ResilienceDecay": float(effective_adaptation_config["continuity_decay"]),
+        f"{METADATA_PREFIX}ContinuityDecay": float(effective_adaptation_config["continuity_decay"]),
+        f"{METADATA_PREFIX}MaintenanceCostRate": float(effective_adaptation_config["maintenance_cost_rate"]),
+        f"{METADATA_PREFIX}MaxBackupSuppliers": int(effective_adaptation_config["max_backup_suppliers"]),
+        f"{METADATA_PREFIX}ReservedCapacityShare": float(effective_adaptation_config["reserved_capacity_share"]),
+        f"{METADATA_PREFIX}ReservedCapacityMarkupCap": float(effective_adaptation_config["reserved_capacity_markup_cap"]),
+        f"{METADATA_PREFIX}MinMoneySurvival": float(effective_adaptation_config["min_money_survival"]),
+        f"{METADATA_PREFIX}ReplacementFrequency": int(effective_adaptation_config["replacement_frequency"]),
+        f"{METADATA_PREFIX}EffectiveAdaptationConfig": _metadata_json(effective_adaptation_config),
+        f"{METADATA_PREFIX}ParamAdaptationConfig": _metadata_json(param_adaptation_config),
+        f"{METADATA_PREFIX}EnsemblePlotStat": str(getattr(args, "ensemble_plot_stat", "mean")),
+        f"{METADATA_PREFIX}SaveAgentEnsemble": bool(getattr(args, "save_agent_ensemble", False)),
         f"{METADATA_PREFIX}RunTimestamp": timestamp,
         f"{METADATA_PREFIX}GitCommit": _safe_git_commit(),
         f"{METADATA_PREFIX}SourceMemberFiles": "",
@@ -338,12 +408,11 @@ def _save_ensemble_plot(summary_df: pd.DataFrame, member_df: pd.DataFrame, outpu
 
 def main() -> None:  # noqa: D401
     args = _parse()
+    param_data: dict = {}
 
     # ---------------- Optional parameter file ---------------------------- #
     if args.param_file:
-        import json, pathlib
-
-        param_path = pathlib.Path(args.param_file)
+        param_path = Path(args.param_file)
         if not param_path.exists():
             raise SystemExit(f"Parameter file not found: {param_path}")
 
@@ -405,7 +474,7 @@ def main() -> None:  # noqa: D401
         args.grid_resolution = float(param_data.get("grid_resolution", 1.0))
 
         # 9. Household relocation toggle -------------------------------------
-        args.household_relocation = bool(param_data.get("household_relocation", True))
+        args.household_relocation = bool(param_data.get("household_relocation", False))
         if not args.save_agent_ensemble and "save_agent_ensemble" in param_data:
             args.save_agent_ensemble = bool(param_data.get("save_agent_ensemble", False))
         if args.ensemble_plot_stat == "mean" and "ensemble_plot_stat" in param_data:
@@ -485,6 +554,19 @@ def main() -> None:  # noqa: D401
     # CLI override for adaptation strategy
     if getattr(args, "adaptation_strategy", None) and adaptation_enabled:
         adaptation_config = {**adaptation_config, "adaptation_strategy": args.adaptation_strategy}
+    if adaptation_enabled and (
+        getattr(args, "adaptation_sensitivity_min", None) is not None
+        or getattr(args, "adaptation_sensitivity_max", None) is not None
+    ):
+        adaptation_config = {**adaptation_config}
+        if args.adaptation_sensitivity_min is not None:
+            adaptation_config["adaptation_sensitivity_min"] = float(args.adaptation_sensitivity_min)
+        if args.adaptation_sensitivity_max is not None:
+            adaptation_config["adaptation_sensitivity_max"] = float(args.adaptation_sensitivity_max)
+        sensitivity_min = float(adaptation_config.get("adaptation_sensitivity_min", 2.0))
+        sensitivity_max = float(adaptation_config.get("adaptation_sensitivity_max", 4.0))
+        if sensitivity_max < sensitivity_min:
+            raise SystemExit("--adaptation-sensitivity-max must be >= --adaptation-sensitivity-min")
     adaptation_strategy = str(adaptation_config.get("adaptation_strategy", "")) if adaptation_enabled else ""
 
     # Generate scenario label for output files
@@ -517,6 +599,7 @@ def main() -> None:  # noqa: D401
             adaptation_config=adaptation_config,
             scenario_label=scenario_label,
             timestamp=timestamp,
+            param_data=param_data,
         ),
         **_ensemble_seed_metadata(seed_list),
     }

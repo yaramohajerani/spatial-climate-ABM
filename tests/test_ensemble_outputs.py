@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pandas as pd
@@ -60,6 +61,15 @@ def test_base_metadata_matches_model_adaptation_defaults() -> None:
         num_households=100,
         grid_resolution=1.0,
         household_relocation=False,
+        no_hazards=False,
+        no_adaptation=False,
+        no_learning=False,
+        adaptation_strategy=None,
+        adaptation_sensitivity_min=None,
+        adaptation_sensitivity_max=None,
+        consumption_ratios={"retail": 1.0},
+        save_agent_ensemble=False,
+        ensemble_plot_stat="mean",
     )
 
     metadata = _base_metadata(
@@ -70,9 +80,105 @@ def test_base_metadata_matches_model_adaptation_defaults() -> None:
         adaptation_config={},
         scenario_label="hazard_backup_suppliers",
         timestamp="20260326_000000",
+        param_data={},
     )
 
     assert metadata["Meta_ObservationRadius"] == 4.0
+    assert metadata["Meta_EWMAAlpha"] == 0.2
     assert metadata["Meta_MinMoneySurvival"] == 1.0
     assert metadata["Meta_ReservedCapacityShare"] == 0.35
     assert metadata["Meta_ReservedCapacityMarkupCap"] == 0.10
+    assert metadata["Meta_AdaptationSensitivityMidpoint"] == 3.0
+    assert json.loads(metadata["Meta_ConsumptionRatios"]) == {"retail": 1.0}
+    assert json.loads(metadata["Meta_EffectiveAdaptationConfig"]) == {
+        "adaptation_sensitivity_max": 4.0,
+        "adaptation_sensitivity_min": 2.0,
+        "adaptation_strategy": "backup_suppliers",
+        "continuity_decay": 0.01,
+        "decision_interval": 4,
+        "enabled": True,
+        "ewma_alpha": 0.2,
+        "maintenance_cost_rate": 0.005,
+        "max_adaptation_increment": 0.25,
+        "max_backup_suppliers": 5,
+        "min_money_survival": 1.0,
+        "observation_radius": 4.0,
+        "replacement_frequency": 10,
+        "reserved_capacity_markup_cap": 0.1,
+        "reserved_capacity_share": 0.35,
+    }
+
+
+def test_base_metadata_tracks_param_and_cli_provenance() -> None:
+    args = SimpleNamespace(
+        param_file="params.json",
+        topology="topology.json",
+        start_year=2000,
+        steps_per_year=4,
+        steps=400,
+        num_households=1000,
+        grid_resolution=0.25,
+        household_relocation=False,
+        no_hazards=True,
+        no_adaptation=False,
+        no_learning=False,
+        adaptation_strategy="capital_hardening",
+        adaptation_sensitivity_min=1.0,
+        adaptation_sensitivity_max=2.0,
+        consumption_ratios={"retail": 1.0},
+        save_agent_ensemble=False,
+        ensemble_plot_stat="mean",
+    )
+
+    metadata = _base_metadata(
+        args=args,
+        events=[(10, 1, 80, "FL", None)],
+        apply_hazards=False,
+        adaptation_enabled=True,
+        adaptation_config={
+            "enabled": True,
+            "adaptation_strategy": "capital_hardening",
+            "adaptation_sensitivity_min": 1.0,
+            "adaptation_sensitivity_max": 2.0,
+        },
+        scenario_label="baseline_capital_hardening",
+        timestamp="20260327_000000",
+        param_data={
+            "adaptation": {
+                "enabled": True,
+                "adaptation_strategy": "backup_suppliers",
+                "adaptation_sensitivity_min": 2.0,
+                "adaptation_sensitivity_max": 4.0,
+            },
+            "consumption_ratios": {"retail": 1.0},
+        },
+    )
+
+    assert metadata["Meta_NoHazardsFlag"] is True
+    assert metadata["Meta_CLIAdaptationStrategy"] == "capital_hardening"
+    assert metadata["Meta_CLIAdaptationSensitivityMin"] == 1.0
+    assert metadata["Meta_CLIAdaptationSensitivityMax"] == 2.0
+    assert json.loads(metadata["Meta_ParamAdaptationConfig"]) == {
+        "adaptation_sensitivity_max": 4.0,
+        "adaptation_sensitivity_min": 2.0,
+        "adaptation_strategy": "backup_suppliers",
+        "enabled": True,
+    }
+    assert json.loads(metadata["Meta_EffectiveAdaptationConfig"]) == {
+        "adaptation_sensitivity_max": 2.0,
+        "adaptation_sensitivity_min": 1.0,
+        "adaptation_strategy": "capital_hardening",
+        "continuity_decay": 0.01,
+        "decision_interval": 4,
+        "enabled": True,
+        "ewma_alpha": 0.2,
+        "maintenance_cost_rate": 0.005,
+        "max_adaptation_increment": 0.25,
+        "max_backup_suppliers": 5,
+        "min_money_survival": 1.0,
+        "observation_radius": 4.0,
+        "replacement_frequency": 10,
+        "reserved_capacity_markup_cap": 0.1,
+        "reserved_capacity_share": 0.35,
+    }
+    assert metadata["Meta_RunCommand"]
