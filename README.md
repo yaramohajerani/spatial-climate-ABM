@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
 [![NeurIPS 2025 CCAI](https://img.shields.io/badge/NeurIPS%202025-Climate%20Change%20AI-green.svg)](https://www.climatechange.ai/papers/neurips2025/19)
 
-This is a spatial agent-based model (ABM) for simulating climate-economy interactions. The model couples economic behavior with climate hazard impacts using Mesa for agent-based modeling. As an example, we assess the impact of acute flooding using JRC flood depth-damage functions for impact assessment.
+This is a spatial agent-based model (ABM) for simulating climate-economy interactions. The model couples economic behavior with climate hazard impacts using Mesa for agent-based modeling. As an example, we assess the impact of acute flooding using JRC flood depth-damage functions and hazard-conditional firm continuity adaptation.
 
 ## Citation
 
@@ -13,6 +13,8 @@ If you use this model in your research, please cite:
 > Mohajerani, Y. (2025). *Adaptive Learning in Spatial Agent-Based Models for Climate Risk Assessment: A Geospatial Framework with Evolutionary Economic Agents*. arXiv preprint arXiv:2509.18633. https://doi.org/10.48550/arXiv.2509.18633
 
 This work was accepted to the [NeurIPS 2025 Tackling Climate Change with Machine Learning](https://www.climatechange.ai/papers/neurips2025/19).
+
+The current JASSS manuscript draft in `JASSS0/TemplateJASSS.tex` reflects a later simplification of the adaptation layer. The codebase now reports hazard-conditional continuity capital with explicit deployment channels rather than the earlier generic evolutionary-learning description used in the arXiv/NeurIPS paper.
 
 ```bibtex
 @article{mohajerani2025adaptive,
@@ -26,7 +28,7 @@ This work was accepted to the [NeurIPS 2025 Tackling Climate Change with Machine
 
 ## Model Overview
 
-The model simulates economic agents (households and firms) on a spatial grid while exposing them to climate hazards sampled from GeoTIFF rasters. Agents interact through labor markets, supply chains, and goods markets while adapting to climate risks through migration, wage adjustments, and capital investment decisions.
+The model simulates economic agents (households and firms) on a spatial grid while exposing them to climate hazards sampled from GeoTIFF rasters. Agents interact through labor markets, supply chains, and goods markets while firms respond to climate risk through a hazard-conditional continuity-capital system layered on top of fixed operating rules.
 
 ### Key Features
 
@@ -112,7 +114,7 @@ Damage is calculated using JRC Global Flood Depth-Damage Functions:
 - **Funding Timing**: Continuity targets are evaluated before the hazard is sampled, but maintenance and new continuity spending are funded only at period close from residual post-operations cash; newly installed continuity capital affects the next period rather than the current one
 - **Perceived Continuity Risk**: Firms use the stronger of own expected operating shortfall and nearby observed shortfall as a parsimonious continuity-risk signal
 - **Target Rule**: Every `decision_interval` steps, each firm annualizes that per-step continuity risk, sets a target `C* = min(1, sensitivity_i × annualized_risk_i)`, and invests up to a capped increment toward that target
-- **Four Adaptation Strategies** (configurable via `adaptation_strategy`):
+- **Four Adaptation Strategies** (configurable via `adaptation_strategy`; the current paper comparison uses `backup_suppliers` and `capital_hardening`):
   1. **Backup supplier search** (`backup_suppliers`): Continuity capital enables firms to search for non-primary suppliers with available inventory when primary suppliers are disrupted. All transactions use real cash and real inventory via `sell_goods_to_firm()`, preserving macro closure. Maintains production but can cause scarcity-driven inflation.
   2. **Capital hardening** (`capital_hardening`): Continuity capital directly attenuates physical damage from hazard events. At full continuity stock, damage to capital, inventory, and operational capacity is fully offset. Preserves productive capacity but does not address supply-chain disruptions.
   3. **Precautionary stockpiling** (`stockpiling`): Continuity capital increases the firm's target inventory buffer proportionally to perceived hazard risk. Firms build excess inventory during calm periods and draw down during disruptions. Absorbs supply-chain shocks without competing for scarce goods during crises.
@@ -136,6 +138,16 @@ python run_simulation.py --param-file aqueduct_riverine_parameters.json
 # Run a 5-seed ensemble and save mean-based summary outputs
 python run_simulation.py --param-file aqueduct_riverine_parameters_rcp8p5.json --n-seeds 5 --seed-start 41
 
+# Final 20-seed paper comparison
+python run_simulation.py --param-file aqueduct_riverine_parameters_rcp8p5.json --no-hazards --no-adaptation --n-seeds 20 --seed-start 41
+python run_simulation.py --param-file aqueduct_riverine_parameters_rcp8p5.json --no-adaptation --n-seeds 20 --seed-start 41
+python run_simulation.py --param-file aqueduct_riverine_parameters_rcp8p5.json --adaptation-strategy capital_hardening --adaptation-sensitivity-min 0.5 --adaptation-sensitivity-max 1.5 --n-seeds 20 --seed-start 41
+python run_simulation.py --param-file aqueduct_riverine_parameters_rcp8p5.json --adaptation-strategy backup_suppliers --adaptation-sensitivity-min 0.8 --adaptation-sensitivity-max 1.4 --n-seeds 20 --seed-start 41
+
+# Final paper figures from the resulting ensemble summaries
+python plot_from_csv_paper.py --csv-files simulation_baseline_noadaptation_...csv simulation_hazard_noadaptation_...csv simulation_hazard_capital_hardening_...csv simulation_hazard_backup_suppliers_...csv --no-sector --show-ensemble-band --plot-start-year 2015
+python plot_cascade_risk.py --csv-files simulation_hazard_noadaptation_...csv simulation_hazard_capital_hardening_...csv simulation_hazard_backup_suppliers_...csv --show-ensemble-band --out cascade_risk.png
+
 # Run an explicit seed set and keep the combined agent ensemble too
 python run_simulation.py --param-file aqueduct_riverine_parameters_rcp8p5.json --seeds 41 42 43 44 45 --save-agent-ensemble --ensemble-plot-stat median
 
@@ -152,7 +164,7 @@ Multi-seed runs execute the requested seeds sequentially in one invocation and w
 - `simulation_*_agents.csv`: optional combined agent ensemble when `--save-agent-ensemble` is enabled
 - `simulation_*_ensemble.png`: a quick ensemble plot with faint member traces plus a highlighted mean/median line
 
-Both the summary and member CSVs now include `Meta_*` columns so each file is self-describing without needing the original command line. These metadata columns include the scenario label, hazard/adaptation toggles, parameter/topology file names, hazard event signature, seed range, and key adaptation settings such as `Meta_DecisionInterval`, `Meta_ObservationRadius`, `Meta_ContinuitySensitivityMin`, `Meta_ContinuitySensitivityMax`, `Meta_MaxAdaptIncrement`, and `Meta_ContinuityDecay` (with legacy `Meta_AdaptationSensitivity*` / `Meta_ResilienceDecay` aliases preserved for backward compatibility).
+Both the summary and member CSVs now include `Meta_*` columns so each file is self-describing without needing the original command line. These metadata columns include the scenario label, hazard/adaptation toggles, parameter/topology file names, hazard event signature, seed range, the full `Meta_RunCommand`, explicit CLI override traces, the effective adaptation block (`Meta_EffectiveAdaptationConfig`), the raw parameter-file adaptation block (`Meta_ParamAdaptationConfig`), and key adaptation settings such as `Meta_DecisionInterval`, `Meta_EWMAAlpha`, `Meta_ObservationRadius`, `Meta_ContinuitySensitivityMin`, `Meta_ContinuitySensitivityMax`, `Meta_MaxAdaptIncrement`, and `Meta_ContinuityDecay` (with legacy `Meta_AdaptationSensitivity*` / `Meta_ResilienceDecay` aliases preserved for backward compatibility).
 
 This provenance guarantee applies to files produced with the current runner. Legacy CSVs generated before the `Meta_*` fields were added can still be merged, but the merge script cannot reconstruct missing historical settings that were never written to those files.
 
@@ -162,17 +174,17 @@ If you build the ensemble in batches, merge the resulting `*_members.csv` files 
 
 ```json
 {
-  "num_households": 650,
+  "num_households": 1000,
   "grid_resolution": 0.25,
   "rp_files": [
     "10:1:80:FL:None",
-    "2:81:320:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00002.tif",
-    "10:81:320:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00010.tif",
-    "100:81:320:FL:data/inunriver_rcp4p5_0000GFDL-ESM2M_2030_rp00100.tif"
+    "2:81:160:FL:data/model_grid_025/inunriver_rcp8p5_0000GFDL-ESM2M_2030_rp00002_model-grid-0.25deg-mean.tif",
+    "10:81:160:FL:data/model_grid_025/inunriver_rcp8p5_0000GFDL-ESM2M_2030_rp00010_model-grid-0.25deg-mean.tif",
+    "100:81:160:FL:data/model_grid_025/inunriver_rcp8p5_0000GFDL-ESM2M_2030_rp00100_model-grid-0.25deg-mean.tif"
   ],
   "steps": 400,
   "seed": 42,
-  "topology": "small_firm_topology.json",
+  "topology": "riverine_firm_topology_100.json",
   "start_year": 2000,
   "steps_per_year": 4,
   "consumption_ratios": {
@@ -183,13 +195,15 @@ If you build the ensemble in batches, merge the resulting `*_members.csv` files 
     "decision_interval": 4,
     "ewma_alpha": 0.2,
     "observation_radius": 4,
-    "adaptation_sensitivity_min": 2.0,
-    "adaptation_sensitivity_max": 4.0,
+    "adaptation_sensitivity_min": 0.5,
+    "adaptation_sensitivity_max": 1.5,
     "max_adaptation_increment": 0.25,
     "continuity_decay": 0.01,
     "maintenance_cost_rate": 0.005,
-    "adaptation_strategy": "backup_suppliers",
+    "adaptation_strategy": "capital_hardening",
     "max_backup_suppliers": 5,
+    "reserved_capacity_share": 0.35,
+    "reserved_capacity_markup_cap": 0.10,
     "min_money_survival": 1.0,
     "replacement_frequency": 10
   }
@@ -203,8 +217,9 @@ Using `None` as the path lets you encode a shared no-hazard warm-up period direc
 Run a continuity-sensitivity sweep to verify robustness of the hazard-conditional adaptation results:
 
 ```bash
-# Full ensemble sensitivity analysis with matched seeds across all tested sensitivity ranges
-python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --n-seeds 10 --seed-start 41
+# Final paper sensitivity sweeps
+python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --adaptation-strategy capital_hardening --n-seeds 10 --seed-start 41 --sensitivity-grid Low:0.5:1.5 Medium:1.5:3.0 High:3.0:4.5
+python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --adaptation-strategy backup_suppliers --n-seeds 10 --seed-start 41 --sensitivity-grid Low:0.2:0.8 Medium:0.8:1.4 High:1.4:2.0
 
 # Quick test (50 steps, 3-seed ensemble)
 python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --quick --n-seeds 3 --seed-start 41
@@ -213,11 +228,13 @@ python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.
 python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --from-csv sensitivity_analysis_timeseries.csv
 ```
 
-This runs the hazard+adaptation scenario across four firm continuity-sensitivity ranges (`1.0-2.0`, `2.0-4.0`, `4.0-6.0`, `7.0-9.0`) using the same seed list for each value and produces:
+This runs the hazard+adaptation scenario across matched seed lists for custom continuity-sensitivity ranges and produces:
 - `sensitivity_analysis.png`: ensemble time-series comparison
 - `sensitivity_analysis_timeseries.csv`: per-step ensemble summary
 - `sensitivity_analysis_timeseries_members.csv`: per-seed member panel
 - `sensitivity_analysis.csv`: final-decade summary table across seeds
+
+For the current paper configuration, the matched-seed robustness exercise selects `capital_hardening` in the range `0.5-1.5` and `backup_suppliers` in the range `0.8-1.4` for the final 20-seed comparison.
 
 ### Cascade-Risk Figure
 
@@ -303,6 +320,8 @@ python plot_from_csv_paper.py \
   --out paper_ensemble_timeseries.png
 ```
 
+For `--show-ensemble-band`, keep the matching `*_members.csv` sidecar next to each summary CSV. The paper plotter computes p10-p90 bands from member trajectories directly, which is especially important for deflated real-valued panels such as liquidity and wages.
+
 ## Model Parameters
 
 ### Agent Configuration
@@ -341,7 +360,7 @@ python plot_from_csv_paper.py \
 - `adaptation.adaptation_sensitivity_min`: Lower bound of the uniform draw for firm-specific resilience sensitivity (default: 2.0)
 - `adaptation.adaptation_sensitivity_max`: Upper bound of the uniform draw for firm-specific resilience sensitivity (default: 4.0)
 - `adaptation.max_adaptation_increment`: Maximum resilience-capital increment per decision update (default: 0.25)
-- `adaptation.resilience_decay`: Per-step depreciation of resilience capital (default: 0.01)
+- `adaptation.continuity_decay`: Per-step depreciation of continuity capital (default: 0.01; `resilience_decay` remains a backward-compatible alias)
 - `adaptation.maintenance_cost_rate`: Per-step carrying cost on resilience capital (default: 0.005)
 - `adaptation.adaptation_strategy`: Which adaptation channel continuity capital operates through: `backup_suppliers`, `capital_hardening`, `stockpiling`, or `reserved_capacity` (default: `backup_suppliers`)
 - `adaptation.max_backup_suppliers`: Maximum number of backup suppliers to search or contract with (used by `backup_suppliers` and `reserved_capacity`; default: 5)
