@@ -23,8 +23,7 @@ data/
 network_topology_*.json
 *.pdf
 
-JASSS0
-*.tex
+manuscript/
 
 # Distribution / packaging
 .Python
