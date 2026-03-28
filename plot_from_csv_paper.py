@@ -303,7 +303,7 @@ def main():
             if selected.empty:
                 raise ValueError(f"{csv_path} does not contain EnsembleStatistic={args.ensemble_stat}")
             df = selected
-            if args.show_ensemble_members:
+            if args.show_ensemble_members or args.show_ensemble_band:
                 members_path = csv_path.parent / f"{csv_path.stem}_members.csv"
                 if members_path.exists():
                     member_df = pd.read_csv(members_path)
@@ -316,7 +316,7 @@ def main():
                 else:
                     print(f"Warning: No ensemble members sidecar found for {csv_path}")
         elif "Seed" in df.columns:
-            if args.show_ensemble_members:
+            if args.show_ensemble_members or args.show_ensemble_band:
                 ensemble_member_dataframes.append(df.copy())
             full_summary = summarize_members_for_plot(df)
             band_subset = full_summary[full_summary["EnsembleStatistic"].isin(["p10", "p90"])].copy()
@@ -636,7 +636,61 @@ def main():
                         zorder=1,
                     )
 
-        if args.show_ensemble_band and not band_df_combined.empty and metric_col in band_df_combined.columns:
+        band_plotted = False
+        if args.show_ensemble_band and not member_df_combined.empty and metric_col in member_df_combined.columns:
+            member_subset = member_df_combined[member_df_combined["Scenario"] == scenario]
+            if not member_subset.empty:
+                member_band_frames = []
+                for seed, member_grp in member_subset.groupby("Seed"):
+                    member_grp = member_grp.sort_values(x_col)
+                    x_vals = member_grp[x_col].to_numpy()
+                    y_vals = deflate(
+                        x_vals,
+                        member_grp[metric_col].to_numpy(dtype=float),
+                        scenario,
+                        metric_name,
+                        source_df=member_grp,
+                    )
+                    if args.smooth and metric_name in SMOOTHABLE_METRICS:
+                        y_vals = _smooth_series(y_vals, args.smooth)
+                    member_band_frames.append(
+                        pd.DataFrame(
+                            {
+                                x_col: x_vals,
+                                "BandValue": y_vals,
+                                "Seed": seed,
+                            }
+                        )
+                    )
+
+                if member_band_frames:
+                    member_band_df = pd.concat(member_band_frames, ignore_index=True)
+                    quantiles = (
+                        member_band_df.groupby(x_col)["BandValue"]
+                        .quantile([0.10, 0.90])
+                        .unstack()
+                        .rename(columns={0.10: "p10", 0.90: "p90"})
+                        .reset_index()
+                        .sort_values(x_col)
+                    )
+                    if not quantiles.empty:
+                        ax.fill_between(
+                            quantiles[x_col].to_numpy(),
+                            quantiles["p10"].to_numpy(dtype=float),
+                            quantiles["p90"].to_numpy(dtype=float),
+                            color=style["color"],
+                            alpha=0.12,
+                            linewidth=0,
+                            zorder=2,
+                        )
+                        band_plotted = True
+
+        if (
+            args.show_ensemble_band
+            and not band_plotted
+            and not band_df_combined.empty
+            and metric_col in band_df_combined.columns
+        ):
             band_subset = band_df_combined[band_df_combined["Scenario"] == scenario]
             p10 = band_subset[band_subset["EnsembleStatistic"] == "p10"].copy()
             p90 = band_subset[band_subset["EnsembleStatistic"] == "p90"].copy()

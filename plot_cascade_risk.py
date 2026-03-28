@@ -241,7 +241,6 @@ def main() -> None:
         ax.set_title(title, fontsize=11)
         ax.set_ylabel(ylabel)
         ax.set_xlabel("Year" if x_col == "Year" else "Step")
-        ax.set_ylim(0.0, 100.0)
         ax.grid(alpha=0.15, linewidth=0.4)
         label_char = chr(ord("a") + idx)
         ax.text(
