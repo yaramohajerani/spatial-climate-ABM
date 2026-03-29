@@ -19,6 +19,9 @@ ORANGE = "#d9964a"
 RED = "#d87676"
 TEAL = "#4f9b97"
 GOLD = "#d8b75f"
+TARGET_WIDTH_PX = 1328
+TARGET_HEIGHT_PX = 531
+TARGET_DPI = 100
 
 
 def add_round_box(ax, x, y, w, h, facecolor=PANEL, edgecolor=BORDER, lw=1.6, radius=0.03):
@@ -161,13 +164,16 @@ def draw_output_item(ax, icon_drawer, icon_x, icon_y, icon_w, icon_h, text_x, te
 
 
 def main():
-    out_dir = Path(__file__).resolve().parent
-    pdf_path = out_dir / "graphical-abstract.pdf"
-    png_path = out_dir / "graphical-abstract.png"
+    repo_dir = Path(__file__).resolve().parent
+    output_dirs = [repo_dir, repo_dir / "manuscript"]
 
     plt.rcParams["font.family"] = "DejaVu Sans"
 
-    fig = plt.figure(figsize=(15.5, 8.7), facecolor=BG)
+    fig = plt.figure(
+        figsize=(TARGET_WIDTH_PX / TARGET_DPI, TARGET_HEIGHT_PX / TARGET_DPI),
+        dpi=TARGET_DPI,
+        facecolor=BG,
+    )
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
@@ -310,8 +316,9 @@ def main():
         fontweight="bold",
     )
 
-    fig.savefig(pdf_path, bbox_inches="tight", facecolor=BG)
-    fig.savefig(png_path, dpi=220, bbox_inches="tight", facecolor=BG)
+    for output_dir in output_dirs:
+        fig.savefig(output_dir / "graphical-abstract.pdf", dpi=TARGET_DPI, facecolor=BG)
+        fig.savefig(output_dir / "graphical-abstract.png", dpi=TARGET_DPI, facecolor=BG)
     plt.close(fig)
 
 
