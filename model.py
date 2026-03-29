@@ -24,6 +24,7 @@ class EconomyModel(Model):
     """Spatial ABM of an economy subject to climate risk."""
 
     FINAL_CONSUMPTION_SECTORS = {"retail", "wholesale", "services"}
+    _land_coordinate_cache: Dict[Tuple[int, int, float], List[Coords]] = {}
     SECTOR_ORDER = {
         "commodity": 0,
         "agriculture": 0,
@@ -79,6 +80,9 @@ class EconomyModel(Model):
         self.firm_learning_enabled: bool = self.firm_adaptation_enabled
         self.min_money_survival: float = self.adaptation_config.get("min_money_survival", 1.0)
         self.replacement_frequency: int = self.adaptation_config.get("replacement_frequency", 10)
+        self.reorganization_inheritance: str = str(
+            self.adaptation_config.get("reorganization_inheritance", "inherit_parent")
+        )
         self.adaptation_observation_radius: int = int(self.adaptation_config.get("observation_radius", 4))
         self.adaptation_updates_this_step: int = 0
         self.max_backup_suppliers: int = int(self.adaptation_config.get("max_backup_suppliers", 5))
@@ -327,7 +331,7 @@ class EconomyModel(Model):
         )
 
         # ---------------- Land mask to avoid placing agents in the ocean ---------------- #
-        self.land_coordinates: List[Coords] = self._compute_land_coordinates()
+        self.land_coordinates: List[Coords] = self._load_or_compute_land_coordinates()
         if not self.land_coordinates:
             raise ValueError(
                 "No land cells found within the hazard raster extent – cannot initialise agents."
@@ -906,6 +910,36 @@ class EconomyModel(Model):
 
         return land_coords
 
+    def _load_or_compute_land_coordinates(self) -> List[Coords]:
+        """Load cached land coordinates when available, otherwise compute and persist them."""
+
+        cache_key = (len(self.lon_vals), len(self.lat_vals), float(self.grid_resolution))
+        cached = self._land_coordinate_cache.get(cache_key)
+        if cached is not None:
+            return cached.copy()
+
+        cache_dir = Path(__file__).resolve().parent / ".cache"
+        res_tag = str(self.grid_resolution).replace(".", "p")
+        cache_path = cache_dir / f"land_coordinates_{len(self.lon_vals)}x{len(self.lat_vals)}_{res_tag}.npy"
+
+        if cache_path.exists():
+            try:
+                cached_array = np.load(cache_path, allow_pickle=False)
+                coords = [tuple(map(int, row)) for row in cached_array.tolist()]
+                self._land_coordinate_cache[cache_key] = coords
+                return coords.copy()
+            except Exception:
+                pass
+
+        coords = self._compute_land_coordinates()
+        self._land_coordinate_cache[cache_key] = coords
+        try:
+            cache_dir.mkdir(exist_ok=True)
+            np.save(cache_path, np.asarray(coords, dtype=np.int32), allow_pickle=False)
+        except Exception:
+            pass
+        return coords.copy()
+
     def _init_agents(self, num_households: int, num_firms: int) -> None:
         """Place households and firms randomly on grid."""
         # ---------------- Households ---------------- #
@@ -1124,7 +1158,7 @@ class EconomyModel(Model):
     #                      FIRM REORGANIZATION METHODS                       #
     # --------------------------------------------------------------------- #
     def _apply_firm_reorganization(self) -> None:
-        """Reorganize failed firms in place and inherit adaptation state."""
+        """Reorganize failed firms in place under the configured inheritance rule."""
         if len(self._firms) < 2:
             return
 
@@ -1180,7 +1214,11 @@ class EconomyModel(Model):
             failed_firm.base_inventory_target = inventory_target
             failed_firm.base_capital_target = max(failed_firm.capital_stock, capital_target)
             failed_firm.target_capital_stock = failed_firm.base_capital_target
-            failed_firm.copy_adaptation_state_from(parent)
+            if self.reorganization_inheritance == "reset":
+                failed_firm.adaptation_strategy = parent.adaptation_strategy
+                failed_firm.reset_adaptation_state()
+            else:
+                failed_firm.copy_adaptation_state_from(parent)
             failed_firm.survival_time = 0
             failed_firm.sales_last_step = 0.0
             failed_firm.revenue_last_step = 0.0
@@ -1197,6 +1235,7 @@ class EconomyModel(Model):
             print(
                 f"[REORGANIZATION] Step {self.current_step}: Reorganized failed firm "
                 f"{failed_firm.unique_id} using parent {parent.unique_id} "
+                f"with {self.reorganization_inheritance} adaptation state "
                 f"(total: {self.total_firm_replacements})"
             )
 

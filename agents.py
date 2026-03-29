@@ -886,6 +886,30 @@ class FirmAgent(Agent):
         self.pending_adaptation_increment = 0.0
         self.adaptation_update_count = 0
 
+    def reset_adaptation_state(self) -> None:
+        """Reset adaptation state to a fresh post-entry draw."""
+        adaptation_config = getattr(self.model, "adaptation_config", {})
+        sensitivity_min = float(adaptation_config.get("adaptation_sensitivity_min", 2.0))
+        sensitivity_max = float(adaptation_config.get("adaptation_sensitivity_max", 4.0))
+        if sensitivity_max < sensitivity_min:
+            sensitivity_max = sensitivity_min
+
+        self.continuity_capital = 0.0
+        self.expected_direct_loss_ewma = 0.0
+        self.realized_direct_loss_ewma = 0.0
+        self.local_observed_loss_ewma = 0.0
+        self.supplier_disruption_ewma = 0.0
+        self.expected_operating_shortfall_ewma = 0.0
+        self.local_observed_shortfall_ewma = 0.0
+        self.adaptation_sensitivity = float(self.random.uniform(sensitivity_min, sensitivity_max))
+        self.last_adaptation_action = "reset"
+        self.last_adaptation_target = 0.0
+        self.last_perceived_hazard_risk = 0.0
+        self.last_continuity_target = 0.0
+        self.last_perceived_continuity_risk = 0.0
+        self.pending_adaptation_increment = 0.0
+        self.adaptation_update_count = 0
+
     # ---------------- Interaction helpers ----------------------------- #
     def hire_labor(self, household: HouseholdAgent, wage: float) -> bool:
         """Attempt to hire one unit of labour from *household*.
