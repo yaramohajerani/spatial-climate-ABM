@@ -149,18 +149,20 @@ def draw_cascade_icon(ax, x, y, w, h):
         ax.add_patch(Circle((px, py), 0.07 * h, facecolor=color, edgecolor=INK, linewidth=1.0, zorder=4))
 
 
-def draw_output_item(ax, icon_drawer, icon_x, icon_y, icon_w, icon_h, text_x, text_y, text, fontsize=11.7):
-    icon_drawer(ax, icon_x, icon_y, icon_w, icon_h)
-    ax.text(
-        text_x,
-        text_y,
-        text,
-        fontsize=fontsize,
-        color=INK,
-        ha="left",
-        va="center",
-        linespacing=1.2,
-    )
+def add_label_pill(ax, x, y, w, h, text, facecolor, edgecolor, fontsize=11.2):
+    add_round_box(ax, x, y, w, h, facecolor=facecolor, edgecolor=edgecolor, lw=1.1, radius=0.018)
+    ax.text(x + 0.5 * w, y + 0.5 * h, text, fontsize=fontsize, color=INK, ha="center", va="center", fontweight="bold")
+
+
+def draw_output_card(ax, x, y, w, h, title, subtitle, icon_drawer=None):
+    add_round_box(ax, x, y, w, h, facecolor="#f8f8f5", edgecolor="#ddd5c8", lw=1.1, radius=0.02)
+    if icon_drawer is not None:
+        icon_drawer(ax, x + 0.014, y + 0.022, 0.046, h - 0.044)
+        text_x = x + 0.066
+    else:
+        text_x = x + 0.018
+    ax.text(text_x, y + 0.64 * h, title, fontsize=10.0, fontweight="bold", color=INK, ha="left", va="center")
+    ax.text(text_x, y + 0.32 * h, subtitle, fontsize=8.8, color=MUTED, ha="left", va="center", linespacing=1.10)
 
 
 def main():
@@ -182,117 +184,150 @@ def main():
     ax.text(
         0.5,
         0.94,
-        "Open-source workflow for physical climate risk assessment",
+        "Spatial ABM for acute climate risk and supply-chain cascades",
         ha="center",
         va="center",
-        fontsize=24,
+        fontsize=23,
         color=INK,
         fontweight="bold",
     )
     ax.text(
         0.5,
-        0.90,
-        "Geospatial hazards + supply-chain ABM + hazard-conditional continuity adaptation",
+        0.848,
+        "Flood rasters, agent interactions, and continuity adaptation in one reproducible workflow",
         ha="center",
         va="center",
-        fontsize=13.5,
+        fontsize=12.4,
         color=MUTED,
     )
 
+    left_x = 0.02
+    side_w = 0.255
+    panel_gap = 0.015
+    model_x = left_x + side_w + panel_gap
+    model_w = 0.415
+    right_x = model_x + model_w + panel_gap
+    right_w = side_w
+    arrow_left_start = left_x + side_w
+    arrow_left_end = model_x
+    arrow_right_start = model_x + model_w
+    arrow_right_end = right_x
+    left_text_x = left_x + 0.105
+    model_cx = model_x + 0.5 * model_w
+
     # Input column
-    x_left, w_left = 0.04, 0.22
     left_cards = [
-        (0.64, "Hazard data", "Aqueduct flood rasters", draw_raster_icon, 0.065, 0.095, 0.018, 0.028),
-        (0.44, "Network layout", "Topology + geography", draw_network_icon, 0.070, 0.090, 0.016, 0.030),
-        (0.24, "Scenario config", "Parameters + CLI", draw_param_icon, 0.065, 0.085, 0.018, 0.031),
+        (0.64, "Hazard data", "Aqueduct flood rasters", draw_raster_icon, 0.048, 0.068, 0.022, 0.046),
+        (0.44, "Network topology", "Topology + geography", draw_network_icon, 0.052, 0.068, 0.021, 0.045),
+        (0.24, "Scenario setup", "Parameters + seeds", draw_param_icon, 0.048, 0.066, 0.022, 0.046),
     ]
     for y, title, subtitle, icon_fn, iw, ih, ix, iy in left_cards:
-        add_round_box(ax, x_left, y, w_left, 0.15)
-        icon_fn(ax, x_left + ix, y + iy, iw, ih)
-        ax.text(x_left + 0.108, y + 0.104, title, fontsize=14.4, fontweight="bold", color=INK, ha="left", va="center")
-        ax.text(x_left + 0.108, y + 0.062, subtitle, fontsize=11.2, color=MUTED, ha="left", va="center")
+        add_round_box(ax, left_x, y, side_w, 0.15)
+        icon_fn(ax, left_x + ix, y + iy, iw, ih)
+        ax.text(left_text_x, y + 0.104, title, fontsize=12.8, fontweight="bold", color=INK, ha="left", va="center")
+        ax.text(left_text_x, y + 0.062, subtitle, fontsize=10.0, color=MUTED, ha="left", va="center")
 
     # Core model panel
-    add_round_box(ax, 0.31, 0.22, 0.38, 0.57, facecolor="#fff8ef", edgecolor="#d7c6a7", lw=1.8, radius=0.04)
-    ax.text(0.50, 0.765, "Spatial climate-economy ABM", ha="center", va="center", fontsize=19, fontweight="bold", color=INK)
-    ax.text(0.50, 0.725, "Households, firms, wages, prices, production, and finance", ha="center", va="center", fontsize=11.5, color=MUTED)
+    model_y, model_h = 0.205, 0.585
+    add_round_box(ax, model_x, model_y, model_w, model_h, facecolor="#fff8ef", edgecolor="#d7c6a7", lw=1.8, radius=0.04)
+    ax.text(model_cx, 0.765, "Spatial climate-economy ABM", ha="center", va="center", fontsize=18.8, fontweight="bold", color=INK)
+    ax.text(
+        model_cx,
+        0.670,
+        "Flood shocks propagate through labor,\nproduction, and supply links",
+        ha="center",
+        va="center",
+        fontsize=10.7,
+        color=MUTED,
+        linespacing=1.18,
+    )
 
-    draw_abm_icon(ax, 0.40, 0.555, 0.20, 0.145)
+    pill_y = 0.565
+    add_label_pill(ax, 0.345, pill_y, 0.105, 0.058, "Households", "#eef3fb", "#c7d6ef", fontsize=11.0)
+    add_label_pill(ax, 0.455, pill_y, 0.085, 0.058, "Firms", "#fbf2e5", "#e3c79f", fontsize=11.0)
+    add_label_pill(ax, 0.542, pill_y, 0.130, 0.058, "Supply chains", "#eef6ee", "#bdd8c0", fontsize=11.0)
+    ax.text(model_cx, 0.515, "Wages, prices, production, inventories, and finance", ha="center", va="center", fontsize=10.6, color=MUTED)
 
-    add_round_box(ax, 0.402, 0.445, 0.196, 0.086, facecolor="#eef5ef", edgecolor="#bdd5c0", lw=1.4, radius=0.025)
-    ax.text(0.50, 0.489, "Continuity capital", ha="center", va="center", fontsize=13.5, fontweight="bold", color=INK)
-    ax.text(0.50, 0.464, "adaptive expectations of hazard stress", ha="center", va="center", fontsize=10.0, color=MUTED)
+    continuity_y = 0.370
+    continuity_h = 0.106
+    add_round_box(ax, 0.400, continuity_y, 0.208, continuity_h, facecolor="#eef5ef", edgecolor="#bdd5c0", lw=1.4, radius=0.025)
+    ax.text(model_cx, continuity_y + 0.062, "Continuity capacity", ha="center", va="center", fontsize=13.2, fontweight="bold", color=INK)
+    ax.text(model_cx, continuity_y + 0.031, "hazard-conditioned preparedness stock", ha="center", va="center", fontsize=9.8, color=MUTED)
 
-    add_round_box(ax, 0.355, 0.286, 0.14, 0.102, facecolor="#edf6ee", edgecolor="#b8d3bb", lw=1.4, radius=0.025)
-    ax.text(0.425, 0.342, "Backup suppliers", ha="center", va="center", fontsize=12.7, fontweight="bold", color=INK)
-    ax.text(0.425, 0.309, "indirect continuity", ha="center", va="center", fontsize=10.2, color=MUTED)
+    adapt_y = 0.208
+    adapt_h = 0.122
+    add_round_box(ax, 0.348, adapt_y, 0.150, adapt_h, facecolor="#edf6ee", edgecolor="#b8d3bb", lw=1.4, radius=0.025)
+    ax.text(0.423, adapt_y + 0.074, "Backup-supplier", ha="center", va="center", fontsize=12.0, fontweight="bold", color=INK)
+    ax.text(0.423, adapt_y + 0.051, "search", ha="center", va="center", fontsize=12.0, fontweight="bold", color=INK)
+    ax.text(0.423, adapt_y + 0.025, "supplier continuity", ha="center", va="center", fontsize=10.0, color=MUTED)
 
-    add_round_box(ax, 0.505, 0.286, 0.14, 0.102, facecolor="#fbf0e4", edgecolor="#dfc09a", lw=1.4, radius=0.025)
-    ax.text(0.575, 0.342, "Capital hardening", ha="center", va="center", fontsize=12.7, fontweight="bold", color=INK)
-    ax.text(0.575, 0.309, "direct loss protection", ha="center", va="center", fontsize=10.2, color=MUTED)
+    add_round_box(ax, 0.512, adapt_y, 0.150, adapt_h, facecolor="#fbf0e4", edgecolor="#dfc09a", lw=1.4, radius=0.025)
+    ax.text(0.587, adapt_y + 0.068, "Capital hardening", ha="center", va="center", fontsize=12.0, fontweight="bold", color=INK)
+    ax.text(0.587, adapt_y + 0.025, "direct-loss attenuation", ha="center", va="center", fontsize=10.0, color=MUTED)
 
-    add_arrow(ax, (0.272, 0.715), (0.308, 0.715), color=TEAL, lw=2.4, mutation=16)
-    add_arrow(ax, (0.272, 0.515), (0.308, 0.515), color=TEAL, lw=2.4, mutation=16)
-    add_arrow(ax, (0.272, 0.315), (0.308, 0.315), color=TEAL, lw=2.4, mutation=16)
-    add_arrow(ax, (0.50, 0.432), (0.425, 0.388), color=GOLD, lw=2.3, mutation=15)
-    add_arrow(ax, (0.50, 0.432), (0.575, 0.388), color=GOLD, lw=2.3, mutation=15)
+    add_arrow(ax, (arrow_left_start - 0.002, 0.715), (arrow_left_end + 0.002, 0.715), color=TEAL, lw=2.4, mutation=16)
+    add_arrow(ax, (arrow_left_start - 0.002, 0.515), (arrow_left_end + 0.002, 0.515), color=TEAL, lw=2.4, mutation=16)
+    add_arrow(ax, (arrow_left_start - 0.002, 0.315), (arrow_left_end + 0.002, 0.315), color=TEAL, lw=2.4, mutation=16)
+    branch_y = continuity_y - 0.012
+    ax.plot([model_cx, model_cx], [continuity_y, branch_y], color=GOLD, lw=2.3, solid_capstyle="round", zorder=3)
+    add_arrow(ax, (model_cx, branch_y), (0.423, adapt_y + adapt_h + 0.002), color=GOLD, lw=2.3, mutation=15)
+    add_arrow(ax, (model_cx, branch_y), (0.587, adapt_y + adapt_h + 0.002), color=GOLD, lw=2.3, mutation=15)
 
     # Outputs column
-    out_x, out_y, out_w, out_h = 0.72, 0.22, 0.24, 0.57
+    out_x, out_y, out_w, out_h = right_x, 0.22, right_w, 0.57
     out_cx = out_x + 0.5 * out_w
     add_round_box(ax, out_x, out_y, out_w, out_h, facecolor="#fcfcfb", edgecolor=BORDER, lw=1.8, radius=0.04)
-    ax.text(out_cx, 0.765, "Scenario outputs", ha="center", va="center", fontsize=18, fontweight="bold", color=INK)
-    ax.text(out_cx, 0.726, "Ensembles, cascade diagnostics, and tradeoffs", ha="center", va="center", fontsize=10.6, color=MUTED)
-
-    draw_output_item(
-        ax,
-        draw_chart_icon,
-        0.752,
-        0.606,
-        0.060,
-        0.072,
-        0.832,
-        0.642,
-        "Ensemble\ntrajectories",
-        fontsize=11.2,
-    )
-    draw_output_item(
-        ax,
-        draw_cascade_icon,
-        0.752,
-        0.485,
-        0.060,
-        0.072,
-        0.832,
-        0.521,
-        "Cascade\ndiagnostics",
-        fontsize=11.2,
-    )
-    draw_output_item(
-        ax,
-        draw_param_icon,
-        0.752,
-        0.380,
-        0.060,
-        0.072,
-        0.832,
-        0.416,
-        "Provenance\nCSV outputs",
-        fontsize=11.2,
+    ax.text(out_cx, 0.765, "Outputs and findings", ha="center", va="center", fontsize=16.0, fontweight="bold", color=INK)
+    ax.text(
+        out_cx,
+        0.709,
+        "Matched-seed ensembles,\ncascade metrics, and tradeoffs",
+        ha="center",
+        va="center",
+        fontsize=9.0,
+        color=MUTED,
+        linespacing=1.08,
     )
 
-    ax.plot([0.748, 0.936], [0.329, 0.329], color=BORDER, lw=1.1)
-    ax.text(out_cx, 0.308, "Key effects", ha="center", va="center", fontsize=11.6, fontweight="bold", color=MUTED)
+    out_card_x = out_x + 0.018
+    out_card_w = out_w - 0.036
+    ensemble_y = 0.548
+    ensemble_h = 0.106
+    draw_output_card(
+        ax,
+        out_card_x,
+        ensemble_y,
+        out_card_w,
+        ensemble_h,
+        "Ensemble trajectories",
+        "Matched-seed comparisons",
+        icon_drawer=draw_chart_icon,
+    )
+    cascade_y = 0.408
+    cascade_h = 0.118
+    draw_output_card(
+        ax,
+        out_card_x,
+        cascade_y,
+        out_card_w,
+        cascade_h,
+        "Cascade burden",
+        "Never-hit firms still bear\n26-36% of disruption",
+        icon_drawer=draw_cascade_icon,
+    )
 
-    ax.add_patch(Circle((0.768, 0.283), 0.0085, facecolor=ORANGE, edgecolor="none"))
-    ax.text(0.782, 0.290, "Capital hardening", ha="left", va="center", fontsize=11.0, fontweight="bold", color=INK)
-    ax.text(0.782, 0.271, "-26% direct loss", ha="left", va="center", fontsize=10.4, color=ORANGE)
+    compare_y = 0.235
+    compare_h = 0.148
+    add_round_box(ax, out_card_x, compare_y, out_card_w, compare_h, facecolor="#f8f8f5", edgecolor="#ddd5c8", lw=1.1, radius=0.02)
+    ax.text(out_cx, compare_y + 0.114, "Adaptation comparison", ha="center", va="center", fontsize=10.9, fontweight="bold", color=INK)
+    ax.add_patch(Circle((out_card_x + 0.026, compare_y + 0.078), 0.0085, facecolor=ORANGE, edgecolor="none"))
+    ax.text(out_card_x + 0.040, compare_y + 0.086, "Capital hardening", ha="left", va="center", fontsize=10.2, fontweight="bold", color=INK)
+    ax.text(out_card_x + 0.040, compare_y + 0.062, "-26% direct loss", ha="left", va="center", fontsize=9.7, color=ORANGE)
+    ax.add_patch(Circle((out_card_x + 0.026, compare_y + 0.030), 0.0085, facecolor=GREEN, edgecolor="none"))
+    ax.text(out_card_x + 0.040, compare_y + 0.038, "Backup-supplier search", ha="left", va="center", fontsize=10.2, fontweight="bold", color=INK)
+    ax.text(out_card_x + 0.040, compare_y + 0.014, "-48% supplier disruption", ha="left", va="center", fontsize=9.7, color=GREEN)
 
-    ax.add_patch(Circle((0.768, 0.243), 0.0085, facecolor=GREEN, edgecolor="none"))
-    ax.text(0.782, 0.250, "Backup suppliers", ha="left", va="center", fontsize=11.0, fontweight="bold", color=INK)
-    ax.text(0.782, 0.231, "-48% supplier disruption", ha="left", va="center", fontsize=10.4, color=GREEN)
-
-    add_arrow(ax, (0.69, 0.50), (0.72, 0.50), color=TEAL, lw=2.5, mutation=16)
+    add_arrow(ax, (arrow_right_start - 0.002, 0.50), (arrow_right_end + 0.002, 0.50), color=TEAL, lw=2.4, mutation=16)
 
     # Footer tradeoff banner
     banner = FancyBboxPatch(
@@ -308,10 +343,10 @@ def main():
     ax.text(
         0.50,
         0.102,
-        "Tradeoff frontier: direct-loss mitigation, supply continuity, inflation, and real liquidity",
+        "Direct flood losses miss system-wide disruption borne by never-hit firms",
         ha="center",
         va="center",
-        fontsize=15.4,
+        fontsize=15.0,
         color="white",
         fontweight="bold",
     )
