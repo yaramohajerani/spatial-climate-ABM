@@ -1,4 +1,4 @@
-"""Sensitivity analysis for hazard-conditional continuity-capital adaptation.
+"""Sensitivity analysis for hazard-conditional continuity-capacity adaptation.
 
 Runs the hazard+adaptation scenario across a range of continuity-sensitivity
 settings using matched seeds across all tested values.
@@ -77,7 +77,7 @@ SUMMARY_METRICS = [
 
 def _parse_args():
     parser = argparse.ArgumentParser(
-        description="Sensitivity analysis for hazard-conditional continuity-capital adaptation.",
+        description="Sensitivity analysis for hazard-conditional continuity-capacity adaptation.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -134,6 +134,11 @@ def _parse_args():
         "--from-csv",
         default=None,
         help="Path to an existing sensitivity summary or member CSV; skips simulation and just plots/summarizes",
+    )
+    parser.add_argument(
+        "--plot-start-year",
+        type=float,
+        help="If provided, discard data before this calendar year when plotting",
     )
     parser.add_argument(
         "--adaptation-strategy",
@@ -448,6 +453,17 @@ def _normalize_series(df: pd.DataFrame, column: str, mode: str, *, num_household
     return values
 
 
+def _filter_plot_window(df: pd.DataFrame | None, plot_start_year: float | None) -> pd.DataFrame | None:
+    if df is None or plot_start_year is None or "Year" not in df.columns:
+        return df
+    filtered = df[df["Year"].astype(float) >= float(plot_start_year)].copy()
+    if filtered.empty:
+        raise SystemExit(
+            f"No rows remain after applying --plot-start-year {plot_start_year}."
+        )
+    return filtered
+
+
 def plot_sensitivity(
     summary_df: pd.DataFrame,
     out_path: str,
@@ -456,7 +472,11 @@ def plot_sensitivity(
     ensemble_stat: str,
     member_df: pd.DataFrame | None = None,
     show_ensemble_members: bool = False,
+    plot_start_year: float | None = None,
 ) -> None:
+    summary_df = _filter_plot_window(summary_df, plot_start_year)
+    member_df = _filter_plot_window(member_df, plot_start_year)
+
     fig, axes = plt.subplots(2, 3, figsize=(16, 9))
     axes = axes.flatten()
 
@@ -731,6 +751,7 @@ def main():
         ensemble_stat=args.ensemble_stat,
         member_df=member_df,
         show_ensemble_members=args.show_ensemble_members,
+        plot_start_year=args.plot_start_year,
     )
 
     summary = make_summary_table(
