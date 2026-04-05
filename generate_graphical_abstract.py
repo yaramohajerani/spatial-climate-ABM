@@ -193,7 +193,7 @@ def main():
     )
     ax.text(
         0.5,
-        0.848,
+        0.89,
         "Flood rasters, agent interactions, and continuity adaptation in one reproducible workflow",
         ha="center",
         va="center",
@@ -217,9 +217,9 @@ def main():
 
     # Input column
     left_cards = [
-        (0.64, "Hazard data", "Aqueduct flood rasters", draw_raster_icon, 0.048, 0.068, 0.022, 0.046),
-        (0.44, "Network topology", "Topology + geography", draw_network_icon, 0.052, 0.068, 0.021, 0.045),
-        (0.24, "Scenario setup", "Parameters + seeds", draw_param_icon, 0.048, 0.066, 0.022, 0.046),
+        (0.62, "Hazard data", "Aqueduct flood rasters", draw_raster_icon, 0.048, 0.068, 0.022, 0.046),
+        (0.42, "Network topology", "Topology + geography", draw_network_icon, 0.052, 0.068, 0.021, 0.045),
+        (0.22, "Scenario setup", "Parameters + seeds", draw_param_icon, 0.048, 0.066, 0.022, 0.046),
     ]
     for y, title, subtitle, icon_fn, iw, ih, ix, iy in left_cards:
         add_round_box(ax, left_x, y, side_w, 0.15)
@@ -228,12 +228,12 @@ def main():
         ax.text(left_text_x, y + 0.062, subtitle, fontsize=10.0, color=MUTED, ha="left", va="center")
 
     # Core model panel
-    model_y, model_h = 0.205, 0.585
+    model_y, model_h = 0.19, 0.61
     add_round_box(ax, model_x, model_y, model_w, model_h, facecolor="#fff8ef", edgecolor="#d7c6a7", lw=1.8, radius=0.04)
     ax.text(model_cx, 0.765, "Spatial climate-economy ABM", ha="center", va="center", fontsize=18.8, fontweight="bold", color=INK)
     ax.text(
         model_cx,
-        0.670,
+        0.680,
         "Flood shocks propagate through labor,\nproduction, and supply links",
         ha="center",
         va="center",
@@ -270,11 +270,11 @@ def main():
     add_arrow(ax, (arrow_left_start - 0.002, 0.315), (arrow_left_end + 0.002, 0.315), color=TEAL, lw=2.4, mutation=16)
     branch_y = continuity_y - 0.012
     ax.plot([model_cx, model_cx], [continuity_y, branch_y], color=GOLD, lw=2.3, solid_capstyle="round", zorder=3)
-    add_arrow(ax, (model_cx, branch_y), (0.423, adapt_y + adapt_h + 0.002), color=GOLD, lw=2.3, mutation=15)
-    add_arrow(ax, (model_cx, branch_y), (0.587, adapt_y + adapt_h + 0.002), color=GOLD, lw=2.3, mutation=15)
+    add_arrow(ax, (model_cx, branch_y), (0.423, adapt_y + adapt_h + 0.01), color=GOLD, lw=2.3, mutation=15)
+    add_arrow(ax, (model_cx, branch_y), (0.587, adapt_y + adapt_h + 0.01), color=GOLD, lw=2.3, mutation=15)
 
     # Outputs column
-    out_x, out_y, out_w, out_h = right_x, 0.22, right_w, 0.57
+    out_x, out_y, out_w, out_h = right_x, 0.20, right_w, 0.60
     out_cx = out_x + 0.5 * out_w
     add_round_box(ax, out_x, out_y, out_w, out_h, facecolor="#fcfcfb", edgecolor=BORDER, lw=1.8, radius=0.04)
     ax.text(out_cx, 0.765, "Outputs and findings", ha="center", va="center", fontsize=16.0, fontweight="bold", color=INK)
@@ -316,16 +316,16 @@ def main():
         icon_drawer=draw_cascade_icon,
     )
 
-    compare_y = 0.235
-    compare_h = 0.148
+    compare_y = 0.215
+    compare_h = 0.170
     add_round_box(ax, out_card_x, compare_y, out_card_w, compare_h, facecolor="#f8f8f5", edgecolor="#ddd5c8", lw=1.1, radius=0.02)
-    ax.text(out_cx, compare_y + 0.114, "Adaptation comparison", ha="center", va="center", fontsize=10.9, fontweight="bold", color=INK)
-    ax.add_patch(Circle((out_card_x + 0.026, compare_y + 0.078), 0.0085, facecolor=ORANGE, edgecolor="none"))
-    ax.text(out_card_x + 0.040, compare_y + 0.086, "Capital hardening", ha="left", va="center", fontsize=10.2, fontweight="bold", color=INK)
-    ax.text(out_card_x + 0.040, compare_y + 0.062, "-26% direct loss", ha="left", va="center", fontsize=9.7, color=ORANGE)
-    ax.add_patch(Circle((out_card_x + 0.026, compare_y + 0.030), 0.0085, facecolor=GREEN, edgecolor="none"))
-    ax.text(out_card_x + 0.040, compare_y + 0.038, "Backup-supplier search", ha="left", va="center", fontsize=10.2, fontweight="bold", color=INK)
-    ax.text(out_card_x + 0.040, compare_y + 0.014, "-48% supplier disruption", ha="left", va="center", fontsize=9.7, color=GREEN)
+    ax.text(out_cx, compare_y + 0.14, "Adaptation comparison", ha="center", va="center", fontsize=10.9, fontweight="bold", color=INK)
+    ax.add_patch(Circle((out_card_x + 0.026, compare_y + 0.105), 0.0085, facecolor=ORANGE, edgecolor="none"))
+    ax.text(out_card_x + 0.040, compare_y + 0.105, "Capital hardening", ha="left", va="center", fontsize=10.2, fontweight="bold", color=INK)
+    ax.text(out_card_x + 0.040, compare_y + 0.075, "-26% direct loss", ha="left", va="center", fontsize=9.7, color=ORANGE)
+    ax.add_patch(Circle((out_card_x + 0.026, compare_y + 0.035), 0.0085, facecolor=GREEN, edgecolor="none"))
+    ax.text(out_card_x + 0.040, compare_y + 0.037, "Backup-supplier search", ha="left", va="center", fontsize=10.2, fontweight="bold", color=INK)
+    ax.text(out_card_x + 0.040, compare_y + 0.009, "-48% supplier disruption", ha="left", va="center", fontsize=9.7, color=GREEN)
 
     add_arrow(ax, (arrow_right_start - 0.002, 0.50), (arrow_right_end + 0.002, 0.50), color=TEAL, lw=2.4, mutation=16)
 
