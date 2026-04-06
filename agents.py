@@ -1123,8 +1123,9 @@ class FirmAgent(Agent):
         wage_floor = getattr(self.model, 'initial_mean_wage', 1.0) * 0.4
         self.wage_offer = float(max(wage_floor, self.wage_offer))
 
-        # Liquidity-dependent recovery.  Adaptation operates through backup
-        # supplier search, not through accelerated physical recovery.
+        # Liquidity-dependent recovery.  Adaptation affects physical damage only
+        # via capital_hardening (get_adapted_loss_fraction); recovery rate here
+        # is driven purely by firm liquidity.
         liquidity_ratio = min(1.0, self.money / 200.0)
         base_recovery_rate = 0.2 + 0.3 * liquidity_ratio
         actual_recovery_rate = base_recovery_rate

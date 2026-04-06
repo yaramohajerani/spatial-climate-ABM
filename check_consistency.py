@@ -68,7 +68,7 @@ def build_model(args: argparse.Namespace) -> tuple[EconomyModel, int]:
         adaptation_params=adaptation_config,
         consumption_ratios=params.get("consumption_ratios"),
         grid_resolution=float(params.get("grid_resolution", 1.0)),
-        household_relocation=bool(params.get("household_relocation", True)),
+        household_relocation=bool(params.get("household_relocation", False)),
     )
     return model, steps
 

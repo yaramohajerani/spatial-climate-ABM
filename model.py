@@ -295,7 +295,7 @@ class EconomyModel(Model):
                 "labor_income": lambda a: getattr(a, "labor_income_this_step", np.nan),
                 "dividend_income": lambda a: getattr(a, "dividend_income_this_step", np.nan),
                 "capital_income": lambda a: getattr(a, "capital_income_this_step", np.nan),
-                "adaptation_income": lambda a: getattr(a, "adaptation_income_last_step", np.nan),
+                "adaptation_income": lambda a: getattr(a, "adaptation_income_this_step", np.nan),
                 "profit": lambda a: getattr(a, "profit_this_step", np.nan),
                 "dividends_paid": lambda a: getattr(a, "dividends_paid_this_step", np.nan),
                 "investment_spending": lambda a: getattr(a, "investment_spending_this_step", np.nan),
