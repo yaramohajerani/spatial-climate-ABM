@@ -180,7 +180,7 @@ def _draw_network(ax, g: nx.DiGraph, levels: Dict[int, int]):
         arrows=True,
         width=1.0,
         arrowstyle="-|>",
-        arrowsize=12,
+        arrowsize=16,
         edge_color="gray",
         connectionstyle="arc3,rad=0.1"
     )
@@ -308,7 +308,16 @@ def plot_world_map(ax, g: nx.DiGraph, household_locations: List[Tuple[float, flo
         sector = data.get("sector", "").lower()
         node_color_map[n] = sector_colors.get(sector, "gray")
 
-    # Draw supply chain connections with supplier colors
+    # Plot household locations first so edge arrows can sit above them.
+    if household_locations:
+        hh_lons = [loc[0] for loc in household_locations]
+        hh_lats = [loc[1] for loc in household_locations]
+        ax.scatter(hh_lons, hh_lats, color="#ffcc00", label="Households",
+                  edgecolors="orange", s=20, alpha=0.7, zorder=2, marker="s")
+
+    # Draw supply chain connections with supplier colors.
+    # NetworkX does not accept a zorder kwarg here, so apply it to the
+    # returned Matplotlib artists instead.
     for src, dst in g.edges():
         if src in node_positions and dst in node_positions:
             supplier_color = node_color_map.get(src, "gray")
@@ -316,7 +325,7 @@ def plot_world_map(ax, g: nx.DiGraph, household_locations: List[Tuple[float, flo
             temp_graph.add_nodes_from([src, dst])
             temp_graph.add_edge(src, dst)
 
-            nx.draw_networkx_edges(
+            edge_artists = nx.draw_networkx_edges(
                 temp_graph,
                 pos=node_positions,
                 ax=ax,
@@ -324,18 +333,17 @@ def plot_world_map(ax, g: nx.DiGraph, household_locations: List[Tuple[float, flo
                 arrowstyle="-|>",
                 edge_color=supplier_color,
                 width=1.5,
-                arrowsize=15,
+                arrowsize=20,
                 connectionstyle="arc3,rad=0.15",
                 alpha=0.6,
                 node_size=0,
             )
 
-    # Plot household locations first (smaller, background)
-    if household_locations:
-        hh_lons = [loc[0] for loc in household_locations]
-        hh_lats = [loc[1] for loc in household_locations]
-        ax.scatter(hh_lons, hh_lats, color="#ffcc00", label="Households",
-                  edgecolors="orange", s=20, alpha=0.7, zorder=3, marker="s")
+            if isinstance(edge_artists, list):
+                for artist in edge_artists:
+                    artist.set_zorder(4)
+            elif edge_artists is not None:
+                edge_artists.set_zorder(4)
 
     # Plot firm locations colored by sector (larger, foreground)
     sectors = sorted(df_nodes["sector"].unique())

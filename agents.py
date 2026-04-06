@@ -21,20 +21,24 @@ class HouseholdAgent(Agent):
 
     # Fraction of wealth & capital lost when migrating to a new location
     RELOCATION_COST: float = 0.10
+    CONSUMPTION_PROPENSITY_INCOME: float = 0.9
+    CONSUMPTION_PROPENSITY_WEALTH: float = 0.02
+    TARGET_CASH_BUFFER: float = 50.0
+    SECTOR_MATCH_BONUS: float = 0.15
+    SECTOR_MISMATCH_PENALTY: float = 0.20
+    REMOTE_SEARCH_PENALTY: float = 0.10
 
     def __init__(
         self,
         model: "EconomyModel",
         pos: Coords,
         money: float = 100.0,
-        labor_supply: float = 1.0,
         sector: str = "manufacturing",
     ) -> None:
         super().__init__(model)
-        
+
         # Note: pos is handled by Mesa's grid.place_agent(), not set here
         self.money: float = money
-        self.labor_supply: float = labor_supply
 
         # Sector specialisation – household will preferentially work for firms in this sector
         self.sector: str = sector
@@ -52,6 +56,13 @@ class HouseholdAgent(Agent):
         self.consumption: float = 0.0  # goods consumed (units)
         self.production: float = 0.0  # households don't produce goods but keep attr for consistency
         self.labor_sold: float = 0.0  # labour units sold this step
+        self.labor_income_this_step: float = 0.0
+        self.dividend_income_last_step: float = 0.0
+        self.dividend_income_this_step: float = 0.0
+        self.capital_income_last_step: float = 0.0
+        self.capital_income_this_step: float = 0.0
+        self.adaptation_income_last_step: float = 0.0
+        self.adaptation_income_this_step: float = 0.0
 
         # Filled by the model after all agents are created
         self.nearby_firms: List["FirmAgent"] = []
@@ -98,15 +109,60 @@ class HouseholdAgent(Agent):
 
         self.model.grid.move_agent(self, new_pos)
 
-        # Apply relocation cost similar to climate‐driven migration
-        self.money *= (1 - self.RELOCATION_COST)
-
         # Refresh nearby firms after moving
         self._update_nearby_firms()
 
+    def _score_firm(
+        self,
+        firm: "FirmAgent",
+        *,
+        nearby_ids: set[int],
+        remote_penalty: float = 0.0,
+    ) -> float:
+        """Return the household's utility from applying to a firm."""
+        dx = abs(self.pos[0] - firm.pos[0])
+        dy = abs(self.pos[1] - firm.pos[1])
+        dist = dx + dy
+        utility = firm.wage_offer - self.distance_cost * dist
+        if firm.sector == self.sector:
+            utility += self.SECTOR_MATCH_BONUS
+        else:
+            utility -= self.SECTOR_MISMATCH_PENALTY
+        if firm.unique_id not in nearby_ids:
+            utility -= remote_penalty
+        return utility
+
+    def _try_hire_from_ranked_list(self, firms: List["FirmAgent"], *, remote_penalty: float = 0.0) -> bool:
+        """Attempt to sell labour to the best-ranked firm in ``firms``."""
+        if not firms:
+            return False
+
+        nearby_ids = {firm.unique_id for firm in self.nearby_firms}
+        scored = [
+            (self._score_firm(firm, nearby_ids=nearby_ids, remote_penalty=remote_penalty), firm)
+            for firm in firms
+        ]
+        scored.sort(key=lambda item: item[0], reverse=True)
+
+        for _, firm in scored:
+            if firm.hire_labor(self, firm.wage_offer):
+                self.labor_sold += 1
+                return True
+        return False
+
     # ---------------- Mesa API ---------------- #
-    def step(self) -> None:  # noqa: D401, N802
-        """Provide labour and consume goods each tick."""
+    def supply_labor(self) -> None:
+        """Reset household state, optionally relocate, and sell labour."""
+
+        # Carry passive income distributed after last period's goods market into the
+        # current consumption decision, then reset current-period counters.
+        self.dividend_income_last_step = self.dividend_income_this_step
+        self.capital_income_last_step = self.capital_income_this_step
+        self.adaptation_income_last_step = self.adaptation_income_this_step
+        self.dividend_income_this_step = 0.0
+        self.capital_income_this_step = 0.0
+        self.adaptation_income_this_step = 0.0
+        self.labor_income_this_step = 0.0
 
         # Reset per-step statistics
         self.production = 0.0
@@ -118,77 +174,85 @@ class HouseholdAgent(Agent):
         if self.model.household_relocation_enabled and self._get_local_hazard() > 0.5:
             self._relocate()
 
-        # 1. Choose employer based on wage–distance utility (remote work allowed) --------------- #
-        # Allow cross-sector employment to prevent labor market segmentation death spirals.
-        # When one sector struggles, its workers can find jobs in healthier sectors.
-        # Use all firms, not just same-sector firms.
+        # 1. Choose employer based on a staged search:
+        # prefer nearby same-sector firms first, then broaden to the full market.
+        # This keeps labor tied to the local production structure while preserving
+        # cross-sector fallback when the preferred market is weak.
         all_firms = self.model._firms
         if all_firms:
-            scored: list[tuple[float, "FirmAgent"]] = []
-            x0, y0 = self.pos
-            for firm in all_firms:
-                dx = abs(x0 - firm.pos[0])
-                dy = abs(y0 - firm.pos[1])
-                dist = dx + dy
-                utility = firm.wage_offer - self.distance_cost * dist
-                scored.append((utility, firm))
+            primary_firms = self.nearby_firms if self.nearby_firms else [
+                firm for firm in all_firms if firm.sector == self.sector
+            ]
+            if not self._try_hire_from_ranked_list(primary_firms):
+                secondary_firms = [
+                    firm for firm in all_firms
+                    if firm not in primary_firms
+                ]
+                self._try_hire_from_ranked_list(
+                    secondary_firms,
+                    remote_penalty=self.REMOTE_SEARCH_PENALTY,
+                )
 
-            scored.sort(key=lambda t: t[0], reverse=True)
+    def consume_goods(self) -> None:
+        """Buy final goods after firms have completed the current production cycle."""
 
-            for _, firm in scored:
-                if firm.hire_labor(self, firm.wage_offer):
-                    self.labor_sold += 1
-                    break
-
-        # 2. Buy goods based on wealth and needs (no proximity restriction) -------------------------- #
-        # Households need goods from different sectors in fixed ratios (configurable)
-        # Base consumption on recent wages earned plus a small fraction of savings
-        base_consumption = self.labor_sold * self.model.mean_wage  # spend what we earned
-        savings_consumption = max(0, self.money - 50) * 0.1  # plus 10% of savings above $50
-        consumption_budget = base_consumption + savings_consumption
+        # Closed-economy household demand is driven by current labour income,
+        # recently distributed firm payouts, and a small propensity to spend out
+        # of accumulated wealth. This is the minimal circular-flow closure:
+        # households buy goods from firms, but they also receive wages,
+        # dividends, and capital-service income from firms.
+        disposable_income = (
+            self.labor_income_this_step
+            + self.dividend_income_last_step
+            + self.capital_income_last_step
+            + self.adaptation_income_last_step
+        )
+        wealth_draw = max(0.0, self.money - self.TARGET_CASH_BUFFER)
+        consumption_budget = (
+            self.CONSUMPTION_PROPENSITY_INCOME * disposable_income
+            + self.CONSUMPTION_PROPENSITY_WEALTH * wealth_draw
+        )
 
         if consumption_budget > 0 and self.money > 0:
-            # Cap at what we can actually afford
-            consumption_budget = min(consumption_budget, self.money * 0.8)
+            # Cap at what we can actually afford.
+            consumption_budget = min(consumption_budget, self.money)
 
-            # Get consumption ratios from model (configurable via parameter file)
-            # Default: 30% commodities, 70% manufacturing
-            consumption_ratios = getattr(self.model, 'consumption_ratios', {
-                'commodity': 0.3,
-                'manufacturing': 0.7,
-            })
+            # Only final-good sectors are eligible for household demand.
+            consumption_ratios = self.model.get_final_consumption_ratios()
+            if consumption_ratios:
+                # Group firms by sector
+                firms_by_sector: dict[str, list] = {}
+                for f in self.model._firms:
+                    if f.inventory_output > 0 and f.sector in consumption_ratios:
+                        sector = f.sector
+                        if sector not in firms_by_sector:
+                            firms_by_sector[sector] = []
+                        firms_by_sector[sector].append(f)
 
-            # Group firms by sector
-            firms_by_sector: dict[str, list] = {}
-            for f in self.model._firms:
-                if f.inventory_output > 0:
-                    sector = f.sector
-                    if sector not in firms_by_sector:
-                        firms_by_sector[sector] = []
-                    firms_by_sector[sector].append(f)
+                total_ratio = sum(consumption_ratios.values())
+                if total_ratio > 0:
+                    # Allocate budget to each final-good sector and buy
+                    for sector, ratio in consumption_ratios.items():
+                        if sector not in firms_by_sector:
+                            continue  # no firms in this sector with inventory
 
-            # Allocate budget to each sector and buy
-            for sector, ratio in consumption_ratios.items():
-                if sector not in firms_by_sector:
-                    continue  # no firms in this sector with inventory
+                        sector_budget = consumption_budget * (ratio / total_ratio)
+                        if sector_budget <= 0:
+                            continue
 
-                sector_budget = consumption_budget * ratio
-                if sector_budget <= 0:
-                    continue
+                        # Sort firms in this sector by price (cheapest first)
+                        sector_firms = sorted(firms_by_sector[sector], key=lambda f: f.price)
 
-                # Sort firms in this sector by price (cheapest first)
-                sector_firms = sorted(firms_by_sector[sector], key=lambda f: f.price)
-
-                remaining_sector_budget = sector_budget
-                for seller in sector_firms:
-                    if remaining_sector_budget <= 0:
-                        break
-                    # Allow fractional purchases - buy whatever we can afford
-                    max_quantity = remaining_sector_budget / seller.price
-                    qty_bought = seller.sell_goods_to_household(self, quantity=max_quantity)
-                    if qty_bought > 0:
-                        self.consumption += qty_bought
-                        remaining_sector_budget -= qty_bought * seller.price
+                        remaining_sector_budget = sector_budget
+                        for seller in sector_firms:
+                            if remaining_sector_budget <= 0:
+                                break
+                            # Allow fractional purchases - buy whatever we can afford
+                            max_quantity = remaining_sector_budget / seller.price
+                            qty_bought = seller.sell_goods_to_household(self, quantity=max_quantity)
+                            if qty_bought > 0:
+                                self.consumption += qty_bought
+                                remaining_sector_budget -= qty_bought * seller.price
 
         # ---------------- End-of-step unemployment tracking ------------- #
         if self.labor_sold == 0:
@@ -200,6 +264,13 @@ class HouseholdAgent(Agent):
             # Could not find work for 3 consecutive steps → move closer to another firm of same sector
             self._relocate_for_job()
             self._no_work_steps = 0  # reset after relocation
+
+    # ---------------- Mesa API ---------------- #
+    def step(self) -> None:  # noqa: D401, N802
+        """Compatibility wrapper for one-shot scheduling."""
+
+        self.supply_labor()
+        self.consume_goods()
 
     def _get_local_hazard(self) -> float:
         """Return the hazard value at the agent's current cell."""
@@ -213,17 +284,17 @@ class HouseholdAgent(Agent):
         new_pos = self.random.choice(safe_cells)
         self.model.grid.move_agent(self, new_pos)
 
-        # Apply relocation cost: lose a share of money
-        self.money *= (1 - self.RELOCATION_COST)
-
-        # Track migration for statistics
-        self.model.migrants_this_step += 1
 
     # ---------------- End of Household.step() bookkeeping -------- #
 
 
 class FirmAgent(Agent):
     """A firm with a simple Leontief production function and local trade."""
+
+    # Productive capacity is a reduced-form balance-sheet stock rather than a
+    # separate modeled capital-goods market. One unit of retained earnings can
+    # therefore finance one unit of installed capacity.
+    CAPITAL_INSTALLATION_COST: float = 1.0
 
     # Sector-specific Leontief technical coefficients (units required per unit output)
     # Lower coefficient = higher productivity (less input needed per output)
@@ -242,11 +313,15 @@ class FirmAgent(Agent):
     # Default coefficients for unknown sectors
     DEFAULT_COEFFICIENTS: dict = {"labor": 0.5, "input": 0.5, "capital": 0.5}
 
-    # Learning parameters
-    LEARNING_ENABLED: bool = True
-    MEMORY_LENGTH: int = 10  # steps to track for performance evaluation
-    MUTATION_RATE: float = 0.05  # standard deviation for strategy mutations
-    ADAPTATION_FREQUENCY: int = 5  # steps between strategy evaluations
+    INVENTORY_BUFFER_RATIO: float = 0.25
+    LIQUIDITY_BUFFER_RATIO: float = 0.15
+    MIN_LIQUIDITY_BUFFER: float = 10.0
+    WORKING_CAPITAL_CREDIT_REVENUE_SHARE: float = 1.0
+    LABOR_SHARE: float = 0.5  # fixed labour share of revenue in wage targeting
+    NO_WORKER_WAGE_PREMIUM: float = 1.02
+    ADAPTATION_EXPECTED_WEIGHT: float = 0.5
+    ADAPTATION_LOCAL_WEIGHT: float = 0.3
+    ADAPTATION_SUPPLIER_WEIGHT: float = 0.2
 
     def __init__(
         self,
@@ -287,14 +362,11 @@ class FirmAgent(Agent):
         # Firm-specific wage offer (labour price) – starts at the model's base wage
         self.wage_offer: float = model.mean_wage if hasattr(model, "mean_wage") else 1.0
 
-        # Track consecutive cycles of labor shortage for wage adjustment
-        self.labor_shortage_cycles: int = 0  # consecutive steps where firm couldn't hire needed workers
         self.last_hired_labor: int = 0  # employees hired in previous step
-        self.labor_demand: int = 0  # how many workers the firm wanted to hire
 
-        # Input inventory keyed by supplier AgentID (or None for generic labour)
-        self.inventory_inputs: dict[int, int] = defaultdict(int)  # per-supplier stock
-        self.inventory_output: int = 0  # finished goods
+        # Input inventory keyed by supplier AgentID
+        self.inventory_inputs: dict[int, float] = defaultdict(float)
+        self.inventory_output: float = 0.0  # finished goods
 
         # Links to other agents (filled by model)
         self.connected_firms: List["FirmAgent"] = []
@@ -303,176 +375,560 @@ class FirmAgent(Agent):
         # Statistics
         self.production: float = 0.0  # units produced this step
         self.consumption: float = 0.0  # units of inputs consumed this step
-        self.sales_total: float = 0.0  # units sold (households + firms) this step
 
         # Cumulative damage to productive capacity (1 = undamaged)
         self.damage_factor: float = 1.0
+        self.counterfactual_damage_factor: float = 1.0
 
-        # Sales tracking for demand-based pricing
+        # Sales tracking for pricing and wage mechanisms
         self.sales_last_step: float = 0.0
-        self.sales_prev_step: float = 0.0
         self.revenue_last_step: float = 0.0
         self.sales_this_step: float = 0.0
         self.revenue_this_step: float = 0.0
-        self.no_sales_streak: int = 0
+        self.household_sales_last_step: float = 0.0
+        self.household_sales_this_step: float = 0.0
+        self.wage_bill_this_step: float = 0.0
+        self.input_spend_this_step: float = 0.0
+        self.depreciation_this_step: float = 0.0
+        self.profit_this_step: float = 0.0
+        self.dividends_paid_this_step: float = 0.0
+        self.investment_spending_this_step: float = 0.0
+        self.adaptation_spending_this_step: float = 0.0
+        self.adaptation_investment_this_step: float = 0.0
+        self.adaptation_maintenance_this_step: float = 0.0
+        self.counterfactual_direct_loss_this_step: float = 0.0
+        self.realized_direct_loss_this_step: float = 0.0
+        self.raw_direct_loss_fraction_this_step: float = 0.0
+        self.adapted_direct_loss_fraction_this_step: float = 0.0
+        self.supplier_disruption_this_step: float = 0.0
+        self.raw_supplier_disruption_this_step: float = 0.0
+        self.hazard_operating_shortfall_this_step: float = 0.0
+        self.continuity_gap_coverage_this_step: float = 0.0
+        self.continuity_input_coverage_this_step: float = 0.0
+        self.backup_purchases_this_step: float = 0.0
+        self.reserved_capacity_purchases_this_step: float = 0.0
+        self.reserved_capacity_price_savings_this_step: float = 0.0
 
-        # ---------------- Risk behaviour parameters ------------------- #
         # Capital coefficient parameters
         self.original_capital_coeff: float = self.CAPITAL_COEFF
-        self.capital_coeff: float = self.CAPITAL_COEFF  # dynamic value
-        # Firm-specific relaxation ratio (0.2 → 20 % decay each step, etc.)
-        self.relaxation_ratio: float = self.random.uniform(0.2, 0.5)
+        self.capital_coeff: float = self.CAPITAL_COEFF
 
-        # Budget reservation placeholders (set each step by prepare_budget)
-        self._budget_input: float = 0.0
-        self._budget_capital: float = 0.0
-        self._budget_labor: float = 0.0
-        self._budget_input_per_supplier: dict[int, float] = {} # New placeholder for independent input budgets
-        
-        # Learning system components
-        learning_config = getattr(model, 'learning_config', {})
-        self.learning_enabled: bool = getattr(model, 'firm_learning_enabled', self.LEARNING_ENABLED)
-        self.memory_length: int = learning_config.get('memory_length', self.MEMORY_LENGTH)
-        self.mutation_rate: float = learning_config.get('mutation_rate', self.MUTATION_RATE)  
-        self.adaptation_frequency: int = learning_config.get('adaptation_frequency', self.ADAPTATION_FREQUENCY)
-        self.performance_history: list[dict] = []  # Track recent performance metrics
-        self.strategy: dict[str, float] = self._initialize_strategy()
-        self.fitness_score: float = 0.0
-        self.steps_since_adaptation: int = 0
-        
-        # Survival tracking for evolutionary pressure
-        self.birth_step: int = getattr(model, 'current_step', 0)
-        self.survival_time: int = 0
+        # Demand-planning state set each step by plan_operations()
+        self.target_output: float = 0.0
+        self.target_labor: int = 0
+        self.target_input_units: float = 0.0
+        self.expected_sales: float = 0.0
+        self.demand_driven_output: float = 0.0
+        self.base_inventory_target: float = 1.0
+        self.base_capital_target: float = self.capital_stock
+        self.target_capital_stock: float = self.capital_stock
+        self._liquidity_buffer: float = 0.0
+        self.required_working_capital: float = 0.0
+        self.working_capital_credit_limit: float = 0.0
+        self.working_capital_credit_used_this_step: float = 0.0
 
-    # ---------------- Learning System Methods ----------------------------- #
-    def _initialize_strategy(self) -> dict[str, float]:
-        """Initialize evolvable strategy parameters with small random variations."""
-        return {
-            'budget_labor_weight': self.random.uniform(0.8, 1.2),      # multiplier for labor budget allocation
-            'budget_input_weight': self.random.uniform(0.8, 1.2),      # multiplier for input budget allocation
-            'budget_capital_weight': self.random.uniform(0.8, 1.2),    # multiplier for capital budget allocation
-            'risk_sensitivity': self.random.uniform(0.5, 1.5),         # hazard response aggressiveness
-            'wage_responsiveness': self.random.uniform(0.5, 1.5),      # wage adjustment responsiveness
-        }
-    
-    def _record_performance(self) -> None:
-        """Track current performance metrics for learning evaluation."""
-        current_perf = {
-            'step': getattr(self.model, 'current_step', 0),
-            'money': self.money,
-            'capital_stock': self.capital_stock,
-            'production': self.production,
-            'inventory': self.inventory_output,
-            'limiting_factor': getattr(self, 'limiting_factor', ''),
-            'wage_offer': self.wage_offer,
-            'price': self.price,
-        }
-        
-        self.performance_history.append(current_perf)
-        
-        # Keep only recent history
-        if len(self.performance_history) > self.memory_length:
-            self.performance_history = self.performance_history[-self.memory_length:]
-    
-    def _evaluate_fitness(self) -> float:
-        """Calculate fitness based on recent performance.
-
-        Components:
-        - Money growth (35%): Profitability, log-scaled to balance small vs large firms
-        - Production level (25%): Absolute output matters
-        - Peak maintenance (20%): Penalizes decline from recent peak, but not recovery
-        - Survival (20%): Longevity bonus
-        """
-        if len(self.performance_history) < 2:
-            return 0.0
-
-        recent = self.performance_history[-min(5, len(self.performance_history)):]
-
-        # 1. Money growth (35%) - log-scaled to balance small vs large firms
-        money_start = max(1.0, recent[0]['money'])
-        money_end = max(1.0, recent[-1]['money'])
-        log_money_growth = np.log(money_end / money_start)
-        money_score = np.tanh(log_money_growth)  # Bound to [-1, 1]
-
-        # 2. Production level (25%) - absolute production matters
-        productions = [r['production'] for r in recent]
-        mean_production = np.mean(productions)
-        # Normalize by a reasonable baseline (10 units is "good")
-        production_score = np.tanh(mean_production / 10.0)
-
-        # 3. Peak maintenance (20%) - penalize decline, don't penalize recovery
-        # Measures how close current production is to recent peak
-        # Recovery: current at/near peak → high score
-        # Decline: current far below peak → low score
-        # Stable: current equals peak → high score
-        peak_production = max(productions)
-        current_production = productions[-1]
-        if peak_production > 0:
-            peak_ratio = current_production / peak_production
-        else:
-            peak_ratio = 1.0  # No production history, neutral
-        peak_score = max(0.0, min(1.0, peak_ratio))
-
-        # 4. Survival bonus (20%) - longevity reward
-        survival_score = min(1.0, self.survival_time / 20.0)
-
-        # Combined fitness score
-        fitness = (
-            0.35 * (money_score + 1) / 2 +    # Shift from [-1,1] to [0,1]
-            0.25 * production_score +          # Already [0,1] due to tanh of positive
-            0.20 * peak_score +                # Already [0,1]
-            0.20 * survival_score              # Already [0,1]
+        adaptation_config = getattr(model, "adaptation_config", {})
+        self.adaptation_enabled: bool = getattr(model, "firm_adaptation_enabled", True)
+        self.adaptation_strategy: str = str(adaptation_config.get("adaptation_strategy", "backup_suppliers"))
+        self.decision_interval: int = int(adaptation_config.get("decision_interval", 4))
+        self.ewma_alpha: float = float(adaptation_config.get("ewma_alpha", 0.2))
+        self.resilience_decay: float = float(
+            adaptation_config.get(
+                "continuity_decay",
+                adaptation_config.get("resilience_decay", 0.01),
+            )
+        )
+        self.maintenance_cost_rate: float = float(adaptation_config.get("maintenance_cost_rate", 0.005))
+        sensitivity_min = float(adaptation_config.get("adaptation_sensitivity_min", 2.0))
+        sensitivity_max = float(adaptation_config.get("adaptation_sensitivity_max", 4.0))
+        if sensitivity_max < sensitivity_min:
+            sensitivity_max = sensitivity_min
+        self.adaptation_sensitivity: float = float(
+            self.random.uniform(sensitivity_min, sensitivity_max)
+        )
+        self.max_adaptation_increment: float = float(
+            adaptation_config.get("max_adaptation_increment", 0.25)
         )
 
-        return max(0.0, min(1.0, fitness))
-    
-    def _adapt_strategy(self) -> None:
-        """Adjust strategy based on recent performance."""
-        if not self.learning_enabled or len(self.performance_history) < 3:
+        self.continuity_capital: float = 0.0
+        self.expected_direct_loss_ewma: float = 0.0
+        self.realized_direct_loss_ewma: float = 0.0
+        self.local_observed_loss_ewma: float = 0.0
+        self.supplier_disruption_ewma: float = 0.0
+        self.expected_operating_shortfall_ewma: float = 0.0
+        self.local_observed_shortfall_ewma: float = 0.0
+        self.last_adaptation_action: str = "dormant"
+        self.last_adaptation_target: float = 0.0
+        self.last_perceived_hazard_risk: float = 0.0
+        self.last_continuity_target: float = 0.0
+        self.last_perceived_continuity_risk: float = 0.0
+        self.pending_adaptation_increment: float = 0.0
+        self.adaptation_update_count: int = 0
+
+        # Exposure-state diagnostics for cascading-risk analysis.
+        self.ever_directly_hit: bool = False
+        self.ever_indirectly_disrupted_before_direct_hit: bool = False
+
+        # Survival tracking for firm reorganization
+        self.survival_time: int = 0
+
+    # ---------------- Adaptation System Methods ------------------------- #
+    def begin_period_adaptation(self) -> None:
+        """Reset period adaptation accounting before hazards are sampled."""
+
+        self.adaptation_spending_this_step = 0.0
+        self.adaptation_investment_this_step = 0.0
+        self.adaptation_maintenance_this_step = 0.0
+        self.counterfactual_direct_loss_this_step = 0.0
+        self.realized_direct_loss_this_step = 0.0
+        self.raw_direct_loss_fraction_this_step = 0.0
+        self.adapted_direct_loss_fraction_this_step = 0.0
+        self.supplier_disruption_this_step = 0.0
+        self.raw_supplier_disruption_this_step = 0.0
+        self.hazard_operating_shortfall_this_step = 0.0
+        self.continuity_gap_coverage_this_step = 0.0
+        self.continuity_input_coverage_this_step = 0.0
+        self.backup_purchases_this_step = 0.0
+        self.reserved_capacity_purchases_this_step = 0.0
+        self.reserved_capacity_price_savings_this_step = 0.0
+
+        if not self.adaptation_enabled:
             return
-        
-        current_fitness = self._evaluate_fitness()
-        
-        # Simple hill-climbing: if fitness improved, reinforce recent changes
-        # If fitness declined, try random mutations
-        if hasattr(self, '_previous_fitness'):
-            if current_fitness > self._previous_fitness:
-                # Success: make smaller adjustments in same direction
-                mutation_strength = self.MUTATION_RATE * 0.5
-            else:
-                # Failure: try bigger random changes
-                mutation_strength = self.MUTATION_RATE * 2.0
+
+        self.pending_adaptation_increment = 0.0
+        self.continuity_capital = max(0.0, self.continuity_capital * (1.0 - self.resilience_decay))
+
+    @property
+    def resilience_capital(self) -> float:
+        """Backward-compatible alias for the continuity stock."""
+        return self.continuity_capital
+
+    @resilience_capital.setter
+    def resilience_capital(self, value: float) -> None:
+        self.continuity_capital = float(value)
+
+    def _perceived_hazard_risk(self) -> float:
+        """Perceived continuity risk from own and nearby hazard-induced output gaps."""
+        risk = max(self.expected_operating_shortfall_ewma, self.local_observed_shortfall_ewma)
+        return float(min(1.0, max(0.0, risk)))
+
+    def _target_resilience_from_risk(self, perceived_risk: float) -> float:
+        """Map quarterly continuity risk into a continuity-capital target.
+
+        Hazard-induced operating shortfall is measured per simulation step
+        (quarterly in the current experiments). Firms react to the recurring
+        annual burden implied by those shortfalls rather than to one quarter in
+        isolation, so we annualize the perceived signal before applying the
+        firm-specific continuity sensitivity.
+        """
+        steps_per_year = max(1, int(getattr(self.model, "steps_per_year", 4)))
+        annualized_risk = min(1.0, max(0.0, perceived_risk) * steps_per_year)
+        return float(min(1.0, self.adaptation_sensitivity * annualized_risk))
+
+    def _select_adaptation_action(self) -> None:
+        """Choose a continuity-capital target from adaptive hazard expectations."""
+        perceived_risk = self._perceived_hazard_risk()
+        self.last_perceived_hazard_risk = perceived_risk
+        self.last_perceived_continuity_risk = perceived_risk
+
+        target = self._target_resilience_from_risk(perceived_risk)
+        self.last_adaptation_target = target
+        self.last_continuity_target = target
+        gap = max(0.0, target - self.continuity_capital)
+        increment = min(gap, self.max_adaptation_increment)
+        self.pending_adaptation_increment = increment
+
+        if perceived_risk <= 1e-9 and self.continuity_capital <= 1e-9:
+            self.last_adaptation_action = "dormant"
+        elif increment > 1e-9:
+            self.last_adaptation_action = "adjust"
+            self.adaptation_update_count += 1
         else:
-            mutation_strength = self.MUTATION_RATE
-        
-        # Mutate strategy parameters using configured mutation rate
-        for key in self.strategy:
-            if self.random.random() < 0.3:  # 30% chance to mutate each parameter
-                self.strategy[key] *= (1.0 + self.random.gauss(0, mutation_strength))
-                # Keep within reasonable bounds
-                self.strategy[key] = max(0.1, min(3.0, self.strategy[key]))
-        
-        self._previous_fitness = current_fitness
-        self.fitness_score = current_fitness
+            self.last_adaptation_action = "hold"
+
+    def _adaptation_scale(self) -> float:
+        return max(1.0, self.base_capital_target)
+
+    def _uses_adaptation_strategy(self, strategy: str) -> bool:
+        return self.adaptation_strategy == strategy
+
+    def _effective_inventory_buffer_ratio(self) -> float:
+        buffer_ratio = self.INVENTORY_BUFFER_RATIO
+        if self._uses_adaptation_strategy("stockpiling") and self.continuity_capital > 0:
+            buffer_ratio += self.continuity_capital * self.last_perceived_hazard_risk
+        return buffer_ratio
+
+    def _has_hazard_disruption_signal(self) -> bool:
+        """Return whether this firm shows direct or indirect hazard stress.
+
+        The continuity module should react not only to directly flooded suppliers
+        but also to suppliers that are short because they were disrupted further
+        upstream. Including both current-period and recent-period disruption
+        indicators preserves the hazard-conditioned interpretation while making
+        multi-hop cascades visible to buyers.
+        """
+        eps = 1e-9
+        return bool(
+            self.raw_direct_loss_fraction_this_step > eps
+            or self.adapted_direct_loss_fraction_this_step > eps
+            or self.damage_factor < 0.999
+            or self.counterfactual_damage_factor < 0.999
+            or self.raw_supplier_disruption_this_step > eps
+            or self.supplier_disruption_this_step > eps
+            or self.hazard_operating_shortfall_this_step > eps
+            or self.expected_operating_shortfall_ewma > eps
+            or self.supplier_disruption_ewma > eps
+        )
+
+    def _primary_supplier_shortage_is_hazard_related(self) -> bool:
+        return any(supplier._has_hazard_disruption_signal() for supplier in self.connected_firms)
+
+    def _backup_supplier_count(self) -> int:
+        if self.continuity_capital <= 0:
+            return 0
+        max_backup_count = max(0, int(getattr(self.model, "max_backup_suppliers", 5)))
+        if max_backup_count <= 0:
+            return 0
+        return max(1, int(self.continuity_capital * max_backup_count))
+
+    def _reserved_capacity_supplier_count(self) -> int:
+        """Return the number of standby suppliers to contract for reserved capacity.
+
+        Reserved capacity is a standing redundancy mechanism, so moderate
+        continuity capital should diversify across more than a single supplier
+        even before the stock becomes large enough to round up under the spot
+        backup rule.
+        """
+        if self.continuity_capital <= 0:
+            return 0
+        max_backup_count = max(0, int(getattr(self.model, "max_backup_suppliers", 5)))
+        if max_backup_count <= 0:
+            return 0
+        return max(1, int(np.ceil(self.continuity_capital * max_backup_count)))
+
+    def _purchase_from_backup_suppliers(self, remaining_inputs_needed: float) -> tuple[float, float]:
+        if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
+            return remaining_inputs_needed, 0.0
+
+        backup_purchases = 0.0
+        backup_suppliers = self.model.find_backup_suppliers(self, self._backup_supplier_count())
+        for supplier in backup_suppliers:
+            if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
+                break
+            bought = supplier.sell_goods_to_firm(self, remaining_inputs_needed)
+            if bought > 0:
+                remaining_inputs_needed -= bought
+                backup_purchases += bought
+        return remaining_inputs_needed, backup_purchases
+
+    def _reserved_capacity_target_units(self) -> float:
+        """Return desired reserved input coverage for the current period.
+
+        Continuity capital already embeds the firm's accumulated hazard beliefs
+        through the adaptation rule. Multiplying again by the current-period
+        risk signal made contract sizes collapse toward zero in practice, so
+        reserved capacity now scales with planned input needs and the standing
+        continuity stock itself.
+        """
+        if self.target_input_units <= 0 or self.continuity_capital <= 0:
+            return 0.0
+        return max(0.0, self.target_input_units * self.continuity_capital)
+
+    def _reserved_capacity_price_cap(self) -> float:
+        if not self.connected_firms:
+            return float("inf")
+        anchor_price = float(np.mean([max(s.price, 0.5) for s in self.connected_firms]))
+        markup_cap = float(getattr(self.model, "reserved_capacity_markup_cap", 0.1))
+        return max(0.5, anchor_price * (1.0 + markup_cap))
+
+    def _purchase_from_reserved_capacity(self, remaining_inputs_needed: float) -> tuple[float, float, float]:
+        if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
+            return remaining_inputs_needed, 0.0, 0.0
+
+        reserved_purchases = 0.0
+        reserved_price_savings = 0.0
+        for supplier, reserved_units, contract_unit_price in self.model.get_reserved_capacity_contracts(self):
+            if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
+                break
+            requested_quantity = min(remaining_inputs_needed, reserved_units)
+            bought = supplier.sell_goods_to_firm(
+                self,
+                requested_quantity,
+                unit_price=contract_unit_price,
+                reservation_buyer_id=self.unique_id,
+            )
+            if bought > 0:
+                remaining_inputs_needed -= bought
+                reserved_purchases += bought
+                reserved_price_savings += bought * max(0.0, supplier.price - contract_unit_price)
+        return remaining_inputs_needed, reserved_purchases, reserved_price_savings
+
+    def _fund_adaptation_after_operations(
+        self,
+        *,
+        available_cash: float,
+        investable_profit: float,
+    ) -> tuple[float, float]:
+        """Fund maintenance and planned resilience investment after operations close.
+
+        Adaptation no longer draws from working capital before hiring and procurement.
+        Instead, the chosen action is financed from residual post-operations cash and
+        only affects resilience capital going into the next period.
+        """
+        scale = self._adaptation_scale()
+        desired_spending = self.maintenance_cost_rate * self.continuity_capital * self._adaptation_scale()
+        maintenance_spending = min(desired_spending, available_cash, investable_profit)
+        if maintenance_spending > 0:
+            self.money -= maintenance_spending
+            self.adaptation_spending_this_step += maintenance_spending
+            self.adaptation_maintenance_this_step += maintenance_spending
+            self.model.distribute_household_income(maintenance_spending, income_kind="adaptation")
+            available_cash -= maintenance_spending
+            investable_profit -= maintenance_spending
+
+        investment_spending = 0.0
+        desired_increment = self.pending_adaptation_increment
+        if desired_increment > 0 and available_cash > 0 and investable_profit > 0:
+            desired_spending = desired_increment * scale
+            investment_spending = min(desired_spending, available_cash, investable_profit)
+            if investment_spending > 0:
+                realized_increment = investment_spending / scale
+                self.money -= investment_spending
+                self.continuity_capital = min(1.0, self.continuity_capital + realized_increment)
+                self.adaptation_spending_this_step += investment_spending
+                self.adaptation_investment_this_step += investment_spending
+                self.model.distribute_household_income(investment_spending, income_kind="adaptation")
+
+        self.pending_adaptation_increment = 0.0
+        return maintenance_spending, investment_spending
+
+    def _available_cash_after_reserve(self, operating_cash_reserve: float) -> float:
+        return max(0.0, self.money - operating_cash_reserve)
+
+    def _operating_credit_floor(self) -> float:
+        """Minimum cash balance allowed for operating outlays this period."""
+        return self._liquidity_buffer - self.working_capital_credit_limit
+
+    def _operating_cash_capacity(self) -> float:
+        """Remaining payroll/input capacity including bounded working-capital credit."""
+        return max(0.0, self.money - self._operating_credit_floor())
+
+    def _update_peak_working_capital_credit_use(self) -> None:
+        """Track the peak draw on the firm's bounded operating overdraft."""
+        credit_draw = max(0.0, self._liquidity_buffer - self.money)
+        self.working_capital_credit_used_this_step = max(
+            self.working_capital_credit_used_this_step,
+            min(self.working_capital_credit_limit, credit_draw),
+        )
+
+    def _spend_operating_cash(self, amount: float) -> bool:
+        """Fund payroll/input spending from cash above buffer plus bounded overdraft."""
+        if amount <= 0:
+            return True
+        if amount > self._operating_cash_capacity() + 1e-9:
+            return False
+        self.money -= amount
+        self._update_peak_working_capital_credit_use()
+        return True
+
+    def _install_capital(self, spending: float) -> float:
+        if spending <= 0:
+            return 0.0
+        installable_capital = spending / self.CAPITAL_INSTALLATION_COST
+        self.money -= spending
+        self.capital_stock += installable_capital
+        self.investment_spending_this_step += spending
+        self.model.distribute_household_income(
+            spending,
+            income_kind="capital",
+        )
+        return spending
+
+    def _allocate_positive_profit(self, *, positive_profit: float, operating_cash_reserve: float) -> None:
+        """Allocate positive profits across capital maintenance, expansion, and adaptation."""
+        investment_share = 0.5
+        available_cash = self._available_cash_after_reserve(operating_cash_reserve)
+
+        maintenance_capital_gap = max(0.0, self.base_capital_target - self.capital_stock)
+        maintenance_spending = min(
+            positive_profit,
+            maintenance_capital_gap * self.CAPITAL_INSTALLATION_COST,
+            available_cash,
+        )
+        self._install_capital(maintenance_spending)
+
+        available_cash = self._available_cash_after_reserve(operating_cash_reserve)
+        residual_profit = max(0.0, positive_profit - self.investment_spending_this_step)
+        expansion_capital_gap = max(0.0, self.target_capital_stock - self.capital_stock)
+        discretionary_investment_spending = min(
+            residual_profit * investment_share,
+            expansion_capital_gap * self.CAPITAL_INSTALLATION_COST,
+            available_cash,
+        )
+        self._install_capital(discretionary_investment_spending)
+
+        available_cash = self._available_cash_after_reserve(operating_cash_reserve)
+        investable_profit = max(0.0, positive_profit - self.investment_spending_this_step)
+        if self.adaptation_enabled and available_cash > 0 and investable_profit > 0:
+            self._fund_adaptation_after_operations(
+                available_cash=available_cash,
+                investable_profit=investable_profit,
+            )
+
+    def _pay_dividends(self, *, positive_profit: float, operating_cash_reserve: float) -> None:
+        available_cash = self._available_cash_after_reserve(operating_cash_reserve)
+        desired_dividends = min(
+            max(0.0, positive_profit - self.investment_spending_this_step - self.adaptation_spending_this_step),
+            available_cash,
+        )
+        if desired_dividends > 0:
+            self.money -= desired_dividends
+            self.dividends_paid_this_step = desired_dividends
+            self.model.distribute_household_income(
+                desired_dividends,
+                income_kind="dividend",
+            )
+
+    def _update_post_step_state(self) -> None:
+        """Update direct-loss diagnostics, continuity beliefs, and demand expectations."""
+        downtime_value = max(
+            self.expected_sales,
+            self.sales_last_step,
+            self.production,
+            1.0,
+        ) * max(self.price, 0.5)
+        raw_recovery_drag = max(0.0, 1.0 - self.counterfactual_damage_factor)
+        adapted_recovery_drag = max(0.0, 1.0 - self.damage_factor)
+        self.counterfactual_direct_loss_this_step += raw_recovery_drag * downtime_value
+        self.realized_direct_loss_this_step += adapted_recovery_drag * downtime_value
+
+        alpha = self.ewma_alpha
+        observed_raw_loss = max(self.raw_direct_loss_fraction_this_step, raw_recovery_drag)
+        observed_adapted_loss = max(self.adapted_direct_loss_fraction_this_step, adapted_recovery_drag)
+        local_observed_loss = self.model.get_local_observed_loss_fraction(self)
+        local_observed_shortfall = self.model.get_local_observed_shortfall_fraction(self)
+        self.expected_direct_loss_ewma = (1.0 - alpha) * self.expected_direct_loss_ewma + alpha * observed_raw_loss
+        self.realized_direct_loss_ewma = (1.0 - alpha) * self.realized_direct_loss_ewma + alpha * observed_adapted_loss
+        self.local_observed_loss_ewma = (
+            (1.0 - alpha) * self.local_observed_loss_ewma
+            + alpha * local_observed_loss
+        )
+        self.expected_operating_shortfall_ewma = (
+            (1.0 - alpha) * self.expected_operating_shortfall_ewma
+            + alpha * self.hazard_operating_shortfall_this_step
+        )
+        self.local_observed_shortfall_ewma = (
+            (1.0 - alpha) * self.local_observed_shortfall_ewma
+            + alpha * local_observed_shortfall
+        )
+        self.supplier_disruption_ewma = (
+            (1.0 - alpha) * self.supplier_disruption_ewma
+            + alpha * self.supplier_disruption_this_step
+        )
+        if self.supplier_disruption_this_step > 0 and not self.ever_directly_hit:
+            self.ever_indirectly_disrupted_before_direct_hit = True
+
+        self.expected_sales = 0.7 * self.expected_sales + 0.3 * self.sales_this_step
+        self.sales_last_step = self.sales_this_step
+        self.household_sales_last_step = self.household_sales_this_step
+        self.revenue_last_step = self.revenue_this_step
+        self.sales_this_step = 0.0
+        self.household_sales_this_step = 0.0
+        self.revenue_this_step = 0.0
+
+    def estimate_direct_value_at_risk(self) -> float:
+        avg_input_price = float(np.mean([s.price for s in self.connected_firms])) if self.connected_firms else self.price
+        input_units = sum(self.inventory_inputs.values())
+        downtime_units = max(self.expected_sales, self.sales_last_step, self.target_output, 1.0)
+        inventory_value = self.inventory_output * max(self.price, 0.5)
+        input_value = input_units * max(avg_input_price, 0.5)
+        downtime_value = downtime_units * max(self.price, 0.5)
+        return max(1.0, self.capital_stock + inventory_value + input_value + downtime_value)
+
+    def get_adapted_loss_fraction(self, raw_loss_fraction: float) -> float:
+        """Return adapted loss fraction, strategy-dependent.
+
+        For capital_hardening, continuity_capital directly attenuates physical
+        damage.  For other strategies this is a pass-through.
+        """
+        if self._uses_adaptation_strategy("capital_hardening") and self.continuity_capital > 0:
+            return raw_loss_fraction * (1.0 - self.continuity_capital)
+        return raw_loss_fraction
+
+    def record_direct_losses(
+        self,
+        raw_loss_fraction: float,
+        adapted_loss_fraction: float,
+    ) -> None:
+        direct_value_at_risk = self.estimate_direct_value_at_risk()
+        self.raw_direct_loss_fraction_this_step = max(self.raw_direct_loss_fraction_this_step, raw_loss_fraction)
+        self.adapted_direct_loss_fraction_this_step = max(self.adapted_direct_loss_fraction_this_step, adapted_loss_fraction)
+        self.counterfactual_direct_loss_this_step += raw_loss_fraction * direct_value_at_risk
+        self.realized_direct_loss_this_step += adapted_loss_fraction * direct_value_at_risk
+        if raw_loss_fraction > 0:
+            self.ever_directly_hit = True
+
+    def copy_adaptation_state_from(self, parent: "FirmAgent") -> None:
+        self.adaptation_strategy = parent.adaptation_strategy
+        self.continuity_capital = parent.continuity_capital
+        self.expected_direct_loss_ewma = parent.expected_direct_loss_ewma
+        self.realized_direct_loss_ewma = parent.realized_direct_loss_ewma
+        self.local_observed_loss_ewma = parent.local_observed_loss_ewma
+        self.supplier_disruption_ewma = parent.supplier_disruption_ewma
+        self.expected_operating_shortfall_ewma = parent.expected_operating_shortfall_ewma
+        self.local_observed_shortfall_ewma = parent.local_observed_shortfall_ewma
+        self.adaptation_sensitivity = parent.adaptation_sensitivity
+        self.last_adaptation_action = "inherited"
+        self.last_adaptation_target = parent.last_adaptation_target
+        self.last_perceived_hazard_risk = parent.last_perceived_hazard_risk
+        self.last_continuity_target = parent.last_continuity_target
+        self.last_perceived_continuity_risk = parent.last_perceived_continuity_risk
+        self.pending_adaptation_increment = 0.0
+        self.adaptation_update_count = 0
+
+    def reset_adaptation_state(self) -> None:
+        """Reset adaptation state to a fresh post-entry draw."""
+        adaptation_config = getattr(self.model, "adaptation_config", {})
+        sensitivity_min = float(adaptation_config.get("adaptation_sensitivity_min", 2.0))
+        sensitivity_max = float(adaptation_config.get("adaptation_sensitivity_max", 4.0))
+        if sensitivity_max < sensitivity_min:
+            sensitivity_max = sensitivity_min
+
+        self.continuity_capital = 0.0
+        self.expected_direct_loss_ewma = 0.0
+        self.realized_direct_loss_ewma = 0.0
+        self.local_observed_loss_ewma = 0.0
+        self.supplier_disruption_ewma = 0.0
+        self.expected_operating_shortfall_ewma = 0.0
+        self.local_observed_shortfall_ewma = 0.0
+        self.adaptation_sensitivity = float(self.random.uniform(sensitivity_min, sensitivity_max))
+        self.last_adaptation_action = "reset"
+        self.last_adaptation_target = 0.0
+        self.last_perceived_hazard_risk = 0.0
+        self.last_continuity_target = 0.0
+        self.last_perceived_continuity_risk = 0.0
+        self.pending_adaptation_increment = 0.0
+        self.adaptation_update_count = 0
 
     # ---------------- Interaction helpers ----------------------------- #
     def hire_labor(self, household: HouseholdAgent, wage: float) -> bool:
-        # Reject hire if paying the wage would dip into funds reserved for inputs/capital
-        if self._budget_labor < wage:
-            return False
         """Attempt to hire one unit of labour from *household*.
 
         Returns True if the contract succeeded (wage transferred),
         False otherwise (insufficient funds).
         """
 
-        if self.money < wage:
+        # Firms hire up to the vacancy count implied by planned output, not until cash is exhausted.
+        if len(self.employees) >= self.target_labor:
             return False
 
-        # Transfer wage and update reservation tracking
-        self.money -= wage
-        self._budget_labor -= wage
+        if not self._spend_operating_cash(wage):
+            return False
+
+        # Transfer wage while allowing a bounded sales-backed overdraft.
         household.money += wage
+        household.labor_income_this_step += wage
+        self.wage_bill_this_step += wage
 
         # Register labour for this production cycle
         self.employees.append(household)
@@ -486,10 +942,11 @@ class FirmAgent(Agent):
         no transaction occurs.
         """
 
-        if quantity <= 0 or self.inventory_output <= 0:
+        available_inventory = self.model.available_inventory_for_spot_sales(self)
+        if quantity <= 0 or available_inventory <= 0:
             return 0.0
 
-        qty = min(quantity, self.inventory_output)
+        qty = min(quantity, available_inventory)
         total_cost = qty * self.price
         if household.money < total_cost:
             # Adjust quantity downward to what buyer can afford
@@ -505,127 +962,133 @@ class FirmAgent(Agent):
         self.inventory_output -= qty
         # Track sales for demand-based pricing
         self.sales_this_step += qty
+        self.household_sales_this_step += qty
         self.revenue_this_step += total_cost
-        self.sales_total += qty
         return qty
 
-    def sell_goods_to_firm(self, buyer: "FirmAgent", quantity: int = 1) -> int:
-        """Inter-firm sale of intermediate goods (generic price=1)."""
-        if quantity <= 0 or self.inventory_output <= 0:
-            return 0
+    def sell_goods_to_firm(
+        self,
+        buyer: "FirmAgent",
+        quantity: float = 1.0,
+        *,
+        unit_price: float | None = None,
+        reservation_buyer_id: int | None = None,
+    ) -> float:
+        """Sell intermediate goods to another firm."""
+        if reservation_buyer_id is None:
+            available_inventory = self.model.available_inventory_for_spot_sales(self)
+        else:
+            available_inventory = self.model.available_reserved_inventory_for_buyer(
+                self,
+                reservation_buyer_id,
+            )
+        if quantity <= 0 or available_inventory <= 0:
+            return 0.0
 
-        qty = min(quantity, self.inventory_output)
-        cost = qty * self.price
-        
-        # Use independent input budget per supplier for all firms
-        budget_per_supplier = getattr(buyer, "_budget_input_per_supplier", {})
-        supplier_budget = budget_per_supplier.get(self.unique_id, 0.0)
-        budget_cap = getattr(buyer, "_budget_capital", 0.0)
+        qty = min(quantity, available_inventory)
+        price = self.price if unit_price is None else max(0.0, float(unit_price))
+        available_cash = buyer._operating_cash_capacity()
+        if available_cash <= 0 or price <= 0:
+            return 0.0
 
-        if cost > (supplier_budget + budget_cap):
-            return 0  # Not enough dedicated funds for this supplier
-            
-        if buyer.money < cost:
-            return 0
+        max_affordable = available_cash / price
+        qty = min(qty, max_affordable)
+        if qty <= 0:
+            return 0.0
+
+        cost = qty * price
 
         # Transfer money & inventory
-        buyer.money -= cost
-
-        # Deduct from supplier-specific budget first, then capital
-        use_supplier = min(cost, supplier_budget)
-        # Safely decrement supplier‐specific budget; initialise key if missing
-        current_alloc = buyer._budget_input_per_supplier.get(self.unique_id, 0.0)
-        buyer._budget_input_per_supplier[self.unique_id] = current_alloc - use_supplier
-        buyer._budget_capital -= (cost - use_supplier)  # type: ignore[attr-defined]
-        
+        if not buyer._spend_operating_cash(cost):
+            return 0.0
         self.money += cost
         self.inventory_output -= qty
+        if reservation_buyer_id is not None:
+            self.model.consume_reserved_capacity(self, reservation_buyer_id, qty)
+        buyer.input_spend_this_step += cost
+
         # Register under this supplier's id inside buyer
-        buyer.inventory_inputs[self.unique_id] += qty
+        buyer.inventory_inputs[self.unique_id] = buyer.inventory_inputs.get(self.unique_id, 0.0) + qty
+
         # Track sales for demand-based pricing
         self.sales_this_step += qty
         self.revenue_this_step += cost
-        self.sales_total += qty
         return qty
 
-    # ---------------- Budgeting helper ---------------------------------- #
-    def prepare_budget(self) -> None:
-        """Allocate current cash across labour, inputs and capital reserves.
+    # ---------------- Demand-planning helper ---------------------------- #
+    def plan_operations(self) -> None:
+        """Set output, vacancy, and liquidity targets from expected demand."""
 
-        The allocation is guided by the previous step's limiting factor so the
-        firm directs more budget towards whichever input was scarce last time.
-        For non-retail sectors, each input good from connected firms is treated
-        as independent and gets separate budget allocation.
-        """
+        # Reset per-period flow accounting before households enter the labour market.
+        # Wages are paid during ``supply_labor()``, before ``FirmAgent.step()``
+        # runs, so resetting here preserves payroll in profit calculations.
+        self.production = 0.0
+        self.consumption = 0.0
+        self.wage_bill_this_step = 0.0
+        self.input_spend_this_step = 0.0
+        self.depreciation_this_step = 0.0
+        self.profit_this_step = 0.0
+        self.dividends_paid_this_step = 0.0
+        self.investment_spending_this_step = 0.0
+        self.required_working_capital = 0.0
+        self.working_capital_credit_limit = 0.0
+        self.working_capital_credit_used_this_step = 0.0
+        self.demand_driven_output = 0.0
 
-        # Base weights: technical coefficients × price proxies (Leontief logic)
-        avg_input_price = np.mean([s.price for s in self.connected_firms]) if self.connected_firms else 1.0
+        self.capital_coeff = self.original_capital_coeff
 
-        lim = getattr(self, "limiting_factor", "")
+        self._liquidity_buffer = max(self.MIN_LIQUIDITY_BUFFER, self.money * self.LIQUIDITY_BUFFER_RATIO)
 
-        # Allocate capital budget if capital was limiting OR a shock just hit
-        cap_weight = 0.0
-        if lim == "capital":
-            cap_weight = self.capital_coeff * self.price
-        else:
-            # Seed some capital budget after damage or depleted stock
-            if (self.capital_stock < self.original_capital_coeff * 5) or (self.damage_factor < 0.99) or (self.capital_coeff > self.original_capital_coeff * 1.05):
-                cap_weight = self.capital_coeff * self.price * 0.3
+        effective_buffer_ratio = self._effective_inventory_buffer_ratio()
+        inventory_target = max(1.0, self.expected_sales * effective_buffer_ratio)
+        demand_driven_output = max(0.0, self.expected_sales + inventory_target - self.inventory_output)
+        self.demand_driven_output = demand_driven_output
+        desired_output = demand_driven_output
 
-        # All sectors: treat each input type as independent
-        # Each connected firm represents a different input type
-        num_input_types = len(self.connected_firms) if self.connected_firms else 1
-        
-        # Base weights for each input type
-        input_weights = {}
-        for supplier in self.connected_firms:
-            input_weights[supplier.unique_id] = self.INPUT_COEFF * supplier.price
-        
-        # If no connected firms, use average price as fallback
-        if not input_weights:
-            input_weights["generic"] = self.INPUT_COEFF * avg_input_price
-        
-        # Total input weight is sum of all individual input weights
-        total_input_weight = sum(input_weights.values())
-        
-        weights = {
-            "labor": self.LABOR_COEFF * self.wage_offer * self.strategy.get('budget_labor_weight', 1.0),
-            "input_total": total_input_weight * self.strategy.get('budget_input_weight', 1.0),
-            "capital": cap_weight * self.strategy.get('budget_capital_weight', 1.0),
-        }
-        
-        # Prioritise last limiting factor (learned response)
-        if lim in weights and weights[lim] > 0:
-            priority_multiplier = 1.0 + 0.3 * self.strategy.get('budget_' + lim + '_weight', 1.0)
-            weights[lim] *= priority_multiplier
-        
-        total_w = sum(weights.values())
-        if total_w <= 0:
-            total_w = 1.0
-
-        # Cash to be allocated
-        liquid = max(0, self.money)  # Ensure non-negative
-        liquid_alloc = liquid * 0.9
-        reserve_labor = liquid_alloc * weights["labor"] / total_w
-        # Guarantee enough for multiple hires so labour is not starved by budgeting
-        reserve_labor = max(reserve_labor, self.wage_offer * 3)
-        reserve_input_total = liquid_alloc * weights["input_total"] / total_w
-        reserve_cap = liquid_alloc * weights["capital"] / total_w
-
-        # Set budgets
-        self._budget_labor = reserve_labor
-        self._budget_capital = reserve_cap
-        
-        # Allocate input budget per supplier (independent inputs)
-        self._budget_input_per_supplier = {}
+        avg_input_price = 0.0
         if self.connected_firms:
-            for supplier in self.connected_firms:
-                # Proportional allocation based on supplier's price
-                supplier_share = input_weights[supplier.unique_id] / total_input_weight
-                self._budget_input_per_supplier[supplier.unique_id] = reserve_input_total * supplier_share
-        else:
-            # Fallback for no connected firms
-            self._budget_input = reserve_input_total 
+            avg_input_price = float(np.mean([s.price for s in self.connected_firms]))
+
+        effective_damage = max(self.damage_factor, 1e-6)
+        capital_limit = self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf")
+        self.target_capital_stock = max(
+            self.base_capital_target,
+            (demand_driven_output / effective_damage) * self.capital_coeff,
+        )
+        desired_output = min(desired_output, capital_limit * self.damage_factor)
+        unit_variable_cost = (
+            self.wage_offer * self.LABOR_COEFF
+            + avg_input_price * self.INPUT_COEFF
+        ) / effective_damage
+
+        revenue_anchor = (
+            max(
+                self.expected_sales,
+                self.sales_last_step,
+                self.household_sales_last_step,
+                1.0,
+            )
+            * max(self.price, 0.5)
+        )
+        provisional_working_capital = max(0.0, desired_output * unit_variable_cost)
+        self.working_capital_credit_limit = min(
+            provisional_working_capital,
+            revenue_anchor * self.WORKING_CAPITAL_CREDIT_REVENUE_SHARE,
+        )
+        available_operating_cash = self._operating_cash_capacity()
+        if unit_variable_cost > 0:
+            desired_output = min(desired_output, available_operating_cash / unit_variable_cost)
+
+        self.target_output = max(0.0, desired_output)
+        self.required_working_capital = self.target_output * unit_variable_cost
+        self.working_capital_credit_limit = min(
+            self.required_working_capital,
+            revenue_anchor * self.WORKING_CAPITAL_CREDIT_REVENUE_SHARE,
+        )
+
+        required_pre_damage_output = self.target_output / effective_damage
+        self.target_labor = int(np.ceil(required_pre_damage_output * self.LABOR_COEFF - 1e-9))
+        self.target_input_units = required_pre_damage_output * self.INPUT_COEFF
 
     # -------------------------------------------------------------------- #
 
@@ -635,189 +1098,213 @@ class FirmAgent(Agent):
 
         # ---------------- Damage recovery ----------------------------- #
         # ---------------- Wage adjustment ----------------------------- #
-        # Supply-demand based wage adjustment
-        unemployment_rate = getattr(self.model, "unemployment_rate_prev", 0.0)
-
-        # Determine adjustment based on labor market conditions
-        # Only raise wages after 4 consecutive cycles of labor shortage (persistent issue)
-        LABOR_SHORTAGE_THRESHOLD = 4
-        if self.labor_shortage_cycles >= LABOR_SHORTAGE_THRESHOLD:
-            # Firm has persistently wanted more workers but couldn't get them
-            if self.money < self.wage_offer * 2:
-                # Can't afford workers - hold wages steady (don't cut, that kills the economy)
-                signal = 0.0
-            else:
-                # Supply-limited: raise wages to attract workers
-                signal = 1.0
+        # Revenue-based wage targeting: wages track marginal revenue product of labor.
+        # This replaces ad-hoc shortage-signal heuristics with a single economic principle:
+        # firms pay workers a fraction of what they produce, so wages are structurally
+        # bounded by firm revenue and self-correct during downturns.
+        labor_share = self.LABOR_SHARE
+        if self.last_hired_labor > 0 and self.revenue_last_step > 0:
+            revenue_per_worker = self.revenue_last_step / self.last_hired_labor
+            target_wage = revenue_per_worker * labor_share
+        elif self.last_hired_labor == 0:
+            # No workers last round. Use only a modest premium over the market
+            # mean so empty firms can attract an initial worker without creating
+            # a wage ratchet during slack baseline conditions.
+            target_wage = self.model.mean_wage * self.NO_WORKER_WAGE_PREMIUM
         else:
-            # Not labor-constrained - adjust based on market conditions
-            if unemployment_rate > 0.2:
-                # High unemployment: modest downward pressure
-                signal = -0.5
-            elif unemployment_rate < 0.05:
-                # Very low unemployment: upward pressure
-                signal = 0.5
-            else:
-                # Normal conditions: hold steady
-                signal = 0.0
+            # Had workers but no revenue — hold current wage
+            target_wage = self.wage_offer
 
-        # Moderate adjustment strength
-        base_strength = 0.03 * self.strategy.get('wage_responsiveness', 1.0)
-        adjustment = 1 + base_strength * signal
+        # Smooth adjustment: 10% toward target each step
+        self.wage_offer += 0.1 * (target_wage - self.wage_offer)
 
-        # Bound adjustment to prevent extreme jumps
-        adjustment = max(0.95, min(adjustment, 1.05))
+        # Minimum wage floor at 40% of initial wage, as a proxy consistent with ILO (2016) observations that
+        # minimum wages in high-income economies typically fall between 40–60% of the median wage.
+        wage_floor = getattr(self.model, 'initial_mean_wage', 1.0) * 0.4
+        self.wage_offer = float(max(wage_floor, self.wage_offer))
 
-        self.wage_offer *= adjustment
-        # Keep wage positive with a meaningful floor
-        self.wage_offer = float(max(0.1, min(self.wage_offer, 10.0)))
-
-        # Recover 50% of remaining damage each step
-        self.damage_factor += (1.0 - self.damage_factor) * 0.5
+        # Liquidity-dependent recovery.  Adaptation affects physical damage only
+        # via capital_hardening (get_adapted_loss_fraction); recovery rate here
+        # is driven purely by firm liquidity.
+        liquidity_ratio = min(1.0, self.money / 200.0)
+        base_recovery_rate = 0.2 + 0.3 * liquidity_ratio
+        actual_recovery_rate = base_recovery_rate
+        self.damage_factor += (1.0 - self.damage_factor) * actual_recovery_rate
         self.damage_factor = min(1.0, max(0.0, self.damage_factor))
+        self.counterfactual_damage_factor += (1.0 - self.counterfactual_damage_factor) * base_recovery_rate
+        self.counterfactual_damage_factor = min(1.0, max(0.0, self.counterfactual_damage_factor))
 
         # ---------------- Dynamic pricing ----------------------------- #
-        # Supply-demand based pricing using inventory levels
+        # Markup pricing: price = unit_cost × (1 + markup), where markup is set
+        # by sell-through rate.  This replaces ad-hoc inventory-threshold bands,
+        # cost-floor ratchets, and price ceilings with one economic principle:
+        # prices track costs and adjust margins based on realised demand.
 
-        # Calculate cost floor based on firm's actual costs plus profit margin
-        # Use firm's own wage_offer (actual cost) not model mean
+        # Unit cost from actual production inputs
         avg_input_price = 0.0
         if self.connected_firms:
             avg_input_price = float(np.mean([s.price for s in self.connected_firms]))
-        # Variable cost per unit
-        variable_cost = (
+        unit_cost = (
             self.wage_offer * self.LABOR_COEFF
             + avg_input_price * self.INPUT_COEFF
-        )
-        # Cost floor includes 20% profit margin to ensure firm solvency
-        cost_floor = variable_cost * 1.2
-        cost_floor = max(0.5, cost_floor)  # Minimum floor of 0.5
+        ) / max(self.damage_factor, 1e-6)
 
-        # Supply-demand indicator: compare inventory to recent production
-        # High inventory relative to sales = excess supply = lower price
-        # Low inventory relative to sales = excess demand = raise price
-        current_sales = self.sales_last_step
-
-        # Target inventory level: roughly 2x recent sales
-        target_inventory = max(2.0, current_sales * 2.0)
-        inventory_ratio = self.inventory_output / target_inventory if target_inventory > 0 else 1.0
-
-        if inventory_ratio > 2.0:
-            # Too much inventory: modest price cut to clear stock
-            price_adjustment = 0.97
-        elif inventory_ratio > 1.5:
-            # Slightly high inventory: small price cut
-            price_adjustment = 0.99
-        elif inventory_ratio < 0.5:
-            # Low inventory, high demand: raise price
-            price_adjustment = 1.03
-        elif inventory_ratio < 0.8:
-            # Slightly low inventory: small price increase
-            price_adjustment = 1.01
+        # Sell-through is based on realised demand from the previous full period.
+        available = self.inventory_output + self.sales_last_step
+        if available > 0 and self.sales_last_step > 0:
+            sell_through = min(1.0, self.sales_last_step / available)
         else:
-            # Balanced: hold price
-            price_adjustment = 1.0
+            sell_through = 0.0
 
-        # Apply no-sales penalty more gently
-        if current_sales <= 0 and self.inventory_output > 0:
-            # Have inventory but no sales: modest price cut
-            price_adjustment = min(price_adjustment, 0.95)
+        # Target markup stays positive but modest:
+        #   sell_through = 1.0  →  markup = +0.32
+        #   sell_through = 0.5  →  markup = +0.17
+        #   sell_through = 0.0  →  markup = +0.02
+        # This avoids below-cost pricing while limiting long-run markup compounding.
+        target_markup = 0.02 + 0.30 * sell_through
+        target_price = unit_cost * (1.0 + target_markup)
 
-        self.price *= price_adjustment
-
-        # Clamp prices to sensible bounds
-        # Price should be above cost floor and below reasonable maximum
-        # Use cached household money from model for efficiency
-        avg_household_money = self.model.get_avg_household_money()
-        max_reasonable_price = max(cost_floor * 3.0, avg_household_money * 0.5)
-
-        self.price = float(max(cost_floor, min(self.price, max_reasonable_price)))
-
-        # Reset per-step statistics
-        self.production = 0.0
-        self.consumption = 0.0
-
-        # ---------------- Hazard-driven capital adjustment (learned response) ------------ #
-        local_hazard = self._get_local_hazard()
-        risk_sensitivity = self.strategy.get('risk_sensitivity', 1.0)
-        
-        if local_hazard > 0.1:
-            # Increase capital requirement based on learned risk sensitivity
-            capital_increase = 1.0 + (0.2 * risk_sensitivity)
-            self.capital_coeff *= capital_increase
-        else:
-            # Gradually relax back towards original coefficient (faster if less risk-sensitive)
-            if self.capital_coeff > self.original_capital_coeff:
-                adjusted_relaxation = self.relaxation_ratio * (2.0 - risk_sensitivity)  # less sensitive = faster relaxation
-                decay = (self.capital_coeff - self.original_capital_coeff) * adjusted_relaxation
-                self.capital_coeff = max(self.original_capital_coeff, self.capital_coeff - decay)
+        # Smooth adjustment: 20% toward target each step
+        self.price += 0.2 * (target_price - self.price)
+        self.price = float(max(0.5, self.price))  # absolute floor to prevent zero/negative
 
         labour_units = self._labor_available()
+        effective_damage = max(self.damage_factor, 1e-6)
 
         # ----------------------------------------------------------------
-        # 1. Ensure each required input type has enough stock to match labour
+        # 1. Purchase the aggregate intermediate input needed for planned output
         # ----------------------------------------------------------------
-        
-        # Estimate feasible output given capital and damage to avoid over-ordering inputs
-        cap_limit = self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf")
-        target_output = min(labour_units / self.LABOR_COEFF, cap_limit) * self.damage_factor
-        target_output = max(0.0, target_output)
-        
-        # Each input good from connected firms is independent
-        # Need INPUT_COEFF units from EACH supplier for maximum production
-        for supplier in self.connected_firms:
-            target_per_supplier = int(np.ceil(target_output * self.INPUT_COEFF))
-            current_from_supplier = self.inventory_inputs.get(supplier.unique_id, 0)
-            required_from_supplier = max(0, target_per_supplier - current_from_supplier)
-            
-            if required_from_supplier > 0:
-                supplier.sell_goods_to_firm(self, required_from_supplier)
+        desired_pre_damage_output = self.target_output / effective_damage
+        desired_pre_damage_output = min(
+            desired_pre_damage_output,
+            labour_units / self.LABOR_COEFF if self.LABOR_COEFF else float("inf"),
+            self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf"),
+        )
+        desired_input_units = desired_pre_damage_output * self.INPUT_COEFF
 
-        # ----------------------------------------------------------------
-        # 2. Compute possible output per Leontief: min(labour, material, capital)
-        # ----------------------------------------------------------------
-
-        # Sum inputs from all suppliers (they are substitutable, not complementary)
-        # This allows production even if one supplier is out of stock, as long as
-        # total inputs from all suppliers meet the requirement.
+        current_input_units = 0.0
         if self.connected_firms:
-            total_input_units = sum(
-                self.inventory_inputs.get(supplier.unique_id, 0)
+            current_input_units = sum(
+                self.inventory_inputs.get(supplier.unique_id, 0.0)
                 for supplier in self.connected_firms
             )
+
+        remaining_inputs_needed = max(0.0, desired_input_units - current_input_units)
+        if remaining_inputs_needed > 0 and self.connected_firms and self.INPUT_COEFF > 0:
+            suppliers = sorted(
+                [supplier for supplier in self.connected_firms if supplier.inventory_output > 0],
+                key=lambda supplier: supplier.price,
+            )
+            for supplier in suppliers:
+                if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
+                    break
+                bought = supplier.sell_goods_to_firm(self, remaining_inputs_needed)
+                if bought > 0:
+                    remaining_inputs_needed -= bought
+
+        if desired_input_units > 1e-9:
+            input_shortfall_ratio = min(1.0, max(0.0, remaining_inputs_needed / desired_input_units))
+        else:
+            input_shortfall_ratio = 0.0
+        hazard_affected_suppliers = self._primary_supplier_shortage_is_hazard_related()
+        raw_supplier_disruption = input_shortfall_ratio if hazard_affected_suppliers else 0.0
+        self.raw_supplier_disruption_this_step = raw_supplier_disruption
+        self.supplier_disruption_this_step = raw_supplier_disruption
+
+        # --- Backup supplier search (continuity-capital mechanism) ---
+        # Instead of fabricating phantom inputs, firms with continuity capital
+        # search for real backup suppliers with actual inventory and buy at
+        # market prices using actual cash.  This preserves macro closure.
+        backup_purchases = 0.0
+        reserved_capacity_purchases = 0.0
+        reserved_capacity_price_savings = 0.0
+        if (
+            self._uses_adaptation_strategy("backup_suppliers")
+            and hazard_affected_suppliers
+            and remaining_inputs_needed > 1e-9
+            and self.continuity_capital > 0
+            and self._operating_cash_capacity() > 1e-9
+        ):
+            remaining_inputs_needed, backup_purchases = self._purchase_from_backup_suppliers(
+                remaining_inputs_needed
+            )
+        elif (
+            self._uses_adaptation_strategy("reserved_capacity")
+            and hazard_affected_suppliers
+            and remaining_inputs_needed > 1e-9
+            and self.continuity_capital > 0
+            and self._operating_cash_capacity() > 1e-9
+        ):
+            (
+                remaining_inputs_needed,
+                reserved_capacity_purchases,
+                reserved_capacity_price_savings,
+            ) = self._purchase_from_reserved_capacity(remaining_inputs_needed)
+        self.backup_purchases_this_step = backup_purchases
+        self.reserved_capacity_purchases_this_step = reserved_capacity_purchases
+        self.reserved_capacity_price_savings_this_step = reserved_capacity_price_savings
+        continuity_purchase_coverage = backup_purchases + reserved_capacity_purchases
+        self.continuity_input_coverage_this_step = continuity_purchase_coverage  # backward compat
+
+        # ----------------------------------------------------------------
+        # 2. Compute possible output: demand target capped by technical limits
+        # ----------------------------------------------------------------
+        if self.connected_firms and self.INPUT_COEFF > 0:
+            # sum(values()) captures both primary and backup-purchased inputs
+            total_input_units = sum(self.inventory_inputs.values())
             max_output_from_inputs = total_input_units / self.INPUT_COEFF
         else:
+            total_input_units = 0.0
             max_output_from_inputs = float("inf")
 
         max_output_from_capital = self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf")
+        max_output_from_labor = labour_units / self.LABOR_COEFF if self.LABOR_COEFF else float("inf")
 
-        max_possible = min(labour_units / self.LABOR_COEFF, max_output_from_inputs, max_output_from_capital)
-        possible_output = max_possible * self.damage_factor
-
-        capital_limited = possible_output < max_possible and (max_output_from_capital <= labour_units / self.LABOR_COEFF)
-
-        # Determine primary limiting factor for diagnostic plotting
-        # Compare theoretical maxima before damage factor applied
-        labor_capacity = labour_units / self.LABOR_COEFF
-        limits = {
-            "labor": labor_capacity,
-            "input": max_output_from_inputs,
-            "capital": max_output_from_capital,
+        actual_limits = {
+            "labor": max_output_from_labor * self.damage_factor,
+            "input": max_output_from_inputs * self.damage_factor,
+            "capital": max_output_from_capital * self.damage_factor,
         }
-        min_limit_val = min(limits.values())
-        # Pick first factor that equals the min within small tolerance
-        self.limiting_factor: str = next(k for k, v in limits.items() if abs(v - min_limit_val) < 1e-6)
+        technical_output_limit = min(actual_limits.values())
+        possible_output = min(self.target_output, technical_output_limit)
 
-        # Calculate how many workers the firm could productively use
-        # This is based on input and capital constraints (what limits production besides labor)
-        max_useful_output = min(max_output_from_inputs, max_output_from_capital)
-        # Convert output capacity to labor demand (how many workers needed for that output)
-        self.labor_demand = int(np.ceil(max_useful_output * self.LABOR_COEFF)) if max_useful_output < float("inf") else labour_units
+        # Update supplier disruption to reflect actual residual shortfall
+        # after backup search.
+        if desired_input_units > 1e-9:
+            self.supplier_disruption_this_step = (
+                min(1.0, max(0.0, remaining_inputs_needed / desired_input_units))
+                if hazard_affected_suppliers
+                else 0.0
+            )
+        else:
+            self.supplier_disruption_this_step = 0.0
+        self.continuity_gap_coverage_this_step = continuity_purchase_coverage
+
+        no_hazard_output_ceiling = min(self.demand_driven_output, max_output_from_labor)
+        hazard_related_gap = (
+            self.raw_direct_loss_fraction_this_step > 1e-9
+            or self.adapted_direct_loss_fraction_this_step > 1e-9
+            or raw_supplier_disruption > 1e-9
+            or self.damage_factor < 0.999999
+        )
+
+        if self.target_output + 1e-9 < technical_output_limit:
+            self.limiting_factor = "demand"
+        else:
+            self.limiting_factor = min(actual_limits, key=actual_limits.get)
 
         self.production = possible_output
+        if no_hazard_output_ceiling > 1e-9 and hazard_related_gap:
+            self.hazard_operating_shortfall_this_step = min(
+                1.0,
+                max(0.0, no_hazard_output_ceiling - possible_output) / no_hazard_output_ceiling,
+            )
+        else:
+            self.hazard_operating_shortfall_this_step = 0.0
         if possible_output > 0:
-            # Total inputs needed = output * INPUT_COEFF (consumed proportionally from all suppliers)
-            total_inputs_needed = possible_output * self.INPUT_COEFF
+            # Damage lowers effective output per unit input, so input use scales with
+            # the pre-damage quantity required to achieve the realised output.
+            total_inputs_needed = (possible_output / effective_damage) * self.INPUT_COEFF
             remaining_to_consume = total_inputs_needed
 
             for supplier in self.connected_firms:
@@ -828,6 +1315,18 @@ class FirmAgent(Agent):
                     self.inventory_inputs[supp_id] -= use_qty
                     remaining_to_consume -= use_qty
 
+            # Consume backup-sourced inputs (stored under non-primary supplier IDs)
+            if remaining_to_consume > 1e-9:
+                primary_ids = {s.unique_id for s in self.connected_firms}
+                for supp_id in list(self.inventory_inputs.keys()):
+                    if supp_id in primary_ids or remaining_to_consume <= 1e-9:
+                        continue
+                    available = self.inventory_inputs[supp_id]
+                    if available > 0:
+                        use_qty = min(available, remaining_to_consume)
+                        self.inventory_inputs[supp_id] -= use_qty
+                        remaining_to_consume -= use_qty
+
             # Add production to inventory
             self.inventory_output += possible_output
 
@@ -836,87 +1335,60 @@ class FirmAgent(Agent):
         # ----------------------------------------------------------------
         # 3. Clear employee list for next step
         # ----------------------------------------------------------------
-        # Record labour count and limiting factor for next step's adjustments
+        # Record labour count for next step's wage adjustment
         self.last_hired_labor = len(self.employees)
-
-        # Track consecutive cycles of labor shortage:
-        # A firm has a labor shortage if:
-        # 1. It hired fewer workers than it demanded (demand not met), AND
-        # 2. It still had budget remaining to hire more workers (shortage due to unavailability)
-        has_labor_shortage = (
-            len(self.employees) < self.labor_demand and
-            self._budget_labor >= self.wage_offer  # Could afford at least one more worker
-        )
-        if has_labor_shortage:
-            self.labor_shortage_cycles += 1
-        else:
-            self.labor_shortage_cycles = 0  # Reset if shortage resolved
         self.employees.clear()
         
-        # ---------------- Learning system updates ----------------------- #
         self.survival_time += 1
-        self._record_performance()
-        self.steps_since_adaptation += 1
-        
-        # Periodically evaluate and adapt strategy
-        if self.steps_since_adaptation >= self.adaptation_frequency:
-            self._adapt_strategy()
-            self.steps_since_adaptation = 0
 
         # ---------------- Capital depreciation ------------------------ #
         DEPR = 0.002  # 0.2 % per step (quarterly), roughly 0.8 % annually - reduced to prevent wealth drain
+        self.depreciation_this_step = self.capital_stock * DEPR
         self.capital_stock *= (1 - DEPR)
-
-        # ---------------- Capital purchase stage ----------------------- #
-        # Purchase additional capital whenever it is the current bottleneck
-        if self.limiting_factor == "capital" and self._budget_capital > 0 and self.money > 0:
-            # Only attempt capital purchase if we have actual money and dedicated budget
-            available_funds = min(self._budget_capital, self.money * 0.5)  # Don't spend all money on capital
-
-            if available_funds > 0:
-                # Find cheapest available capital goods
-                # Use cached firm list from model for efficiency
-                sellers = [f for f in self.model._firms if f is not self and f.inventory_output > 0]
-                if sellers:
-                    # Sort by price to buy from cheapest first
-                    sellers.sort(key=lambda f: f.price)
-                    
-                    remaining_budget = available_funds
-                    for seller in sellers:
-                        if remaining_budget <= 0:
-                            break
-                        
-                        # Calculate how much we can afford from this seller
-                        max_affordable = int(remaining_budget / seller.price)
-                        if max_affordable <= 0:
-                            continue
-                            
-                        qty = min(max_affordable, seller.inventory_output)
-                        bought = seller.sell_goods_to_firm(self, qty)
-                        if bought:
-                            self.capital_stock += bought
-                            remaining_budget -= bought * seller.price
-
-        # Persist sales metrics for next step's pricing decisions
-        if self.sales_this_step <= 0:
-            self.no_sales_streak += 1
-        else:
-            self.no_sales_streak = 0
-        self.sales_prev_step = self.sales_last_step
-        self.sales_last_step = self.sales_this_step
-        self.revenue_last_step = self.revenue_this_step
-        self.sales_this_step = 0.0
-        self.revenue_this_step = 0.0
-        self.sales_total = 0.0
 
     # ---------------- Internal helpers -------------------------------- #
     def _labor_available(self) -> int:
         """Return integer labour units hired for this tick."""
         return len(self.employees) 
 
+    def close_step(self) -> None:
+        """Persist realised sales after all market transactions for the period."""
+
+        accounting_profit = (
+            self.revenue_this_step
+            - self.wage_bill_this_step
+            - self.input_spend_this_step
+            - self.depreciation_this_step
+        )
+        self.profit_this_step = accounting_profit
+
+        # Positive profits are either paid out to household owners as dividends
+        # or recycled into installed capital. Because the model has no explicit
+        # capital-goods firm, investment spending is transferred to households
+        # as capital-service income so money stays inside the closed economy.
+        #
+        # The baseline closure needs firms to preserve their installed productive
+        # base before distributing residual profits. We therefore fund capital
+        # replacement up to the firm's base-capital target before allowing
+        # discretionary expansion and dividends.
+        operating_cash_reserve = max(
+            self._liquidity_buffer,
+            self.wage_bill_this_step + self.input_spend_this_step,
+        )
+        positive_profit = max(0.0, accounting_profit)
+        self._allocate_positive_profit(
+            positive_profit=positive_profit,
+            operating_cash_reserve=operating_cash_reserve,
+        )
+        self._pay_dividends(
+            positive_profit=positive_profit,
+            operating_cash_reserve=operating_cash_reserve,
+        )
+        self._update_post_step_state()
+
     # ------------------------------------------------------------------ #
     #                        INTERNAL HELPERS                           #
     # ------------------------------------------------------------------ #
     def _get_local_hazard(self) -> float:
         """Return the hazard value at the agent's current cell."""
-        return self.model.hazard_map.get(self.pos, 0.0) 
+        return self.model.hazard_map.get(self.pos, 0.0)

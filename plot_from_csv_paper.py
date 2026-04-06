@@ -4,8 +4,147 @@
 import argparse
 from pathlib import Path
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 import pandas as pd
 import numpy as np
+
+
+STRATEGY_KEYWORDS = {
+    "backup_suppliers": "Backup Suppliers",
+    "capital_hardening": "Capital Hardening",
+    "reserved_capacity": "Reserved Capacity",
+    "stockpiling": "Stockpiling",
+}
+
+SMOOTHABLE_METRICS = {"Firm_Production", "Household_Consumption"}
+
+
+def _smooth_series(y_vals, window):
+    """Apply centered rolling-mean smoothing to a 1-D array."""
+    if window is None or window <= 1:
+        return y_vals
+    return pd.Series(y_vals).rolling(window=window, min_periods=1, center=True).mean().to_numpy()
+
+
+def infer_scenario_name(csv_path: Path) -> str:
+    """Infer a human-readable scenario name from a results filename."""
+    stem = csv_path.stem.lower()
+
+    if "baseline" in stem:
+        base = "Baseline"
+    elif "hazard" in stem:
+        base = "Hazard"
+    else:
+        base = csv_path.stem.replace("simulation_", "").replace("_", " ").title()
+
+    # Check for specific adaptation strategies first
+    for key, display in STRATEGY_KEYWORDS.items():
+        if key in stem:
+            return f"{base} + {display}"
+
+    if "noadaptation" in stem or "no_adaptation" in stem:
+        mode = "No Adaptation"
+    elif "adaptation" in stem:
+        mode = "Adaptation"
+    elif "nolearning" in stem or "no_learning" in stem:
+        mode = "No Learning"
+    elif "learning" in stem:
+        mode = "Learning"
+    else:
+        return base
+
+    return f"{base} + {mode}"
+
+
+def is_hazard_scenario(scenario: str) -> bool:
+    return "hazard" in scenario.lower()
+
+
+def is_no_adaptation_scenario(scenario: str) -> bool:
+    scenario_lower = scenario.lower()
+    return (
+        "no adaptation" in scenario_lower
+        or "noadaptation" in scenario_lower
+        or "no learning" in scenario_lower
+        or "nolearning" in scenario_lower
+    )
+
+
+def is_adaptation_scenario(scenario: str) -> bool:
+    scenario_lower = scenario.lower()
+    # Check for specific strategy names
+    for key in STRATEGY_KEYWORDS:
+        if key in scenario_lower or STRATEGY_KEYWORDS[key].lower() in scenario_lower:
+            return True
+    return (
+        ("adaptation" in scenario_lower and not is_no_adaptation_scenario(scenario))
+        or ("learning" in scenario_lower and not is_no_adaptation_scenario(scenario))
+    )
+
+
+STRATEGY_ABBREVS = {
+    "backup suppliers": "BS",
+    "backup_suppliers": "BS",
+    "capital hardening": "CH",
+    "capital_hardening": "CH",
+    "reserved capacity": "RC",
+    "reserved_capacity": "RC",
+    "stockpiling": "SP",
+}
+
+
+def scenario_abbrev(scenario: str) -> str:
+    scenario_lower = scenario.lower()
+    if "baseline" in scenario_lower:
+        base = "Baseline"
+    elif "hazard" in scenario_lower:
+        base = "Hazard"
+    else:
+        return scenario
+
+    if is_no_adaptation_scenario(scenario):
+        return f"{base}-NA"
+
+    # Check for specific strategy abbreviation
+    for key, abbrev in STRATEGY_ABBREVS.items():
+        if key in scenario_lower:
+            return f"{base}-{abbrev}"
+
+    if is_adaptation_scenario(scenario):
+        return f"{base}-A"
+    return base
+
+
+def _get_strategy_key(scenario: str) -> str:
+    """Return the strategy key from a scenario name, or empty string if none."""
+    scenario_lower = scenario.lower()
+    for key in STRATEGY_KEYWORDS:
+        if key in scenario_lower or STRATEGY_KEYWORDS[key].lower() in scenario_lower:
+            return key
+    return ""
+
+
+def scenario_main_color(scenario: str) -> str:
+    """Return a unique main color for each core paper scenario."""
+    if "baseline" in scenario.lower():
+        return "#4C78A8"       # blue
+    strategy = _get_strategy_key(scenario)
+    if strategy == "backup_suppliers":
+        return "#59A14F"       # green
+    if strategy == "capital_hardening":
+        return "#F28E2B"       # orange
+    if strategy == "reserved_capacity":
+        return "#76B7B2"       # teal
+    if strategy == "stockpiling":
+        return "#B07AA1"       # purple
+    if is_hazard_scenario(scenario) and is_no_adaptation_scenario(scenario):
+        return "#E15759"       # red
+    if is_hazard_scenario(scenario) and is_adaptation_scenario(scenario):
+        return "#59A14F"       # green (legacy "Adaptation")
+    if is_hazard_scenario(scenario):
+        return "#F28E2B"       # orange
+    return "#7F7F7F"
 
 
 def parse_args():
@@ -41,9 +180,74 @@ def parse_args():
     parser.add_argument(
         "--show-inventory",
         action="store_true",
-        help="Add a 4th row showing firm inventory and household liquidity"
+        help="Add a 4th row showing firm inventory and household labor sold"
+    )
+    parser.add_argument(
+        "--ensemble-stat",
+        choices=("mean", "median"),
+        default="mean",
+        help="Statistic to plot from ensemble summary CSVs"
+    )
+    parser.add_argument(
+        "--show-ensemble-members",
+        action="store_true",
+        help="When a summary CSV has a matching *_members.csv sidecar, overlay faint ensemble members"
+    )
+    parser.add_argument(
+        "--show-ensemble-band",
+        action="store_true",
+        help="Shade the p10-p90 band when ensemble summary CSVs are provided"
+    )
+    parser.add_argument(
+        "--plot-start-year",
+        type=float,
+        help="If provided, discard data before this calendar year when plotting",
+    )
+    parser.add_argument(
+        "--smooth",
+        type=int,
+        nargs="?",
+        const=8,
+        default=None,
+        help="Apply rolling-mean smoothing to production and consumption panels (window size in steps; default 8)",
     )
     return parser.parse_args()
+
+
+ENSEMBLE_STAT_ORDER = ["mean", "median", "std", "p10", "p90"]
+METADATA_PREFIX = "Meta_"
+
+
+def summarize_members_for_plot(df: pd.DataFrame) -> pd.DataFrame:
+    """Create a summary dataframe from a member-level ensemble CSV."""
+    group_cols = [col for col in ["Scenario", "Step", "Year"] if col in df.columns]
+    numeric_cols = [
+        col for col in df.select_dtypes(include=[np.number]).columns
+        if col not in set(group_cols + ["Seed"])
+        and not col.startswith(METADATA_PREFIX)
+    ]
+    grouped = df.groupby(group_cols, sort=True)
+    ensemble_size = grouped["Seed"].nunique().rename("EnsembleSize").reset_index()
+    frames = []
+    aggregations = {
+        "mean": grouped[numeric_cols].mean(),
+        "median": grouped[numeric_cols].median(),
+        "std": grouped[numeric_cols].std().fillna(0.0),
+        "p10": grouped[numeric_cols].quantile(0.10),
+        "p90": grouped[numeric_cols].quantile(0.90),
+    }
+    for stat in ENSEMBLE_STAT_ORDER:
+        stat_df = aggregations[stat].reset_index()
+        stat_df["EnsembleStatistic"] = stat
+        stat_df = stat_df.merge(ensemble_size, on=group_cols, how="left")
+        frames.append(stat_df)
+    summary_df = pd.concat(frames, ignore_index=True)
+    summary_df["EnsembleStatistic"] = pd.Categorical(
+        summary_df["EnsembleStatistic"],
+        categories=ENSEMBLE_STAT_ORDER,
+        ordered=True,
+    )
+    return summary_df.sort_values(group_cols + ["EnsembleStatistic"]).reset_index(drop=True)
 
 
 def main():
@@ -53,6 +257,8 @@ def main():
     # Load and combine multiple CSV files
     dataframes = []
     agent_dataframes = []
+    ensemble_member_dataframes = []
+    ensemble_band_frames = []
     
     for csv_file in args.csv_files:
         csv_path = Path(csv_file)
@@ -61,28 +267,63 @@ def main():
         
         df = pd.read_csv(csv_path)
         print(f"Loaded data from {csv_path}")
-        
+
         # Extract scenario from filename or add step column if needed
         if "Scenario" not in df.columns:
             # Try to infer scenario from filename
-            stem = csv_path.stem
-            if "baseline" in stem and "nolearning" in stem:
-                scenario_name = "Baseline + No Learning"
-            elif "baseline" in stem and "learning" in stem:
-                scenario_name = "Baseline + Learning"
-            elif "hazard" in stem and "nolearning" in stem:
-                scenario_name = "Hazard + No Learning"
-            elif "hazard" in stem and "learning" in stem:
-                scenario_name = "Hazard + Learning"
-            else:
-                scenario_name = stem.replace("simulation_", "").replace("_", " ").title()
-            
+            scenario_name = infer_scenario_name(csv_path)
             df["Scenario"] = scenario_name
+        else:
+            # Refine generic "Adaptation" scenarios using Meta_AdaptationStrategy
+            if "Meta_AdaptationStrategy" in df.columns:
+                strategy_col = df["Meta_AdaptationStrategy"].dropna()
+                if not strategy_col.empty:
+                    strategy_val = str(strategy_col.iloc[0])
+                    if strategy_val in STRATEGY_KEYWORDS:
+                        display_name = STRATEGY_KEYWORDS[strategy_val]
+                        df["Scenario"] = df["Scenario"].replace(
+                            {"Hazard + Adaptation": f"Hazard + {display_name}"},
+                        )
+            non_null_scenarios = df["Scenario"].dropna()
+            scenario_name = (
+                str(non_null_scenarios.iloc[0])
+                if not non_null_scenarios.empty
+                else infer_scenario_name(csv_path)
+            )
         
         # Add step column if not present
         if "Step" not in df.columns:
             df["Step"] = df.index
-            
+
+        if "EnsembleStatistic" in df.columns:
+            band_subset = df[df["EnsembleStatistic"].isin(["p10", "p90"])].copy()
+            if not band_subset.empty:
+                ensemble_band_frames.append(band_subset)
+            selected = df[df["EnsembleStatistic"] == args.ensemble_stat].copy()
+            if selected.empty:
+                raise ValueError(f"{csv_path} does not contain EnsembleStatistic={args.ensemble_stat}")
+            df = selected
+            if args.show_ensemble_members or args.show_ensemble_band:
+                members_path = csv_path.parent / f"{csv_path.stem}_members.csv"
+                if members_path.exists():
+                    member_df = pd.read_csv(members_path)
+                    if "Scenario" not in member_df.columns:
+                        member_df["Scenario"] = scenario_name
+                    if "Step" not in member_df.columns:
+                        member_df["Step"] = member_df.index
+                    ensemble_member_dataframes.append(member_df)
+                    print(f"Loaded ensemble members from {members_path}")
+                else:
+                    print(f"Warning: No ensemble members sidecar found for {csv_path}")
+        elif "Seed" in df.columns:
+            if args.show_ensemble_members or args.show_ensemble_band:
+                ensemble_member_dataframes.append(df.copy())
+            full_summary = summarize_members_for_plot(df)
+            band_subset = full_summary[full_summary["EnsembleStatistic"].isin(["p10", "p90"])].copy()
+            if not band_subset.empty:
+                ensemble_band_frames.append(band_subset)
+            df = full_summary[full_summary["EnsembleStatistic"] == args.ensemble_stat].copy()
+
         dataframes.append(df)
         
         # Load corresponding agent data
@@ -111,6 +352,14 @@ def main():
     
     # Combine all dataframes
     df_combined = pd.concat(dataframes, ignore_index=True)
+    member_df_combined = (
+        pd.concat(ensemble_member_dataframes, ignore_index=True)
+        if ensemble_member_dataframes else pd.DataFrame()
+    )
+    band_df_combined = (
+        pd.concat(ensemble_band_frames, ignore_index=True)
+        if ensemble_band_frames else pd.DataFrame()
+    )
     
     if agent_dataframes:
         agent_df_combined = pd.concat(agent_dataframes, ignore_index=True)
@@ -121,7 +370,7 @@ def main():
         print("Warning: No agent data found - bottleneck plots will not work")
         firm_agents_df = pd.DataFrame()
         household_agents_df = pd.DataFrame()
-    
+
     # Determine x-axis column - prefer Year column if available
     if "Year" in df_combined.columns:
         x_col = "Year"
@@ -170,54 +419,130 @@ def main():
         df_copy = df.copy()
         df_copy["Year"] = df_copy["Step"].map(year_map)
         return df_copy
+
+    def filter_plot_start_year(df, scenario_hint="__all__"):
+        """Filter a dataframe to the requested minimum plot year, if possible."""
+        if args.plot_start_year is None or df.empty:
+            return df
+        if "Year" in df.columns:
+            return df[df["Year"] >= args.plot_start_year].copy()
+        if "Step" not in df.columns:
+            return df
+
+        if "Scenario" in df.columns:
+            frames = []
+            for scenario, sub in df.groupby("Scenario", dropna=False):
+                scenario_key = str(scenario) if pd.notna(scenario) else scenario_hint
+                sub_with_year = add_year_from_step(sub, scenario_key)
+                if "Year" in sub_with_year.columns:
+                    sub_with_year = sub_with_year[sub_with_year["Year"] >= args.plot_start_year]
+                frames.append(sub_with_year)
+            return pd.concat(frames, ignore_index=True) if frames else df.iloc[0:0].copy()
+
+        df_with_year = add_year_from_step(df, scenario_hint)
+        if "Year" in df_with_year.columns:
+            return df_with_year[df_with_year["Year"] >= args.plot_start_year].copy()
+        return df_with_year
+
+    if args.plot_start_year is not None:
+        if "Year" not in df_combined.columns and not step_to_year_map:
+            raise ValueError("--plot-start-year requires Year information in the results CSVs.")
+        df_combined = filter_plot_start_year(df_combined)
+        member_df_combined = filter_plot_start_year(member_df_combined)
+        band_df_combined = filter_plot_start_year(band_df_combined)
+        firm_agents_df = filter_plot_start_year(firm_agents_df)
+        household_agents_df = filter_plot_start_year(household_agents_df)
+        if df_combined.empty:
+            raise ValueError(
+                f"No rows remain after applying --plot-start-year {args.plot_start_year}."
+            )
+
+    household_demand_sectors = []
+    if not firm_agents_df.empty and "household_sales_last_step" in firm_agents_df.columns:
+        demand_totals = firm_agents_df.groupby("sector")["household_sales_last_step"].sum(min_count=1)
+        household_demand_sectors = sorted(demand_totals[demand_totals > 0].index.tolist())
     
-    # Create color/style mapping: colors for hazard vs baseline, line styles for learning vs no learning
+    # Use distinct colors for each scenario so ensemble bands remain visually separable.
     scenario_style_map = {}
     for scenario in unique_scenarios:
-        color = "tab:red" if "hazard" in scenario.lower() else "tab:blue"
-        linestyle = ":" if "no learning" in scenario.lower() else "-"
+        color = scenario_main_color(scenario)
+        linestyle = "-"
+        linewidth = 1.8
+        scenario_style_map[scenario] = {
+            "color": color,
+            "linestyle": linestyle,
+            "linewidth": linewidth,
+        }
 
-        scenario_style_map[scenario] = {"color": color, "linestyle": linestyle}
-
-    # Define sector color palettes keyed by baseline vs hazard for consistency with main lines
-    sector_colors_baseline = ["#6baed6", "#3182bd"]
-    sector_colors_hazard = ["#ffb347", "#ff7f0e"]
+    # Define sector color palettes keyed by scenario so sector traces stay close to their parent scenario color.
+    scenario_sector_palettes = {
+        "baseline": ["#9ecae9", "#6baed6", "#3182bd"],
+        "hazard_adaptation": ["#A1D99B", "#74C476", "#31A354"],
+        "hazard_backup_suppliers": ["#A1D99B", "#74C476", "#31A354"],
+        "hazard_capital_hardening": ["#FDD0A2", "#FDAE6B", "#E6550D"],
+        "hazard_reserved_capacity": ["#B2E2E2", "#66C2A4", "#238B8D"],
+        "hazard_stockpiling": ["#D4B9DA", "#C994C7", "#88419D"],
+        "hazard_noadaptation": ["#FCAE91", "#FB6A4A", "#CB181D"],
+        "hazard": ["#FDD0A2", "#FDAE6B", "#E6550D"],
+        "default": ["#D0D0D0", "#A0A0A0", "#707070"],
+    }
 
     def get_sector_style(scenario, sector_idx):
         """Get color and style for a sector line based on scenario and sector index."""
-        # Choose color palette based on hazard vs baseline
-        if "hazard" in scenario.lower():
-            color = sector_colors_hazard[sector_idx % len(sector_colors_hazard)]
+        strategy = _get_strategy_key(scenario)
+        if "baseline" in scenario.lower():
+            palette = scenario_sector_palettes["baseline"]
+        elif strategy:
+            palette = scenario_sector_palettes.get(
+                f"hazard_{strategy}", scenario_sector_palettes["hazard_adaptation"]
+            )
+        elif is_hazard_scenario(scenario) and is_adaptation_scenario(scenario):
+            palette = scenario_sector_palettes["hazard_adaptation"]
+        elif is_hazard_scenario(scenario) and is_no_adaptation_scenario(scenario):
+            palette = scenario_sector_palettes["hazard_noadaptation"]
+        elif is_hazard_scenario(scenario):
+            palette = scenario_sector_palettes["hazard"]
         else:
-            color = sector_colors_baseline[sector_idx % len(sector_colors_baseline)]
-
-        # Choose line style based on learning vs no learning
-        linestyle = ":" if "no learning" in scenario.lower() else "-"
+            palette = scenario_sector_palettes["default"]
+        color = palette[sector_idx % len(palette)]
 
         return {
             "color": color,
-            "linestyle": linestyle,
+            "linestyle": "-",
             "alpha": 0.8,
             "linewidth": 0.7,
             "zorder": 1
         }
     
+    # Build per-scenario price deflator for converting nominal → real values.
+    # Maps (scenario, year_or_step) → mean_price.  Metrics tagged as "real"
+    # will be divided by the deflator so they are expressed in base-period units.
+    price_deflator: dict[str, dict] = {}
+    for scenario, grp in df_combined.groupby("Scenario"):
+        if "Mean_Price" in grp.columns:
+            deflator = grp.set_index(x_col)["Mean_Price"].to_dict()
+            price_deflator[scenario] = deflator
+
     # Define time-series metrics (separate from bottlenecks)
-    # Order: Production, Capital, Liquidity, Labor, Wage, Price, [Inventory, Household Liquidity]
+    # Order: Production, Capital, Liquidity (real), Consumption, Wage (real), Price
+    # Optional 4th row: Firm Inventory + Household Labor Sold
     ts_metrics = [
         "Firm_Production", "Firm_Capital",
-        "Firm_Liquidity", "Household_Labor_Sold",
+        "Firm_Liquidity", "Household_Consumption",
         "Mean_Wage", "Mean_Price",
     ]
 
-    # Optionally add inventory row
+    # Optionally add diagnostic row
     if args.show_inventory:
-        ts_metrics.extend(["Firm_Inventory", "Household_Liquidity"])
+        ts_metrics.extend(["Firm_Inventory", "Household_Labor_Sold"])
+
+    # Metrics that should be deflated (divided by mean price) to show real values
+    real_metrics = {"Firm_Liquidity", "Mean_Wage"}
 
     # Define bottleneck metrics separately
     bottleneck_metrics = [
-        "Bottleneck_Baseline_Learning", "Bottleneck_Hazard_Learning",
-        "Bottleneck_Baseline_NoLearning", "Bottleneck_Hazard_NoLearning"
+        "Bottleneck_Baseline_Adaptation", "Bottleneck_Hazard_Adaptation",
+        "Bottleneck_Baseline_NoAdaptation", "Bottleneck_Hazard_NoAdaptation"
     ]
 
     # Create time-series figure (3x2 or 4x2 layout depending on --show-inventory)
@@ -227,17 +552,199 @@ def main():
     
     # Units for y-axis labels
     units = {
-        "Firm_Production": "Units of Goods",
-        "Firm_Liquidity": "$",
-        "Firm_Capital": "Units of Capital",
-        "Firm_Inventory": "Units of Goods",
+        "Firm_Production": "Aggregate Units of Goods",
+        "Firm_Liquidity": "Real Dollars ($ / Mean Price)",
+        "Firm_Capital": "Aggregate Units of Capital",
+        "Firm_Inventory": "Aggregate Units of Goods",
         "Mean_Price": "$ / Unit of Goods",
-        "Mean_Wage": "$ / Unit of Labor",
-        "Household_Labor_Sold": "Units of Labor",
-        "Household_Consumption": "Units of Goods",
-        "Household_Liquidity": "$",
+        "Mean_Wage": "Real Dollars ($ / Mean Price)",
+        "Household_Labor_Sold": "Aggregate Units of Labor",
+        "Household_Consumption": "Aggregate Units of Goods",
+        "Household_Liquidity": "Aggregate Dollars ($)",
+    }
+    metric_title_map = {
+        "Firm_Production": "Aggregate Firm Production",
+        "Firm_Liquidity": "Aggregate Real Firm Liquidity",
+        "Firm_Capital": "Aggregate Firm Capital",
+        "Firm_Inventory": "Aggregate Firm Inventory",
+        "Mean_Price": "Mean Firm Price",
+        "Mean_Wage": "Mean Firm Wage Offer",
+        "Household_Labor_Sold": "Aggregate Household Labor Sold",
+        "Household_Consumption": "Aggregate Household Consumption",
+        "Household_Liquidity": "Aggregate Household Liquidity",
+    }
+    aggregate_metric_map = {
+        "Firm_Production": "Firm_Production",
+        "Firm_Liquidity": "Firm_Wealth",
+        "Firm_Capital": "Firm_Capital",
+        "Firm_Inventory": "Firm_Inventory",
+        "Household_Consumption": "Household_Consumption",
+        "Household_Labor_Sold": "Household_Labor_Sold",
+        "Household_Liquidity": "Household_Wealth",
+        "Mean_Price": "Mean_Price",
+        "Mean_Wage": "Mean_Wage",
+    }
+    sector_aggregation = {
+        "Firm_Production": "sum",
+        "Firm_Liquidity": "sum",
+        "Firm_Capital": "sum",
+        "Firm_Inventory": "sum",
+        "Mean_Price": "mean",
+        "Mean_Wage": "mean",
     }
     
+    def deflate(x_vals, y_vals, scenario, metric_name, source_df=None, deflator_col="Mean_Price"):
+        """Divide y-values by the mean price at each x-value if metric is real."""
+        if metric_name not in real_metrics:
+            return y_vals
+        if source_df is not None and deflator_col in source_df.columns:
+            prices = source_df[deflator_col].to_numpy(dtype=float)
+        else:
+            deflator = price_deflator.get(scenario, {})
+            if not deflator:
+                return y_vals
+            prices = np.array([deflator.get(x, np.nan) for x in x_vals], dtype=float)
+        prices[prices == 0] = np.nan
+        return np.where(np.isfinite(prices), y_vals / prices, y_vals)
+
+    def plot_ensemble_context(metric_col, metric_name, scenario, ax):
+        """Overlay ensemble members and uncertainty band for aggregate metrics."""
+        style = scenario_style_map[scenario]
+
+        if args.show_ensemble_members and not member_df_combined.empty and metric_col in member_df_combined.columns:
+            member_subset = member_df_combined[member_df_combined["Scenario"] == scenario]
+            if not member_subset.empty:
+                for _, member_grp in member_subset.groupby("Seed"):
+                    member_grp = member_grp.sort_values(x_col)
+                    x_vals = member_grp[x_col].to_numpy()
+                    y_vals = deflate(
+                        x_vals,
+                        member_grp[metric_col].to_numpy(dtype=float),
+                        scenario,
+                        metric_name,
+                        source_df=member_grp,
+                    )
+                    if args.smooth and metric_name in SMOOTHABLE_METRICS:
+                        y_vals = _smooth_series(y_vals, args.smooth)
+                    ax.plot(
+                        x_vals,
+                        y_vals,
+                        color=style["color"],
+                        linestyle=style["linestyle"],
+                        linewidth=0.8,
+                        alpha=0.12,
+                        zorder=1,
+                    )
+
+        band_plotted = False
+        if args.show_ensemble_band and not member_df_combined.empty and metric_col in member_df_combined.columns:
+            member_subset = member_df_combined[member_df_combined["Scenario"] == scenario]
+            if not member_subset.empty:
+                member_band_frames = []
+                for seed, member_grp in member_subset.groupby("Seed"):
+                    member_grp = member_grp.sort_values(x_col)
+                    x_vals = member_grp[x_col].to_numpy()
+                    y_vals = deflate(
+                        x_vals,
+                        member_grp[metric_col].to_numpy(dtype=float),
+                        scenario,
+                        metric_name,
+                        source_df=member_grp,
+                    )
+                    if args.smooth and metric_name in SMOOTHABLE_METRICS:
+                        y_vals = _smooth_series(y_vals, args.smooth)
+                    member_band_frames.append(
+                        pd.DataFrame(
+                            {
+                                x_col: x_vals,
+                                "BandValue": y_vals,
+                                "Seed": seed,
+                            }
+                        )
+                    )
+
+                if member_band_frames:
+                    member_band_df = pd.concat(member_band_frames, ignore_index=True)
+                    quantiles = (
+                        member_band_df.groupby(x_col)["BandValue"]
+                        .quantile([0.10, 0.90])
+                        .unstack()
+                        .rename(columns={0.10: "p10", 0.90: "p90"})
+                        .reset_index()
+                        .sort_values(x_col)
+                    )
+                    if not quantiles.empty:
+                        ax.fill_between(
+                            quantiles[x_col].to_numpy(),
+                            quantiles["p10"].to_numpy(dtype=float),
+                            quantiles["p90"].to_numpy(dtype=float),
+                            color=style["color"],
+                            alpha=0.12,
+                            linewidth=0,
+                            zorder=2,
+                        )
+                        band_plotted = True
+
+        if (
+            args.show_ensemble_band
+            and not band_plotted
+            and not band_df_combined.empty
+            and metric_col in band_df_combined.columns
+        ):
+            band_subset = band_df_combined[band_df_combined["Scenario"] == scenario]
+            p10 = band_subset[band_subset["EnsembleStatistic"] == "p10"].copy()
+            p90 = band_subset[band_subset["EnsembleStatistic"] == "p90"].copy()
+            if not p10.empty and not p90.empty:
+                merge_cols = [x_col, metric_col]
+                if metric_name in real_metrics:
+                    if "Mean_Price" in p10.columns:
+                        merge_cols.append("Mean_Price")
+                    if "Mean_Price" in p90.columns and "Mean_Price" not in merge_cols:
+                        merge_cols.append("Mean_Price")
+                lower_df = p10[merge_cols].sort_values(x_col).rename(
+                    columns={
+                        metric_col: f"{metric_col}_p10",
+                        "Mean_Price": "Mean_Price_p10",
+                    }
+                )
+                upper_df = p90[merge_cols].sort_values(x_col).rename(
+                    columns={
+                        metric_col: f"{metric_col}_p90",
+                        "Mean_Price": "Mean_Price_p90",
+                    }
+                )
+                band = lower_df.merge(upper_df, on=x_col, how="inner")
+                if not band.empty:
+                    x_vals = band[x_col].to_numpy()
+                    lower_vals = deflate(
+                        x_vals,
+                        band[f"{metric_col}_p10"].to_numpy(dtype=float),
+                        scenario,
+                        metric_name,
+                        source_df=band,
+                        deflator_col="Mean_Price_p10",
+                    )
+                    upper_vals = deflate(
+                        x_vals,
+                        band[f"{metric_col}_p90"].to_numpy(dtype=float),
+                        scenario,
+                        metric_name,
+                        source_df=band,
+                        deflator_col="Mean_Price_p90",
+                    )
+                    if args.smooth and metric_name in SMOOTHABLE_METRICS:
+                        lower_vals = _smooth_series(lower_vals, args.smooth)
+                        upper_vals = _smooth_series(upper_vals, args.smooth)
+                    ax.fill_between(
+                        x_vals,
+                        lower_vals,
+                        upper_vals,
+                        color=style["color"],
+                        alpha=0.12,
+                        linewidth=0,
+                        zorder=2,
+                    )
+
     def plot_metric(metric_name, ax):
         """Plot a single metric.
 
@@ -259,37 +766,43 @@ def main():
             "Household_Consumption": "consumption",
             "Household_Liquidity": "money"
         }
-
         if metric_name in ["Mean_Price", "Mean_Wage"]:
             # Plot main scenario lines from aggregate data
             for scenario, grp in df_combined.groupby("Scenario"):
                 style = scenario_style_map[scenario]
                 if metric_name in grp.columns:
                     x_data = grp[x_col].values
-                    y_data = grp[metric_name].values
+                    plot_ensemble_context(metric_name, metric_name, scenario, ax)
+                    y_data = deflate(
+                        x_data,
+                        grp[metric_name].values,
+                        scenario,
+                        metric_name,
+                        source_df=grp,
+                    )
                     ax.plot(x_data, y_data,
                            color=style["color"], linestyle=style["linestyle"],
-                           label=f"Mean - {scenario}", linewidth=1.5, alpha=0.7, zorder=3)
+                           label=f"Mean - {scenario}", linewidth=style["linewidth"], alpha=0.7, zorder=3)
 
             # Add sector lines from agent data for wages and prices
             if show_sector_series and not firm_agents_df.empty and metric_name in ["Mean_Price", "Mean_Wage"]:
                 agent_col = "price" if metric_name == "Mean_Price" else "wage"
                 sectors = sorted(firm_agents_df["sector"].dropna().unique())
-                
+
                 for scenario in unique_scenarios:
                     if not firm_agents_df.empty and "Scenario" in firm_agents_df.columns:
                         df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
                     else:
                         df_scen = firm_agents_df  # Use all data if no scenario column
-                    
+
                     df_scen = add_year_from_step(df_scen, scenario)
                     style = scenario_style_map[scenario]
-                    
+
                     for idx_sec, sector in enumerate(sectors):
                         sector_data = df_scen[df_scen["sector"] == sector]
                         if sector_data.empty:
                             continue
-                        
+
                         # Use Year column if available, otherwise Step
                         if "Year" in sector_data.columns:
                             grp = sector_data.dropna(subset=["Year"]).groupby("Year")[agent_col].mean()
@@ -299,140 +812,216 @@ def main():
                             grp = sector_data.groupby("Step")[agent_col].mean()
                         if grp.empty:
                             continue
-                            
+
                         x_vals = grp.index
+                        y_vals = deflate(np.array(x_vals), grp.values, scenario, metric_name)
                         sector_style = get_sector_style(scenario, idx_sec)
-                        
-                        ax.plot(x_vals, grp.values, 
+
+                        ax.plot(x_vals, y_vals,
                                label=f"{sector} - {scenario}", **sector_style)
-        
+
         elif metric_name in firm_metric_map:
-            # Plot firm metrics with main lines and sector breakdown
+            # Plot firm metrics with aggregate main lines and optional sector breakdown.
             agent_col = firm_metric_map[metric_name]
+            aggregate_col = aggregate_metric_map.get(metric_name)
 
-            # Plot main scenario lines (mean across all firms)
-            for scenario in unique_scenarios:
-                if not firm_agents_df.empty and "Scenario" in firm_agents_df.columns:
-                    df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
-                else:
-                    df_scen = firm_agents_df  # Use all data if no scenario column
+            # Plot main scenario lines from aggregate model outputs when available.
+            if aggregate_col and aggregate_col in df_combined.columns:
+                for scenario, grp in df_combined.groupby("Scenario"):
+                    style = scenario_style_map[scenario]
+                    x_vals = grp[x_col].values
+                    plot_ensemble_context(aggregate_col, metric_name, scenario, ax)
+                    y_vals = deflate(
+                        x_vals,
+                        grp[aggregate_col].values,
+                        scenario,
+                        metric_name,
+                        source_df=grp,
+                    )
+                    if args.smooth and metric_name in SMOOTHABLE_METRICS:
+                        y_vals = _smooth_series(y_vals, args.smooth)
+                    ax.plot(
+                        x_vals,
+                        y_vals,
+                        color=style["color"],
+                        linewidth=style["linewidth"],
+                        alpha=0.7,
+                        linestyle=style["linestyle"],
+                        label=f"Mean - {scenario}",
+                        zorder=3,
+                    )
+            else:
+                for scenario in unique_scenarios:
+                    if not firm_agents_df.empty and "Scenario" in firm_agents_df.columns:
+                        df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
+                    else:
+                        df_scen = firm_agents_df
 
-                if df_scen.empty:
-                    continue
+                    if df_scen.empty:
+                        continue
 
-                df_scen = add_year_from_step(df_scen, scenario)
+                    df_scen = add_year_from_step(df_scen, scenario)
+                    if "Year" in df_scen.columns:
+                        main_grp = df_scen.dropna(subset=["Year"]).groupby("Year")[agent_col].mean()
+                        if main_grp.empty and "Step" in df_scen.columns:
+                            main_grp = df_scen.groupby("Step")[agent_col].mean()
+                    else:
+                        main_grp = df_scen.groupby("Step")[agent_col].mean()
+                    if main_grp.empty:
+                        continue
 
-                # Use Year column if available, otherwise Step
-                if "Year" in df_scen.columns:
-                    mean_grp = df_scen.dropna(subset=["Year"]).groupby("Year")[agent_col].mean()
-                    if mean_grp.empty and "Step" in df_scen.columns:
-                        mean_grp = df_scen.groupby("Step")[agent_col].mean()
-                else:
-                    mean_grp = df_scen.groupby("Step")[agent_col].mean()
-                if mean_grp.empty:
-                    continue
-
-                x_vals = np.array(mean_grp.index)
-                y_vals = mean_grp.values
-                style = scenario_style_map[scenario]
-                ax.plot(x_vals, y_vals,
-                       color=style["color"], linewidth=1.5, alpha=0.7, linestyle=style["linestyle"],
-                       label=f"Mean - {scenario}", zorder=3)
+                    x_vals = np.array(main_grp.index)
+                    y_vals = deflate(x_vals, main_grp.values, scenario, metric_name)
+                    if args.smooth and metric_name in SMOOTHABLE_METRICS:
+                        y_vals = _smooth_series(y_vals, args.smooth)
+                    style = scenario_style_map[scenario]
+                    ax.plot(
+                        x_vals,
+                        y_vals,
+                        color=style["color"],
+                        linewidth=style["linewidth"],
+                        alpha=0.7,
+                        linestyle=style["linestyle"],
+                        label=f"Mean - {scenario}",
+                        zorder=3,
+                    )
 
             # Add sector lines
             if show_sector_series and not firm_agents_df.empty:
                 sectors = sorted(firm_agents_df["sector"].dropna().unique())
-                
+                agg_mode = sector_aggregation.get(metric_name, "mean")
+
                 for scenario in unique_scenarios:
                     if not firm_agents_df.empty and "Scenario" in firm_agents_df.columns:
                         df_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
                     else:
                         df_scen = firm_agents_df  # Use all data if no scenario column
-                    
+
                     df_scen = add_year_from_step(df_scen, scenario)
                     style = scenario_style_map[scenario]
-                    
+
                     for idx_sec, sector in enumerate(sectors):
                         sector_data = df_scen[df_scen["sector"] == sector]
                         # Use Year column if available, otherwise Step
                         if "Year" in sector_data.columns:
-                            grp = sector_data.dropna(subset=["Year"]).groupby("Year")[agent_col].mean()
+                            groupby_obj = sector_data.dropna(subset=["Year"]).groupby("Year")[agent_col]
+                            grp = groupby_obj.sum() if agg_mode == "sum" else groupby_obj.mean()
                             if grp.empty and "Step" in sector_data.columns:
-                                grp = sector_data.groupby("Step")[agent_col].mean()
+                                groupby_obj = sector_data.groupby("Step")[agent_col]
+                                grp = groupby_obj.sum() if agg_mode == "sum" else groupby_obj.mean()
                         else:
-                            grp = sector_data.groupby("Step")[agent_col].mean()
+                            groupby_obj = sector_data.groupby("Step")[agent_col]
+                            grp = groupby_obj.sum() if agg_mode == "sum" else groupby_obj.mean()
                         if grp.empty:
                             continue
-                            
-                        x_vals = grp.index
+
+                        x_vals = np.array(grp.index)
+                        y_vals = deflate(x_vals, grp.values, scenario, metric_name)
                         sector_style = get_sector_style(scenario, idx_sec)
-                        
-                        ax.plot(x_vals, grp.values, 
+
+                        ax.plot(x_vals, y_vals,
                                label=f"{sector} - {scenario}", **sector_style)
         
         elif metric_name in household_metric_map:
-            # Plot household metrics with main lines and sector breakdown
+            # Plot household metrics with aggregate main lines.
             agent_col = household_metric_map[metric_name]
+            aggregate_col = aggregate_metric_map.get(metric_name)
 
-            # Plot main scenario lines (mean across all households)
-            for scenario in unique_scenarios:
-                if not household_agents_df.empty and "Scenario" in household_agents_df.columns:
-                    df_scen = household_agents_df[household_agents_df["Scenario"] == scenario]
-                else:
-                    df_scen = household_agents_df  # Use all data if no scenario column
-
-                if df_scen.empty:
-                    continue
-
-                df_scen = add_year_from_step(df_scen, scenario)
-
-                # Use Year column if available, otherwise Step
-                if "Year" in df_scen.columns:
-                    mean_grp = df_scen.dropna(subset=["Year"]).groupby("Year")[agent_col].mean()
-                    if mean_grp.empty and "Step" in df_scen.columns:
-                        mean_grp = df_scen.groupby("Step")[agent_col].mean()
-                else:
-                    mean_grp = df_scen.groupby("Step")[agent_col].mean()
-                if mean_grp.empty:
-                    continue
-
-                x_vals = np.array(mean_grp.index)
-                y_vals = mean_grp.values
-                style = scenario_style_map[scenario]
-                ax.plot(x_vals, y_vals,
-                       color=style["color"], linewidth=1.5, alpha=0.7, linestyle=style["linestyle"],
-                       label=f"Mean - {scenario}", zorder=3)
-
-            # Add sector lines if household data has sectors
-            if show_sector_series and not household_agents_df.empty and "sector" in household_agents_df.columns:
-                sectors = sorted(household_agents_df["sector"].dropna().unique())
-                
+            if aggregate_col and aggregate_col in df_combined.columns:
+                for scenario, grp in df_combined.groupby("Scenario"):
+                    style = scenario_style_map[scenario]
+                    x_vals = grp[x_col].values
+                    plot_ensemble_context(aggregate_col, metric_name, scenario, ax)
+                    y_vals = grp[aggregate_col].values
+                    if args.smooth and metric_name in SMOOTHABLE_METRICS:
+                        y_vals = _smooth_series(y_vals, args.smooth)
+                    ax.plot(
+                        x_vals,
+                        y_vals,
+                        color=style["color"],
+                        linewidth=style["linewidth"],
+                        alpha=0.7,
+                        linestyle=style["linestyle"],
+                        label=f"Mean - {scenario}",
+                        zorder=3,
+                    )
+            else:
                 for scenario in unique_scenarios:
                     if not household_agents_df.empty and "Scenario" in household_agents_df.columns:
                         df_scen = household_agents_df[household_agents_df["Scenario"] == scenario]
                     else:
-                        df_scen = household_agents_df  # Use all data if no scenario column
-                    
+                        df_scen = household_agents_df
+
+                    if df_scen.empty:
+                        continue
+
                     df_scen = add_year_from_step(df_scen, scenario)
+                    if "Year" in df_scen.columns:
+                        main_grp = df_scen.dropna(subset=["Year"]).groupby("Year")[agent_col].mean()
+                        if main_grp.empty and "Step" in df_scen.columns:
+                            main_grp = df_scen.groupby("Step")[agent_col].mean()
+                    else:
+                        main_grp = df_scen.groupby("Step")[agent_col].mean()
+                    if main_grp.empty:
+                        continue
+
+                    x_vals = np.array(main_grp.index)
+                    y_vals = main_grp.values
+                    if args.smooth and metric_name in SMOOTHABLE_METRICS:
+                        y_vals = _smooth_series(y_vals, args.smooth)
                     style = scenario_style_map[scenario]
-                    
-                    for idx_sec, sector in enumerate(sectors):
-                        sector_data = df_scen[df_scen["sector"] == sector]
-                        # Use Year column if available, otherwise Step
-                        if "Year" in sector_data.columns:
-                            grp = sector_data.dropna(subset=["Year"]).groupby("Year")[agent_col].mean()
-                            if grp.empty and "Step" in sector_data.columns:
-                                grp = sector_data.groupby("Step")[agent_col].mean()
-                        else:
-                            grp = sector_data.groupby("Step")[agent_col].mean()
+                    ax.plot(
+                        x_vals,
+                        y_vals,
+                        color=style["color"],
+                        linewidth=style["linewidth"],
+                        alpha=0.7,
+                        linestyle=style["linestyle"],
+                        label=f"Mean - {scenario}",
+                        zorder=3,
+                    )
+
+            # For consumption, add actual household purchases by seller sector
+            # when the agent CSV contains the dedicated household-sales field.
+            if (
+                show_sector_series
+                and metric_name == "Household_Consumption"
+                and household_demand_sectors
+                and not firm_agents_df.empty
+            ):
+                for scenario in unique_scenarios:
+                    if not household_agents_df.empty and "Scenario" in household_agents_df.columns:
+                        hh_scen = household_agents_df[household_agents_df["Scenario"] == scenario]
+                    else:
+                        hh_scen = household_agents_df
+
+                    if not firm_agents_df.empty and "Scenario" in firm_agents_df.columns:
+                        firm_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
+                    else:
+                        firm_scen = firm_agents_df
+
+                    hh_scen = add_year_from_step(hh_scen, scenario)
+                    firm_scen = add_year_from_step(firm_scen, scenario)
+
+                    for idx_sec, sector in enumerate(household_demand_sectors):
+                        sector_data = firm_scen[firm_scen["sector"] == sector]
+                        if sector_data.empty:
+                            continue
+
+                        value_axis = "Year" if "Year" in sector_data.columns else "Step"
+                        grp = sector_data.groupby(value_axis)["household_sales_last_step"].sum()
                         if grp.empty:
                             continue
-                            
+
                         x_vals = grp.index
                         sector_style = get_sector_style(scenario, idx_sec)
-                        
-                        ax.plot(x_vals, grp.values, 
-                               label=f"{sector} - {scenario}", **sector_style)
+
+                        ax.plot(
+                            x_vals,
+                            grp.values,
+                            label=f"Final demand: {sector} - {scenario}",
+                            **sector_style,
+                        )
         
         elif metric_name.startswith("Bottleneck_"):
             # Bottleneck plots from agent data
@@ -442,19 +1031,19 @@ def main():
                 return
 
             # Determine which scenario to plot based on metric name
-            # Format: Bottleneck_{Baseline|Hazard}_{Learning|NoLearning}
+            # Format: Bottleneck_{Baseline|Hazard}_{Adaptation|NoAdaptation}
             is_baseline = "Baseline" in metric_name
-            is_learning = metric_name.endswith("_Learning")
+            is_no_adaptation = metric_name.endswith("_NoAdaptation")
 
             base_type = "Baseline" if is_baseline else "Hazard"
-            learning_type = "Learning" if is_learning else "No Learning"
+            adaptation_type = "No Adaptation" if is_no_adaptation else "Adaptation"
 
             # Find matching scenario
             target_scenarios = [
                 s for s in unique_scenarios
                 if base_type in s and (
-                    (is_learning and "No Learning" not in s) or
-                    (not is_learning and "No Learning" in s)
+                    (is_no_adaptation and is_no_adaptation_scenario(s)) or
+                    (not is_no_adaptation and is_adaptation_scenario(s))
                 )
             ]
 
@@ -508,8 +1097,9 @@ def main():
         # Set title and labels
         title = metric_name.replace("_", " ").replace("Bottleneck ", "")
         if metric_name.startswith("Bottleneck_"):
-            # Include which variant (Learning/No Learning) in title
-            title = f"Bottlenecks: {base_type} ({learning_type})"
+            title = f"Bottlenecks: {base_type} ({adaptation_type})"
+        else:
+            title = metric_title_map.get(metric_name, title)
         ax.set_title(title, fontsize=10)
 
         ylabel = units.get(metric_name, "")
@@ -541,53 +1131,71 @@ def main():
 
     # Create shared legend for time-series plots
     handles, labels = axes_ts[0, 0].get_legend_handles_labels()
+    legend_pairs = []
+    seen_labels = set()
+    ensemble_inputs_present = (
+        not member_df_combined.empty
+        or not band_df_combined.empty
+        or "EnsembleStatistic" in df_combined.columns
+    )
 
     # Create shorter labels for shared legend
-    short_labels = []
-    for label in labels:
+    for handle, label in zip(handles, labels):
+        if label in seen_labels:
+            continue
+        seen_labels.add(label)
         if "Mean -" in label:
             scenario = label.replace("Mean - ", "")
-            if "Baseline" in scenario and "No Learning" in scenario:
-                short_labels.append("Baseline-NL")
-            elif "Baseline" in scenario and "Learning" in scenario:
-                short_labels.append("Baseline")
-            elif "Hazard" in scenario and "No Learning" in scenario:
-                short_labels.append("Hazard-NL")
-            elif "Hazard" in scenario and "Learning" in scenario:
-                short_labels.append("Hazard")
-            else:
-                short_labels.append(scenario)
+            summary_label = scenario_abbrev(scenario)
+            if ensemble_inputs_present:
+                summary_label = f"{summary_label} ({args.ensemble_stat})"
+            legend_pairs.append((handle, summary_label))
         else:
             parts = label.split(" - ")
             if len(parts) >= 2:
-                sector = parts[0]
+                sector = parts[0].replace("Final demand: ", "")
                 scenario = parts[1]
-                if "Baseline" in scenario and "No Learning" in scenario:
-                    scenario_abbrev = "Baseline-NL"
-                elif "Baseline" in scenario and "Learning" in scenario:
-                    scenario_abbrev = "Baseline"
-                elif "Hazard" in scenario and "No Learning" in scenario:
-                    scenario_abbrev = "Hazard-NL"
-                elif "Hazard" in scenario and "Learning" in scenario:
-                    scenario_abbrev = "Hazard"
+                legend_pairs.append((handle, f"{sector}-{scenario_abbrev(scenario)}"))
+            else:
+                legend_pairs.append((handle, label[:12]))
+
+    if args.show_ensemble_members and not member_df_combined.empty:
+        legend_pairs.append(
+            (
+                Line2D([0], [0], color="#666666", linewidth=1.0, alpha=0.3),
+                "Individual seed",
+            )
+        )
+    if args.show_ensemble_band and not band_df_combined.empty:
+        legend_pairs.append(
+            (
+                Patch(facecolor="#999999", edgecolor="none", alpha=0.18),
+                "Scenario p10-p90 band",
+            )
+        )
+
+    if legend_pairs:
+        legend_handles = [pair[0] for pair in legend_pairs]
+        legend_labels = [pair[1] for pair in legend_pairs]
+        ncols = min(len(legend_handles), 6)  # Max 6 columns
+        legend = fig_ts.legend(
+            legend_handles,
+            legend_labels,
+            loc='lower center',
+            ncol=ncols,
+            fontsize=9,
+            bbox_to_anchor=(0.5, -0.02),
+        )
+        for handle, label in zip(legend.legend_handles, legend_labels):
+            if isinstance(handle, Line2D):
+                if any(abbrev in label for abbrev in ["commodity-", "manufacturing-"]):
+                    handle.set_linewidth(2)
+                elif "Individual seed" in label:
+                    handle.set_linewidth(1)
                 else:
-                    scenario_abbrev = scenario[:3]
-                short_labels.append(f"{sector}-{scenario_abbrev}")
-            else:
-                short_labels.append(label[:8])
+                    handle.set_linewidth(3)
 
-    if handles:
-        ncols = min(len(handles), 6)  # Max 6 columns
-        legend = fig_ts.legend(handles, short_labels, loc='lower center', ncol=ncols,
-                              fontsize=9, bbox_to_anchor=(0.5, -0.02))
-        for i, line in enumerate(legend.get_lines()):
-            label = short_labels[i] if i < len(short_labels) else ""
-            if any(abbrev in label for abbrev in ["commodity-", "manufacturing-"]):
-                line.set_linewidth(2)
-            else:
-                line.set_linewidth(3)
-
-    fig_ts.suptitle("Baseline vs. RCP8.5 Agent Trajectories", fontsize=14, fontweight='bold')
+    fig_ts.suptitle("Baseline vs. RCP8.5 Ensemble Trajectories", fontsize=14, fontweight='bold')
     fig_ts.tight_layout()
     fig_ts.subplots_adjust(bottom=0.06)
 

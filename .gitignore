@@ -9,6 +9,7 @@ __pycache__/
 # system files
 .DS_Store
 CLAUDE.md
+AGENTS.md
 
 # data
 data/
@@ -21,6 +22,8 @@ data/
 *.mov
 network_topology_*.json
 *.pdf
+
+manuscript/
 
 # Distribution / packaging
 .Python
@@ -41,6 +44,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+.mplconfig/
 
 # IDE files
 .vscode/

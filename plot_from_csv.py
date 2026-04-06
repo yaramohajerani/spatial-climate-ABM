@@ -111,6 +111,11 @@ def main():
         print("Warning: No agent data found - bottleneck plots will not work")
         firm_agents_df = pd.DataFrame()
         household_agents_df = pd.DataFrame()
+
+    household_demand_sectors = []
+    if not firm_agents_df.empty and "household_sales_last_step" in firm_agents_df.columns:
+        demand_totals = firm_agents_df.groupby("sector")["household_sales_last_step"].sum(min_count=1)
+        household_demand_sectors = sorted(demand_totals[demand_totals > 0].index.tolist())
     
     # Determine x-axis column - prefer Year column if available
     if "Year" in df_combined.columns:
@@ -228,6 +233,11 @@ def main():
             "Household_Consumption": "consumption",
             "Household_Wealth": "money"
         }
+        household_title_map = {
+            "Household_Labor_Sold": "Mean Household Labor Sold",
+            "Household_Consumption": "Mean Household Consumption",
+            "Household_Wealth": "Mean Household Wealth",
+        }
         
         if metric_name in ["Mean_Price", "Mean_Wage"]:
             # Plot main scenario lines from aggregate data
@@ -337,7 +347,8 @@ def main():
                                label=f"{sector} - {scenario}", **sector_style)
         
         elif metric_name in household_metric_map:
-            # Plot household metrics with main lines and sector breakdown
+            # Plot household metrics with mean lines. Household sector tags are
+            # placement/labour cohorts, not the sector of consumed goods.
             agent_col = household_metric_map[metric_name]
             
             # Plot main scenario lines (mean across all households)
@@ -368,36 +379,54 @@ def main():
                        color=style["color"], linewidth=2, linestyle=style["linestyle"], 
                        label=f"Mean - {scenario}", zorder=3)
             
-            # Add sector lines if household data has sectors
-            if show_sector_series and not household_agents_df.empty and "sector" in household_agents_df.columns:
-                sectors = sorted(household_agents_df["sector"].dropna().unique())
-                
+            # For consumption, add actual household purchases by seller sector
+            # when the agent CSV contains the dedicated household-sales field.
+            if (
+                show_sector_series
+                and metric_name == "Household_Consumption"
+                and household_demand_sectors
+                and not firm_agents_df.empty
+            ):
                 for scenario in unique_scenarios:
                     if not household_agents_df.empty and "Scenario" in household_agents_df.columns:
-                        df_scen = household_agents_df[household_agents_df["Scenario"] == scenario]
+                        hh_scen = household_agents_df[household_agents_df["Scenario"] == scenario]
                     else:
-                        df_scen = household_agents_df  # Use all data if no scenario column
-                    
-                    df_scen = add_year_from_step(df_scen, scenario)
-                    style = scenario_style_map[scenario]
-                    
-                    for idx_sec, sector in enumerate(sectors):
-                        sector_data = df_scen[df_scen["sector"] == sector]
-                        # Use Year column if available, otherwise Step
-                        if "Year" in sector_data.columns:
-                            grp = sector_data.dropna(subset=["Year"]).groupby("Year")[agent_col].mean()
-                            if grp.empty and "Step" in sector_data.columns:
-                                grp = sector_data.groupby("Step")[agent_col].mean()
-                        else:
-                            grp = sector_data.groupby("Step")[agent_col].mean()
+                        hh_scen = household_agents_df
+
+                    if not firm_agents_df.empty and "Scenario" in firm_agents_df.columns:
+                        firm_scen = firm_agents_df[firm_agents_df["Scenario"] == scenario]
+                    else:
+                        firm_scen = firm_agents_df
+
+                    hh_scen = add_year_from_step(hh_scen, scenario)
+                    firm_scen = add_year_from_step(firm_scen, scenario)
+
+                    count_axis = "Year" if "Year" in hh_scen.columns else "Step"
+                    household_counts = hh_scen.groupby(count_axis).size()
+
+                    for idx_sec, sector in enumerate(household_demand_sectors):
+                        sector_data = firm_scen[firm_scen["sector"] == sector]
+                        if sector_data.empty:
+                            continue
+
+                        value_axis = "Year" if "Year" in sector_data.columns else "Step"
+                        grp = sector_data.groupby(value_axis)["household_sales_last_step"].sum()
                         if grp.empty:
                             continue
-                            
-                        x_vals = grp.index
+
+                        per_household = (grp / household_counts.reindex(grp.index).replace(0, np.nan)).dropna()
+                        if per_household.empty:
+                            continue
+
+                        x_vals = per_household.index
                         sector_style = get_sector_style(scenario, idx_sec)
-                        
-                        ax.plot(x_vals, grp.values, 
-                               label=f"{sector} - {scenario}", **sector_style)
+
+                        ax.plot(
+                            x_vals,
+                            per_household.values,
+                            label=f"Final demand: {sector} - {scenario}",
+                            **sector_style,
+                        )
         
         elif metric_name.startswith("Bottleneck_"):
             # Bottleneck plots from agent data
@@ -459,6 +488,8 @@ def main():
         title = metric_name.replace("_", " ").replace("Bottleneck ", "")
         if metric_name.startswith("Bottleneck_"):
             title = f"Production Bottlenecks ({title})"
+        else:
+            title = household_title_map.get(metric_name, title)
         ax.set_title(title, fontsize=10)
         
         ylabel = units.get(metric_name, "")
@@ -493,7 +524,7 @@ def main():
                     # Sector lines - use abbreviations
                     parts = label.split(" - ")
                     if len(parts) >= 2:
-                        sector = parts[0]
+                        sector = parts[0].replace("Final demand: ", "")
                         scenario = parts[1]
                         
                         # Abbreviate sector names
