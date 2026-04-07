@@ -4,430 +4,255 @@
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
 [![NeurIPS 2025 CCAI](https://img.shields.io/badge/NeurIPS%202025-Climate%20Change%20AI-green.svg)](https://www.climatechange.ai/papers/neurips2025/19)
 
-This is a spatial agent-based model (ABM) for simulating climate-economy interactions. The model couples economic behavior with climate hazard impacts using Mesa for agent-based modeling. As an example, we assess the impact of acute flooding using JRC flood depth-damage functions and hazard-conditional firm continuity adaptation.
+Open-source Python framework for modelling cascading physical climate risk in
+spatial supply-chain economies. The model combines geospatial flood hazards
+with an agent-based economy of firms and households, so it can represent both
+direct asset losses and indirect disruptions propagated through labor markets,
+input linkages, prices, and firm finance.
 
-## Citation
+The current codebase supports hazard-conditional firm adaptation through
+multiple deployment channels, including:
 
-If you use this model in your research, please cite:
+- `capital_hardening` for direct-loss attenuation
+- `backup_suppliers` for input-continuity support
+- `stockpiling` and `reserved_capacity` as additional experimental strategies
 
-> Mohajerani, Y. (2025). *Adaptive Learning in Spatial Agent-Based Models for Climate Risk Assessment: A Geospatial Framework with Evolutionary Economic Agents*. arXiv preprint arXiv:2509.18633. https://doi.org/10.48550/arXiv.2509.18633
+## What the Framework Does
 
-This work was accepted to the [NeurIPS 2025 Tackling Climate Change with Machine Learning](https://www.climatechange.ai/papers/neurips2025/19).
+- Samples flood hazard rasters directly from GeoTIFF files at firm locations
+- Simulates firms and households on a spatial grid with supply-chain and labor
+  interactions
+- Records direct hazard exposure, supplier disruption, and never-hit cascade
+  burden diagnostics
+- Supports matched-seed ensembles for reproducible scenario comparison
+- Writes self-describing summary and member CSVs with `Meta_*` fields so runs
+  remain interpretable after the fact
 
-The current JASSS manuscript draft in `JASSS0/TemplateJASSS.tex` reflects a later simplification of the adaptation layer. The codebase now reports hazard-conditional continuity capital with explicit deployment channels rather than the earlier generic evolutionary-learning description used in the arXiv/NeurIPS paper.
+## Installation
 
-```bibtex
-@article{mohajerani2025adaptive,
-  title={Adaptive Learning in Spatial Agent-Based Models for Climate Risk Assessment: A Geospatial Framework with Evolutionary Economic Agents},
-  author={Mohajerani, Yara},
-  journal={arXiv preprint arXiv:2509.18633},
-  year={2025},
-  doi={10.48550/arXiv.2509.18633}
-}
-```
+Tested with Python `3.11`.
 
-## Model Overview
-
-The model simulates economic agents (households and firms) on a spatial grid while exposing them to climate hazards sampled from GeoTIFF rasters. Agents interact through labor markets, supply chains, and goods markets while firms respond to climate risk through a hazard-conditional continuity-capital system layered on top of fixed operating rules.
-
-### Key Features
-
-- **Spatial Environment**: Configurable resolution global grid (default 1°, supports 0.5°, 0.25°) with agents placed based on topology files
-- **Agent Types**: Households (labor suppliers) and firms (producers with Leontief technology)
-- **Economic Markets**: Endogenous wages, dynamic pricing, labor mobility, demand-driven production, and supply chain networks
-- **Climate Integration**: Lazy hazard sampling from full-resolution GeoTIFF rasters with JRC region-specific damage curves
-- **Adaptive Behaviors**: Optional household relocation plus hazard-conditional firm continuity investment with local observation and adaptive expectations
-- **Liquidity-Dependent Recovery**: Post-disaster recovery speed scales with firm liquidity (firms with more capital can afford faster repairs)
-- **Minimum Wage Floor**: Wage offers bounded below at 40% of initial wage, a proxy consistent with ILO (2016) observations on minimum wages in high-income economies
-- **Firm Adaptation System**: Hazard-conditional continuity capital with neighborhood observation of hazard-induced operating shortfalls, adaptive expectations, and proportional target adjustment
-- **Multiple Sectors**: Commodity, manufacturing, and retail sectors with sector-specific production coefficients and configurable household final-demand ratios over final-good sectors
-- **Circular-Flow Closure**: Households receive wages plus firm payouts, firms can use bounded sales-backed working-capital credit for current operations, and total money is tracked explicitly so the household-firm system remains stock-flow closed in no-entry/no-exit runs
-
-### Model Highlights
-
-- **Memory-efficient hazard loading**: Samples hazard values only at agent locations using `rasterio.sample()`, avoiding loading full rasters into memory
-- **Region-specific damage functions**: JRC depth-damage curves for Europe, Asia, Africa, North America, South America, and Oceania
-- **No preprocessing required**: Works directly with full-resolution Aqueduct flood rasters (~90MB each)
-- **Sector-local labor market**: Households search nearby same-sector firms first, then fall back to the broader market with a distance penalty
-- **Final-goods market discipline**: Households buy only from final-good sectors; upstream sectors sell to firms rather than directly to households
-- **Adaptation System**: Hazard-conditional continuity targeting with end-of-period funding and stock-flow-consistent firm reorganization
-- **Principled Operating Finance**: Payroll and intermediate-input purchases can use a bounded revenue-backed overdraft, while dividends, expansion, and adaptation still require residual cash after operations
-
-## Core Architecture
-
-### Spatial Grid and Environment
-
-The model uses a `mesa.space.MultiGrid` with configurable resolution (default 1° = 360×180 cells, or 0.5° = 720×360, or 0.25° = 1440×720 cells). This is decoupled from the hazard raster resolution, allowing efficient use of full-resolution global hazard data. Agents are placed based on coordinates specified in topology files.
-
-### Agent Classes
-
-#### HouseholdAgent
-- **Labor Supply**: Each household supplies 1 unit of labor per step
-- **Employment Choice**: Uses staged search: nearby same-sector firms are tried first, then the wider market is searched with wage-distance utility and a remote-search penalty (cross-sector fallback remains allowed)
-- **Consumption**: Uses a disposable-income rule based on current labor income, recently distributed firm payouts, recent adaptation-service income, and a small draw from money holdings above a target cash buffer; allocates that budget across final-good sectors with fractional purchases when budget < unit price
-- **Relocation**: Optional and disabled in the main scenario parameter files. The current relocation logic can still be toggled on for experiments, but it is not used in the reported core scenarios.
-
-#### FirmAgent
-- **Production Technology**: Leontief production function with labor, material inputs, and capital
-- **Sector-Specific Coefficients**: Each sector has different labor, input, and capital requirements per unit output:
-  - Commodity: labor=0.6, input=0.0, capital=0.7 (capital-intensive extraction, no upstream inputs)
-  - Manufacturing: labor=0.3, input=0.6, capital=0.6 (automated, capital & input intensive)
-  - Retail: labor=0.5, input=0.4, capital=0.2 (moderate labor, low capital needs)
-- **Adaptation System**: A continuity-capital stock, firm-level adaptive expectations over hazard-induced operating shortfall, neighborhood shortfall observation, a proportional target-adjustment rule, end-of-period adaptation funding from residual cash, and bankruptcy reorganization with parent-state inheritance
-- **Wage Setting**: Revenue-based wage targeting — wages track revenue per worker × a fixed labor share of 0.5, with smooth adjustment (10% toward target per step); firms with no workers use a modest 2% premium over the market mean wage as an entry fallback; minimum wage floor at 40% of initial wage
-- **Dynamic Pricing**: Markup pricing — price = unit cost × (1 + markup), where markup is set by sell-through rate; prices track costs bidirectionally with no cost-floor ratchet
-- **Damage Recovery**: Liquidity-dependent recovery rate (20%–50% per step) so stressed firms recover more slowly
-- **Input Procurement**: Inputs from connected suppliers are treated as substitutable units and are purchased from the cheapest available suppliers first
-- **Production Planning**: Firms plan output from expected sales plus inventory buffers, hire only up to planned vacancies, seed startup inventories/capacity from labour-scaled final demand, finance current payroll and intermediate-input purchases with cash above the buffer plus a bounded sales-backed overdraft, reserve capital expansion for residual post-operations cash, and operate in phased within-step order (labour, production, then household consumption)
-- **Profit Distribution**: Positive profits above the operating buffer first rebuild the firm's base capital target, then support discretionary expansion, and only then flow to household payouts; because there is no explicit capital-goods sector, investment spending is recycled to households as reduced-form investment income to preserve monetary closure
-- **Adaptation-State Reorganization**: Failed firms are reorganized in place under inherited same-sector adaptation state and, if needed, recapitalized by household equity contributions; replacements do not mint new firm cash, capital, or inventories
-
-### Climate Hazard System
-
-#### Lazy Hazard Loading
-The model uses memory-efficient lazy loading for hazard data:
-- **No full raster loading**: Only reads pixel values at agent locations (~100 agents vs 933M pixels)
-- **Direct GeoTIFF access**: Uses `rasterio.sample()` for on-demand sampling
-- **Memory usage**: <1MB vs ~4GB for loading full global rasters
-- **Performance**: ~6ms sampling time vs ~4.5s for full load
-
-#### Hazard Events
-- **Format**: `"RP:START_STEP:END_STEP:HAZARD_TYPE:path/to/geotiff.tif"` or `"RP:START_STEP:END_STEP:HAZARD_TYPE:None"` for an explicit no-hazard warm-up interval
-- **Return Periods**: RP2 (50% annual), RP10 (10% annual), RP100 (1% annual)
-- **Sampling**: Independent per-cell draws each step based on return period frequencies
-- **Intensity Combination**: Maximum depth used when multiple events affect same cell
-
-#### JRC Damage Functions
-Damage is calculated using JRC Global Flood Depth-Damage Functions:
-- **Source**: `data/global_flood_depth_damage_functions.xlsx`
-- **Region detection**: Automatic based on agent coordinates (Europe, Asia, Africa, etc.)
-- **Sector mapping**:
-  - `residential` → Residential buildings
-  - `commodity`, `manufacturing` → Industrial buildings
-  - `retail` → Commercial buildings
-- **Interpolation**: Linear interpolation between depth-damage points
-
-### Firm Adaptation System
-- **Adaptation Stock**: Each firm carries a `continuity_capital` stock in `[0, 1]` that is built up under hazard stress and decays during calm periods
-- **Hazard Context**: Firms maintain EWMAs of expected operating shortfall, nearby observed operating shortfall, direct loss diagnostics, and supplier disruption
-- **Neighborhood Observation**: Firms observe hazard-induced operating shortfalls among nearby firms within a configurable radius, allowing anticipatory continuity investment before own exposure
-- **Funding Timing**: Continuity targets are evaluated before the hazard is sampled, but maintenance and new continuity spending are funded only at period close from residual post-operations cash; newly installed continuity capital affects the next period rather than the current one
-- **Perceived Continuity Risk**: Firms use the stronger of own expected operating shortfall and nearby observed shortfall as a parsimonious continuity-risk signal
-- **Target Rule**: Every `decision_interval` steps, each firm annualizes that per-step continuity risk, sets a target `C* = min(1, sensitivity_i × annualized_risk_i)`, and invests up to a capped increment toward that target
-- **Four Adaptation Strategies** (configurable via `adaptation_strategy`; the current paper comparison uses `backup_suppliers` and `capital_hardening`):
-  1. **Backup supplier search** (`backup_suppliers`): Continuity capital enables firms to search for non-primary suppliers with available inventory when primary suppliers are disrupted. All transactions use real cash and real inventory via `sell_goods_to_firm()`, preserving macro closure. Maintains production but can cause scarcity-driven inflation.
-  2. **Capital hardening** (`capital_hardening`): Continuity capital directly attenuates physical damage from hazard events. At full continuity stock, damage to capital, inventory, and operational capacity is fully offset. Preserves productive capacity but does not address supply-chain disruptions.
-  3. **Precautionary stockpiling** (`stockpiling`): Continuity capital increases the firm's target inventory buffer proportionally to perceived hazard risk. Firms build excess inventory during calm periods and draw down during disruptions. Absorbs supply-chain shocks without competing for scarce goods during crises.
-  4. **Reserved capacity** (`reserved_capacity`): Continuity capital funds standing contracts for a bounded slice of backup-supplier inventory before the crisis hits. The reserved slice scales with the firm's planned input needs and continuity stock, can be spread across multiple standby suppliers, and during hazard-driven shortages lets the buyer draw at a capped contract price rather than pure spot conditions. This is designed to preserve input access while muting crisis-time price escalation.
-- **Population Dynamics**: Bankrupt firms are reorganized in place, preserving stock-flow closure while inheriting continuity state, adaptation strategy, and firm-specific continuity sensitivity from successful same-sector parents
-- **Systemic Cascade Diagnostics**: The model tracks which firms have ever been directly hit and reports how much supplier disruption, output, and capital are borne by firms that remain never directly hit, making it easier to quantify indirect network transmission for paper figures
-
-## Usage
-
-### Running Simulations
-
-Use a JSON parameter file:
+Install the core dependencies:
 
 ```bash
-# Run with full-resolution hazard files (no preprocessing needed!)
-python run_simulation.py --param-file gfdl_rcp45_parameters.json
+pip install -r requirements.txt
+```
 
-# Or with preprocessed files
-python run_simulation.py --param-file aqueduct_riverine_parameters.json
+Optional extras:
 
-# Run a 5-seed ensemble and save mean-based summary outputs
-python run_simulation.py --param-file aqueduct_riverine_parameters_rcp8p5.json --n-seeds 5 --seed-start 41
+```bash
+# Required only for reading the JRC Excel damage-function workbook
+pip install openpyxl
 
-# Final 20-seed paper comparison
+# Required only for the interactive dashboard
+pip install solara
+```
+
+`CLIMADA` is no longer required. Flood damage is read directly from the JRC
+depth-damage workbook in `data/`.
+
+## Quick Start
+
+Run a small headless test:
+
+```bash
+python run_simulation.py --param-file quick_test_parameters.json
+```
+
+Run the main paper-style 20-seed comparison:
+
+```bash
 python run_simulation.py --param-file aqueduct_riverine_parameters_rcp8p5.json --no-hazards --no-adaptation --n-seeds 20 --seed-start 41
 python run_simulation.py --param-file aqueduct_riverine_parameters_rcp8p5.json --no-adaptation --n-seeds 20 --seed-start 41
 python run_simulation.py --param-file aqueduct_riverine_parameters_rcp8p5.json --adaptation-strategy capital_hardening --adaptation-sensitivity-min 0.5 --adaptation-sensitivity-max 1.5 --n-seeds 20 --seed-start 41
 python run_simulation.py --param-file aqueduct_riverine_parameters_rcp8p5.json --adaptation-strategy backup_suppliers --adaptation-sensitivity-min 0.8 --adaptation-sensitivity-max 1.4 --n-seeds 20 --seed-start 41
-
-# Final paper figures from the resulting ensemble summaries
-python plot_from_csv_paper.py --csv-files simulation_baseline_noadaptation_...csv simulation_hazard_noadaptation_...csv simulation_hazard_capital_hardening_...csv simulation_hazard_backup_suppliers_...csv --no-sector --show-ensemble-band --plot-start-year 2015
-python plot_cascade_risk.py --csv-files simulation_hazard_noadaptation_...csv simulation_hazard_capital_hardening_...csv simulation_hazard_backup_suppliers_...csv --show-ensemble-band --out cascade_risk.png
-
-# Run an explicit seed set and keep the combined agent ensemble too
-python run_simulation.py --param-file aqueduct_riverine_parameters_rcp8p5.json --seeds 41 42 43 44 45 --save-agent-ensemble --ensemble-plot-stat median
-
-# Extend an existing ensemble later by merging multiple member batches
-python merge_ensemble_members.py \
-  --member-files simulation_hazard_adaptation_batch1_members.csv simulation_hazard_adaptation_batch2_members.csv \
-  --out-prefix simulation_hazard_adaptation_aqueduct_riverine_parameters_rcp8p5_riverine_firm_topology_100_ensemble10
 ```
 
-Multi-seed runs execute the requested seeds sequentially in one invocation and write:
-
-- `simulation_*.csv`: ensemble summary by step with `EnsembleStatistic` rows (`mean`, `median`, `std`, `p10`, `p90`)
-- `simulation_*_members.csv`: member-level aggregate trajectories with a `Seed` column
-- `simulation_*_agents.csv`: optional combined agent ensemble when `--save-agent-ensemble` is enabled
-- `simulation_*_ensemble.png`: a quick ensemble plot with faint member traces plus a highlighted mean/median line
-
-Both the summary and member CSVs now include `Meta_*` columns so each file is self-describing without needing the original command line. These metadata columns include the scenario label, hazard/adaptation toggles, parameter/topology file names, hazard event signature, seed range, the full `Meta_RunCommand`, explicit CLI override traces, the effective adaptation block (`Meta_EffectiveAdaptationConfig`), the raw parameter-file adaptation block (`Meta_ParamAdaptationConfig`), and key adaptation settings such as `Meta_DecisionInterval`, `Meta_EWMAAlpha`, `Meta_ObservationRadius`, `Meta_ContinuitySensitivityMin`, `Meta_ContinuitySensitivityMax`, `Meta_MaxAdaptIncrement`, and `Meta_ContinuityDecay` (with legacy `Meta_AdaptationSensitivity*` / `Meta_ResilienceDecay` aliases preserved for backward compatibility).
-
-This provenance guarantee applies to files produced with the current runner. Legacy CSVs generated before the `Meta_*` fields were added can still be merged, but the merge script cannot reconstruct missing historical settings that were never written to those files.
-
-If you build the ensemble in batches, merge the resulting `*_members.csv` files afterward with `merge_ensemble_members.py`. The merge script validates that the batches share the same scenario label, metadata, step grid, and schema, rejects overlapping seeds by default, and writes a fresh combined summary plus merged member file.
-
-### Parameter File Format
-
-```json
-{
-  "num_households": 1000,
-  "grid_resolution": 0.25,
-  "rp_files": [
-    "10:1:80:FL:None",
-    "2:81:160:FL:data/model_grid_025/inunriver_rcp8p5_0000GFDL-ESM2M_2030_rp00002_model-grid-0.25deg-mean.tif",
-    "10:81:160:FL:data/model_grid_025/inunriver_rcp8p5_0000GFDL-ESM2M_2030_rp00010_model-grid-0.25deg-mean.tif",
-    "100:81:160:FL:data/model_grid_025/inunriver_rcp8p5_0000GFDL-ESM2M_2030_rp00100_model-grid-0.25deg-mean.tif"
-  ],
-  "steps": 400,
-  "seed": 42,
-  "topology": "riverine_firm_topology_100.json",
-  "start_year": 2000,
-  "steps_per_year": 4,
-  "consumption_ratios": {
-    "retail": 1.0
-  },
-  "adaptation": {
-    "enabled": true,
-    "decision_interval": 4,
-    "ewma_alpha": 0.2,
-    "observation_radius": 4,
-    "adaptation_sensitivity_min": 0.5,
-    "adaptation_sensitivity_max": 1.5,
-    "max_adaptation_increment": 0.25,
-    "continuity_decay": 0.01,
-    "maintenance_cost_rate": 0.005,
-    "adaptation_strategy": "capital_hardening",
-    "max_backup_suppliers": 5,
-    "reserved_capacity_share": 0.35,
-    "reserved_capacity_markup_cap": 0.10,
-    "min_money_survival": 1.0,
-    "replacement_frequency": 10
-  }
-}
-```
-
-Using `None` as the path lets you encode a shared no-hazard warm-up period directly in the scenario schedule. This is useful when baseline, hazard, and adaptation scenarios should all equilibrate under identical no-forcing conditions before the hazard files become active.
-
-### Sensitivity Analysis
-
-Run a continuity-sensitivity sweep to verify robustness of the hazard-conditional adaptation results:
+Plot the paper-style time-series comparison from saved CSVs:
 
 ```bash
-# Final paper sensitivity sweeps
-python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --adaptation-strategy capital_hardening --n-seeds 10 --seed-start 41 --sensitivity-grid Low:0.5:1.5 Medium:1.5:3.0 High:3.0:4.5
-python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --adaptation-strategy backup_suppliers --n-seeds 10 --seed-start 41 --sensitivity-grid Low:0.2:0.8 Medium:0.8:1.4 High:1.4:2.0
-
-# Quick test (50 steps, 3-seed ensemble)
-python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --quick --n-seeds 3 --seed-start 41
-
-# Re-plot from saved ensemble sensitivity outputs
-python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --from-csv sensitivity_analysis_timeseries.csv
+python plot_from_csv.py \
+  --csv-files simulation_baseline_noadaptation_...csv simulation_hazard_noadaptation_...csv simulation_hazard_capital_hardening_...csv simulation_hazard_backup_suppliers_...csv \
+  --show-ensemble-band \
+  --plot-start-year 2020
 ```
 
-This runs the hazard+adaptation scenario across matched seed lists for custom continuity-sensitivity ranges and produces:
-- `sensitivity_analysis.png`: ensemble time-series comparison
-- `sensitivity_analysis_timeseries.csv`: per-step ensemble summary
-- `sensitivity_analysis_timeseries_members.csv`: per-seed member panel
-- `sensitivity_analysis.csv`: final-decade summary table across seeds
-
-For the current paper configuration, the matched-seed robustness exercise selects `capital_hardening` in the range `0.5-1.5` and `backup_suppliers` in the range `0.8-1.4` for the final 20-seed comparison.
-
-### Cascade-Risk Figure
-
-Plot the hazard-only cascade diagnostics that isolate risk borne by firms that have not been directly flooded:
+Plot the cascade-risk diagnostics:
 
 ```bash
 python plot_cascade_risk.py \
-  --csv-files simulation_hazard_noadaptation_...csv simulation_hazard_adaptation_...csv \
-  --ensemble-stat mean \
+  --csv-files simulation_hazard_noadaptation_...csv simulation_hazard_capital_hardening_...csv simulation_hazard_backup_suppliers_...csv \
   --show-ensemble-band \
   --out cascade_risk.png
 ```
 
-The figure uses new model reporters recorded in `simulation_*.csv`, including:
+Run the matched-seed sensitivity analysis:
+
+```bash
+python sensitivity_analysis.py --param-file aqueduct_riverine_parameters_rcp8p5.json --n-seeds 10 --seed-start 41
+```
+
+Launch the interactive dashboard:
+
+```bash
+python run_simulation.py --param-file aqueduct_riverine_parameters_rcp8p5.json --viz
+```
+
+## Core Scripts
+
+- [`run_simulation.py`](run_simulation.py):
+  main CLI for single-seed and multi-seed runs
+- [`plot_from_csv.py`](plot_from_csv.py):
+  maintained time-series plotter
+- [`plot_cascade_risk.py`](plot_cascade_risk.py):
+  figure for direct-vs-indirect cascade diagnostics
+- [`sensitivity_analysis.py`](sensitivity_analysis.py):
+  matched-seed continuity-sensitivity sweeps
+- [`merge_ensemble_members.py`](merge_ensemble_members.py):
+  merge multiple `*_members.csv` batches into one ensemble
+- [`check_consistency.py`](check_consistency.py):
+  scenario preflight checks
+- [`visualization.py`](visualization.py):
+  Solara dashboard
+
+## Scenario Configuration
+
+Scenarios are usually defined through JSON parameter files such as
+[`quick_test_parameters.json`](quick_test_parameters.json)
+and
+[`aqueduct_riverine_parameters_rcp8p5.json`](aqueduct_riverine_parameters_rcp8p5.json).
+
+Key configuration blocks:
+
+- `rp_files`: hazard schedule encoded as
+  `RP:START_STEP:END_STEP:HAZARD_TYPE:path`
+- `steps`, `start_year`, `steps_per_year`: simulation horizon
+- `topology`: firm locations and supply-chain edges
+- `consumption_ratios`: final-demand allocation over household-purchased sectors
+- `adaptation`: hazard-conditional firm adaptation settings
+
+Using `None` as the hazard `path` encodes an explicit no-hazard warm-up window,
+for example:
+
+```json
+"10:1:80:FL:None"
+```
+
+This is how the shared warm-up period is represented in the main flood
+experiments.
+
+## Adaptation System
+
+Each firm carries a continuity-capacity state, implemented in the code as
+`continuity_capital` for backward compatibility. Firms update continuity targets
+from hazard-conditioned signals and finance maintenance or new continuity
+spending only from residual post-operations cash.
+
+Main settings in the `adaptation` block:
+
+- `enabled`
+- `decision_interval`
+- `ewma_alpha`
+- `observation_radius`
+- `adaptation_sensitivity_min`
+- `adaptation_sensitivity_max`
+- `max_adaptation_increment`
+- `continuity_decay`
+- `maintenance_cost_rate`
+- `adaptation_strategy`
+- `min_money_survival`
+- `replacement_frequency`
+
+The current manuscript focuses on `capital_hardening` and `backup_suppliers`,
+but the code also includes `stockpiling` and `reserved_capacity`.
+
+## Outputs and Reproducibility
+
+Single-seed and multi-seed runs write time-series outputs in the repository
+root by default.
+
+Main output types:
+
+- `simulation_*.csv`: model-level time series for single-seed runs, or ensemble
+  summaries for multi-seed runs
+- `simulation_*_members.csv`: member-level aggregate trajectories for each seed
+- `simulation_*_agents.csv`: optional combined agent panel when
+  `--save-agent-ensemble` is enabled
+- `simulation_*_ensemble.png`: quick ensemble plot from the runner
+
+Summary and member CSVs include `Meta_*` fields that record the effective
+scenario label, parameter file, topology file, hazard schedule, seed range, and
+adaptation settings. This makes saved outputs self-describing and easier to
+merge, re-plot, or audit later.
+
+The model also records cascade-risk diagnostics used in the paper, including:
+
 - `Ever_Directly_Hit_Firm_Share`
 - `Never_Hit_Currently_Disrupted_Firm_Share`
 - `Never_Hit_Supplier_Disruption_Burden_Share`
 - `Never_Hit_Production_Share`
 - `Never_Hit_Capital_Share`
 
-### Data Preprocessing (Optional)
+## Validation and Preflight Checks
 
-For resampling rasters to model grid resolution (optional - model works with full-resolution files):
-
-```bash
-# Resample to 0.25° model grid with mean aggregation (represents cell-average flood depth)
-python prepare_hazard/preprocess_geotiff.py \
-    --input data/raw/*.tif \
-    --model-grid \
-    --resolution 0.25 \
-    --resampling mean \
-    --output-dir data/model_grid/
-
-# Or crop and scale for testing
-python prepare_hazard/preprocess_geotiff.py \
-    --input raw/*.tif \
-    --crop-bounds -74 40 -73 42 \
-    --scale-factor 0.5 \
-    --output-dir data/processed
-```
-
-### Custom Network Topology
-
-Specify firm locations and supply chains via JSON:
-
-```json
-{
-  "firms": [
-    {"id": 1, "lon": 106.7, "lat": 10.8, "sector": "commodity", "capital": 5.0},
-    {"id": 2, "lon": 100.5, "lat": 13.7, "sector": "manufacturing", "capital": 3.0},
-    {"id": 3, "lon": 101.2, "lat": 14.1, "sector": "retail", "capital": 1.5}
-  ],
-  "edges": [
-    {"src": 1, "dst": 2},
-    {"src": 2, "dst": 3}
-  ]
-}
-```
-
-Include at least one final-good sector (`retail`, `wholesale`, or `services`) in a custom topology. Households only buy from those sectors; topologies with only upstream sectors will have no final demand. Optional topology `capital` values act as a floor on seeded installed capacity, but the startup operating state is then rescaled from labour-consistent expected sales, so these values are not the sole determinant of initial production scale.
-
-## Output Files
-
-- **simulation_*.csv**: Model-level time series for single-seed runs, or ensemble summaries for multi-seed runs (production, wealth, wages, prices, risk, bottleneck counts, adaptation diagnostics, and `Meta_*` provenance fields)
-- **Stock-flow diagnostics in `simulation_*.csv`**: `Total_Money`, `Money_Drift`, `Firm_Dividends_Paid`, `Firm_Investment_Spending`, `Household_Labor_Income`, `Household_Dividend_Income`, `Household_Capital_Income`, `Household_Adaptation_Income`, and adaptation state summaries such as `Average_Local_Observed_Loss` and `Adaptation_Updates`
-- **Working-capital diagnostics in `simulation_*.csv`**: `Firm_Working_Capital_Credit_Used`, `Average_Working_Capital_Credit_Used`, and `Average_Working_Capital_Credit_Limit` track the bounded operating overdraft used to finance payroll and intermediate inputs before sales are realised
-- **Cascade diagnostics in `simulation_*.csv`**: `Ever_Directly_Hit_Firm_Share`, `Never_Hit_Currently_Disrupted_Firm_Share`, `Never_Hit_Supplier_Disruption_Burden_Share`, `Never_Hit_Production_Share`, `Never_Hit_Capital_Share`, and the corresponding count variables used for paper-ready systemic-risk figures
-- **simulation_*_members.csv**: Member-level aggregate ensemble panel with one row per step and seed, plus `Meta_*` scenario/config provenance fields
-- **simulation_*_agents.csv**: Agent-level panel data (money, capital, production, sector, type, seller-sector demand, and firm-level adaptation states including `resilience_capital`, `local_observed_loss`, `adaptation_target`, `perceived_hazard_risk`, and `adaptation_action`). Household `sector` values in this file are initialization/placement cohort tags, not purchased-good categories. In ensemble mode this file is only written when `--save-agent-ensemble` is enabled.
-- **simulation_*_ensemble.png**: Ensemble quick-look plot with faint member traces, a highlighted mean/median trajectory, and a p10-p90 band
-- **simulation_*_timeseries.png**: Multi-panel plots of key metrics. Household consumption panels use actual household purchases, and any sector breakdown of final demand is derived from seller sectors rather than household cohort labels.
-- **simulation_*_sector_bottlenecks.png**: Sector-level bottleneck analysis
-
-When plotting ensemble summaries later, `plot_from_csv_paper.py` can use the saved summary directly and optionally pick up the matching `*_members.csv` sidecar:
+Stock-flow regression test:
 
 ```bash
-python plot_from_csv_paper.py \
-  --csv-files simulation_baseline_noadaptation_...csv simulation_hazard_noadaptation_...csv simulation_hazard_adaptation_...csv \
-  --ensemble-stat median \
-  --plot-start-year 2015 \
-  --show-ensemble-band \
-  --show-ensemble-members \
-  --out paper_ensemble_timeseries.png
+PYTHONPYCACHEPREFIX=/tmp/codex-pycache python -m pytest tests/test_stock_flow_closure.py -q
 ```
 
-For `--show-ensemble-band`, keep the matching `*_members.csv` sidecar next to each summary CSV. The paper plotter computes p10-p90 bands from member trajectories directly, which is especially important for deflated real-valued panels such as liquidity and wages.
+Scenario consistency preflight:
 
-## Model Parameters
-
-### Agent Configuration
-- `num_households`: Number of household agents (default: 100, configurable via parameter file)
-- `num_firms`: Number of firm agents (overridden by topology file)
-- `grid_resolution`: Spatial resolution in degrees (default: 1.0, options: 0.5, 0.25)
-- `seed`: Random seed for reproducibility
-
-### Economic Parameters
-- **Sector-Specific Technical Coefficients**:
-  | Sector | Labor | Input | Capital | Notes |
-  |--------|-------|-------|---------|-------|
-  | Commodity | 0.6 | 0.0 | 0.7 | Capital-intensive extraction, no upstream inputs |
-  | Manufacturing | 0.3 | 0.6 | 0.6 | Automated, capital & input intensive |
-  | Retail | 0.5 | 0.4 | 0.2 | Moderate labor, low capital needs |
-- **Depreciation Rate**: 0.2% per step
-- **Consumption Ratios**: Configurable household spending by final-good sector only. For the current 100-firm riverine topology the relevant setting is `{"retail": 1.0}`.
-- **Household Consumption Rule**: `0.9 × disposable_income + 0.02 × max(0, money - 50)`, where disposable income is current labor income plus the previous period's dividends, reduced-form investment income, and adaptation-service income
-- **Wage Mechanism**: Revenue-based targeting — firms set wages at `revenue_per_worker × labor_share`, with a fixed labour-share parameter of `0.5` and 10% smooth adjustment per step. Wages are structurally bounded by revenue and self-correct during downturns.
-- **Minimum Wage Floor**: 40% of initial mean wage, a proxy consistent with ILO (2016) observations (40–60% of median)
-- **Production Planning**: Firms target expected sales plus an inventory buffer, translate that into vacancies and input demand, preserve a working-capital buffer, initialize inventories and capital from labour-consistent demand, finance current payroll and intermediate-input purchases with cash above the buffer plus a bounded sales-backed overdraft, clear household demand after the current period's production is complete, and close the period by splitting residual profits between capital replacement, discretionary expansion, adaptation, and dividends
-- **Working-Capital Credit Rule**: Current operations may temporarily draw a bounded overdraft of up to `Meta_FirmWorkingCapitalCreditRevenueShare × revenue_anchor`, where the anchor is recent/expected sales valued at the current price. This supports production before sales are realised while preventing dividends, adaptation, or capital expansion from being debt-financed.
-
-## Validation
-
-- **Stock-flow closure regression**: `PYTHONPYCACHEPREFIX=/tmp/codex-pycache /Users/yaramohajerani/mamba/envs/climada_env/bin/python -m pytest tests/test_stock_flow_closure.py -q`
-- **What it checks**: Total money stays constant to floating-point tolerance in a closed no-hazard economy, household-side payout income matches firm-side payout spending, the fixed labor-share wage rule behaves as expected, and the small sample economy remains economically active over the last 10 steps rather than collapsing to zero output.
-- **Scenario preflight check**: `PYTHONPYCACHEPREFIX=/tmp/codex-pycache /Users/yaramohajerani/mamba/envs/climada_env/bin/python check_consistency.py --param-file aqueduct_riverine_parameters_rcp8p5.json --no-hazards --no-adaptation --steps 80 --min-tail-production 1200 --min-tail-consumption 700 --min-tail-labor 600 --min-tail-active-firms 30`
-- **What it checks**: Money drift, household-firm payout mismatches, replacements, flooding counts, tail activity levels, and active-versus-dormant firm counts on the full configured topology before you commit to a long scenario batch.
-
-### Adaptation Parameters
-- `adaptation.enabled`: Enable/disable hazard-conditional firm adaptation (default: true)
-- `adaptation.decision_interval`: Steps between resilience-target updates (default: 4)
-- `adaptation.ewma_alpha`: Smoothing parameter for hazard-state expectations (default: 0.2)
-- `adaptation.observation_radius`: Manhattan-radius threshold for observing nearby firm losses (default: 4 grid cells)
-- `adaptation.adaptation_sensitivity_min`: Lower bound of the uniform draw for firm-specific resilience sensitivity (default: 2.0)
-- `adaptation.adaptation_sensitivity_max`: Upper bound of the uniform draw for firm-specific resilience sensitivity (default: 4.0)
-- `adaptation.max_adaptation_increment`: Maximum resilience-capital increment per decision update (default: 0.25)
-- `adaptation.continuity_decay`: Per-step depreciation of continuity capital (default: 0.01; `resilience_decay` remains a backward-compatible alias)
-- `adaptation.maintenance_cost_rate`: Per-step carrying cost on resilience capital (default: 0.005)
-- `adaptation.adaptation_strategy`: Which adaptation channel continuity capital operates through: `backup_suppliers`, `capital_hardening`, `stockpiling`, or `reserved_capacity` (default: `backup_suppliers`)
-- `adaptation.max_backup_suppliers`: Maximum number of backup suppliers to search or contract with (used by `backup_suppliers` and `reserved_capacity`; default: 5)
-- `adaptation.reserved_capacity_share`: Maximum share of a backup supplier's current inventory that can be reserved across buyers in a period (only used by `reserved_capacity`; default: 0.35)
-- `adaptation.reserved_capacity_markup_cap`: Maximum contract-price markup above the buyer's mean primary-supplier price for reserved-capacity purchases (only used by `reserved_capacity`; default: 0.10)
-- `adaptation.min_money_survival`: Minimum money before firm failure (default: 1.0)
-- `adaptation.replacement_frequency`: Steps between replacement cycles (default: 10)
-
-### Climate Parameters
-- **Recovery Rate**: Liquidity-dependent; 20% (money≈0) to 50% (money≥200) of remaining damage recovered per step
-- **Vulnerability**: JRC region-specific depth-damage curves
-- **Sampling**: Independent per-cell Poisson process based on return periods
-- **Household Relocation**: Optional but disabled by default in current parameter files and CLI defaults. Hazard transmission in the core scenarios runs through firms, prices, wages, and the supply chain rather than through household migration.
-
-## File Organization
-
-```
-├── model.py              # Main EconomyModel class
-├── agents.py             # HouseholdAgent and FirmAgent classes
-├── run_simulation.py     # CLI runner with parameter file support
-├── plot_cascade_risk.py  # Paper-oriented figure for indirect risk on never-directly-hit firms
-├── sensitivity_analysis.py # Matched-seed ensemble sensitivity analysis for firm resilience sensitivity
-├── hazard_utils.py       # LazyHazard class for memory-efficient sampling
-├── damage_functions.py   # JRC damage functions from Excel
-├── trophic_utils.py      # Network topology analysis utilities (not used in core runtime logic)
-├── visualization.py      # Solara interactive dashboard
-├── prepare_hazard/       # Data preprocessing utilities (optional)
-├── data/                 # Hazard rasters and damage function Excel
-│   └── global_flood_depth_damage_functions.xlsx
-└── *_parameters.json     # Parameter files for different scenarios
+```bash
+PYTHONPYCACHEPREFIX=/tmp/codex-pycache python check_consistency.py --param-file aqueduct_riverine_parameters_rcp8p5.json --no-hazards --no-adaptation --steps 80 --min-tail-production 1200 --min-tail-consumption 700 --min-tail-labor 600 --min-tail-active-firms 30
 ```
 
-## Dependencies
+These checks are used to verify accounting closure, tail activity, and scenario
+sanity before committing to longer ensemble runs.
 
-### Core Requirements
-- Mesa ≥3.2.0 (agent-based modeling framework)
-- NumPy, Pandas (data processing)
-- Rasterio (GeoTIFF reading)
-- GeoPandas (spatial data)
-- openpyxl (Excel reading for damage functions)
-- Matplotlib (visualization)
+## Topologies and Hazard Data
 
-### Optional
-- Solara (interactive dashboard)
+Firm locations and supply chains are provided through topology JSON files such
+as:
 
-### Not Required
-- CLIMADA is no longer needed - damage functions are loaded directly from the JRC Excel file
+- [`riverine_firm_topology_100.json`](riverine_firm_topology_100.json)
+- [`sample_firm_topology.json`](sample_firm_topology.json)
 
-## Performance
+Hazard rasters live under [`data/`](data/).
+Optional preprocessing utilities are in
+[`prepare_hazard/`](prepare_hazard/).
 
-| Aspect | Value |
-|--------|-------|
-| Hazard loading | ~1ms (metadata only) |
-| Hazard sampling | ~6ms per step (90 agents) |
-| Memory for hazards | <1MB |
-| Agent grid | Configurable: 64,800 (1°), 259,200 (0.5°), or 1,036,800 (0.25°) cells |
-| Full raster support | 933M pixels (no preprocessing needed) |
+Example preprocessing command:
 
-## Development
+```bash
+python prepare_hazard/preprocess_geotiff.py \
+  --input data/raw/*.tif \
+  --model-grid \
+  --resolution 0.25 \
+  --resampling mean \
+  --output-dir data/model_grid/
+```
 
-### Model Extension Points
-- **New Agent Types**: Inherit from `mesa.Agent`, implement `step()` method
-- **Additional Hazards**: Add sector mappings in `damage_functions.py`
-- **Economic Mechanisms**: Modify production functions in agent `step()` methods
-- **New Regions**: Update `get_region_from_coords()` in `damage_functions.py`
+## Repository Layout
 
-### Testing and Validation
-- Use consistent `seed` values for reproducible results
-- Monitor key invariants: wealth conservation, market clearing
-- Compare outcomes across parameter variations
+```text
+agents.py                  Agent behavior
+model.py                   Main EconomyModel
+run_simulation.py          CLI runner
+plot_from_csv.py           Maintained time-series plotter
+plot_cascade_risk.py       Cascade-risk figure
+sensitivity_analysis.py    Matched-seed sensitivity sweeps
+merge_ensemble_members.py  Ensemble merge utility
+check_consistency.py       Scenario preflight checks
+visualization.py           Solara dashboard
+prepare_hazard/            Optional raster preprocessing utilities
+data/                      Hazard rasters and JRC damage workbook
+manuscript/                Current paper source and submission assets
+presentation/              Slides
+tests/                     Regression tests
+```
+
+## License
+
+This project is released under the terms of the
+[`LICENSE`](LICENSE).

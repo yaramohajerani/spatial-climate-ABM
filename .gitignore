@@ -24,6 +24,7 @@ network_topology_*.json
 *.pdf
 
 manuscript/
+presentation/
 
 # Distribution / packaging
 .Python
