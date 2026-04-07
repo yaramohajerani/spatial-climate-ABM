@@ -8,8 +8,6 @@ __pycache__/
 
 # system files
 .DS_Store
-CLAUDE.md
-AGENTS.md
 
 # data
 data/
@@ -23,8 +21,12 @@ data/
 network_topology_*.json
 *.pdf
 
+# internal files and folders
 manuscript/
 presentation/
+TODO.md
+CLAUDE.md
+AGENTS.md
 
 # Distribution / packaging
 .Python
