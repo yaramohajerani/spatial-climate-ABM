@@ -354,7 +354,7 @@ def run_scenario(
     for _ in range(n_steps):
         model.step()
 
-    return _finalize_results(
+    df = _finalize_results(
         model.results_to_dataframe(),
         label=label,
         sensitivity_min=sensitivity_min,
@@ -364,6 +364,11 @@ def run_scenario(
         steps_per_year=int(params.get("steps_per_year", 4)),
         adaptation_strategy=strategy,
     )
+    effective_model_metadata = {
+        f"{METADATA_PREFIX}{key}": value
+        for key, value in model.effective_configuration_metadata().items()
+    }
+    return apply_metadata(df, effective_model_metadata)
 
 
 def build_ensemble_summary(member_df: pd.DataFrame) -> pd.DataFrame:

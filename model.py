@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Tuple, Iterable
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -100,6 +101,8 @@ class EconomyModel(Model):
             'retail': 1.0,
         }
         self.final_consumption_sectors = set(self.FINAL_CONSUMPTION_SECTORS)
+        self._consumption_ratio_warning_emitted: bool = False
+        self._startup_capital_floor_overrides: list[dict[str, float | int]] = []
 
         # -------------------- Performance optimization caches -------------------- #
         # Cached agent lists by type (updated when agents added/removed)
@@ -212,6 +215,8 @@ class EconomyModel(Model):
                 "Firm_Wealth": lambda m: sum(f.money for f in m._firms),
                 "Firm_Capital": lambda m: sum(f.capital_stock for f in m._firms),
                 "Firm_Profits": lambda m: sum(f.profit_this_step for f in m._firms),
+                "Firm_Operating_Profits": lambda m: sum(f.operating_profit_this_step for f in m._firms),
+                "Firm_Direct_Loss_Expenses": lambda m: sum(f.direct_loss_expense_this_step for f in m._firms),
                 "Firm_Dividends_Paid": lambda m: sum(f.dividends_paid_this_step for f in m._firms),
                 "Firm_Investment_Spending": lambda m: sum(f.investment_spending_this_step for f in m._firms),
                 "Firm_Working_Capital_Credit_Used": lambda m: sum(f.working_capital_credit_used_this_step for f in m._firms),
@@ -232,6 +237,7 @@ class EconomyModel(Model):
                 "Capital_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "capital"),
                 "Input_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "input"),
                 "Demand_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "demand"),
+                "Finance_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "finance"),
                 "Firm_Adaptation_Spending": lambda m: sum(f.adaptation_spending_this_step for f in m._firms),
                 "Average_Continuity_Capital": lambda m: np.mean([f.continuity_capital for f in m._firms]) if m._firms else 0.0,
                 "Average_Resilience_Capital": lambda m: np.mean([f.resilience_capital for f in m._firms]) if m._firms else 0.0,
@@ -297,6 +303,8 @@ class EconomyModel(Model):
                 "capital_income": lambda a: getattr(a, "capital_income_this_step", np.nan),
                 "adaptation_income": lambda a: getattr(a, "adaptation_income_this_step", np.nan),
                 "profit": lambda a: getattr(a, "profit_this_step", np.nan),
+                "operating_profit": lambda a: getattr(a, "operating_profit_this_step", np.nan),
+                "direct_loss_expense": lambda a: getattr(a, "direct_loss_expense_this_step", np.nan),
                 "dividends_paid": lambda a: getattr(a, "dividends_paid_this_step", np.nan),
                 "investment_spending": lambda a: getattr(a, "investment_spending_this_step", np.nan),
                 "adaptation_spending": lambda a: getattr(a, "adaptation_spending_this_step", np.nan),
@@ -405,6 +413,18 @@ class EconomyModel(Model):
 
     def get_final_consumption_ratios(self) -> Dict[str, float]:
         """Return household demand shares over final-good sectors only."""
+        dropped = sorted(
+            sector
+            for sector, weight in self.consumption_ratios.items()
+            if sector not in self.final_consumption_sectors and float(weight) > 0
+        )
+        if dropped and not self._consumption_ratio_warning_emitted:
+            warnings.warn(
+                "Ignoring non-final household consumption sectors "
+                f"{dropped}; only {sorted(self.final_consumption_sectors)} are eligible.",
+                RuntimeWarning,
+            )
+            self._consumption_ratio_warning_emitted = True
 
         ratios = {
             sector: float(weight)
@@ -426,6 +446,31 @@ class EconomyModel(Model):
         if total <= 0:
             return {}
         return {sector: weight / total for sector, weight in ratios.items()}
+
+    def effective_configuration_metadata(self) -> Dict[str, object]:
+        """Return model-derived configuration details for run metadata."""
+        import json
+
+        startup_added_capital = sum(
+            float(item["seeded_capital"]) - float(item["configured_capital"])
+            for item in self._startup_capital_floor_overrides
+        )
+        return {
+            "EffectiveConsumptionRatios": json.dumps(
+                self.get_final_consumption_ratios(),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ),
+            "StartupCapitalFloorCount": int(len(self._startup_capital_floor_overrides)),
+            "StartupCapitalFloorTotal": float(startup_added_capital),
+            "StartupCapitalFloorFirms": json.dumps(
+                self._startup_capital_floor_overrides,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ),
+        }
 
     def total_money(self) -> float:
         """Return the total financial money held by firms and households."""
@@ -562,7 +607,12 @@ class EconomyModel(Model):
         self._supplier_reserved_inventory = {}
 
     def _prepare_reserved_capacity_contracts(self) -> None:
-        """Reserve a bounded backup slice for the reserved-capacity strategy."""
+        """Reserve a bounded backup slice for the reserved-capacity strategy.
+
+        Contracts reserve against a supplier's expected available supply this
+        period: current inventory plus planned output, not current inventory
+        alone.
+        """
         self._reset_reserved_capacity_contracts()
         if not self.firm_adaptation_enabled or self.adaptation_strategy != "reserved_capacity":
             return
@@ -593,9 +643,13 @@ class EconomyModel(Model):
             for supplier in backup_suppliers:
                 if remaining_reserved_units <= 1e-9:
                     break
+                expected_available_supply = max(
+                    0.0,
+                    supplier.inventory_output + max(0.0, getattr(supplier, "target_output", 0.0)),
+                )
                 supplier_limit = reservable_inventory.setdefault(
                     supplier.unique_id,
-                    max(0.0, supplier.inventory_output * self.reserved_capacity_share),
+                    max(0.0, expected_available_supply * self.reserved_capacity_share),
                 )
                 reserved_units = min(supplier_limit, remaining_reserved_units)
                 if reserved_units <= 1e-9:
@@ -859,7 +913,17 @@ class EconomyModel(Model):
         firm.base_capital_target = capital_target
         firm.target_capital_stock = capital_target
         firm.inventory_output = max(firm.inventory_output, inventory_target)
-        firm.capital_stock = max(firm.capital_stock, capital_target)
+        configured_capital = float(firm.capital_stock)
+        seeded_capital = max(configured_capital, capital_target)
+        if self._firm_topology is not None and seeded_capital > configured_capital + 1e-9:
+            self._startup_capital_floor_overrides.append(
+                {
+                    "firm_id": int(firm.unique_id),
+                    "configured_capital": configured_capital,
+                    "seeded_capital": float(seeded_capital),
+                }
+            )
+        firm.capital_stock = seeded_capital
         firm.money = max(firm.money, working_capital)
 
     def _initialize_firm_operating_state(self) -> None:
@@ -870,6 +934,12 @@ class EconomyModel(Model):
             self._seed_firm_operating_state(
                 firm,
                 expected_sales=expected_sales.get(firm.unique_id, 1.0),
+            )
+        if self._startup_capital_floor_overrides:
+            warnings.warn(
+                "Raised startup capital to the demand-consistent seeding floor for "
+                f"{len(self._startup_capital_floor_overrides)} topology-defined firms.",
+                RuntimeWarning,
             )
 
     # --------------------------------------------------------------------- #
@@ -1313,6 +1383,12 @@ class EconomyModel(Model):
         cell_coords = list(agent_cells.keys())  # grid coordinates
         geo_coords = [agent_cells[c] for c in cell_coords]  # (lon, lat) tuples
 
+        for firm in self._firms:
+            firm.pre_hazard_damage_factor = float(firm.damage_factor)
+            firm.pre_hazard_capital_stock = float(firm.capital_stock)
+            firm.pre_hazard_inventory_output = float(firm.inventory_output)
+            firm.pre_hazard_inventory_inputs = dict(firm.inventory_inputs)
+
         # Reset hazard_map for agent cells only
         for coord in cell_coords:
             self.hazard_map[coord] = 0.0
@@ -1334,7 +1410,7 @@ class EconomyModel(Model):
                     if not (start <= self.current_step <= end):
                         continue
                 p_annual = haz.frequency[i]
-                p_hit = p_annual / self.steps_per_year  # per-step probability
+                p_hit = 1.0 - (1.0 - p_annual) ** (1.0 / max(1, self.steps_per_year))
                 if p_hit > 0:
                     active_events.append((i, p_hit))
 
@@ -1407,9 +1483,29 @@ class EconomyModel(Model):
             # Apply damage to firms (households not directly affected by flood damage)
             if is_firm:
                 adapted_loss_fraction = ag.get_adapted_loss_fraction(combined_loss_agent)
+                pre_capital_stock = float(ag.capital_stock)
+                pre_output_inventory = float(ag.inventory_output)
+                supplier_price_map = {
+                    supplier.unique_id: max(float(supplier.price), 0.5)
+                    for supplier in ag.connected_firms
+                }
+                fallback_input_price = (
+                    float(np.mean(list(supplier_price_map.values())))
+                    if supplier_price_map
+                    else max(float(ag.price), 0.5)
+                )
+                input_inventory_value = sum(
+                    float(units) * supplier_price_map.get(int(supplier_id), fallback_input_price)
+                    for supplier_id, units in ag.inventory_inputs.items()
+                )
                 ag.record_direct_losses(
                     raw_loss_fraction=combined_loss_agent,
                     adapted_loss_fraction=adapted_loss_fraction,
+                )
+                ag.direct_loss_expense_this_step += (
+                    pre_capital_stock * adapted_loss_fraction
+                    + pre_output_inventory * max(float(ag.price), 0.5) * adapted_loss_fraction
+                    + input_inventory_value * adapted_loss_fraction
                 )
                 ag.capital_stock *= 1 - adapted_loss_fraction
                 ag.damage_factor *= 1 - adapted_loss_fraction

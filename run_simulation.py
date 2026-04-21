@@ -273,6 +273,13 @@ def _apply_metadata(df: pd.DataFrame, metadata: dict[str, object]) -> pd.DataFra
     return apply_ensemble_metadata(df, metadata)
 
 
+def _model_effective_metadata(model: EconomyModel) -> dict[str, object]:
+    return {
+        f"{METADATA_PREFIX}{key}": value
+        for key, value in model.effective_configuration_metadata().items()
+    }
+
+
 def _finalize_main_results(df: pd.DataFrame, *, scenario_display: str, seed: int, start_year: int, steps_per_year: int) -> pd.DataFrame:
     df = df.copy()
     df["Scenario"] = scenario_display
@@ -335,7 +342,7 @@ def _run_single_simulation(
         start_year=args.start_year,
         steps_per_year=args.steps_per_year,
     )
-    return model, df, agent_df
+    return model, df, agent_df, _model_effective_metadata(model)
 
 
 def _build_ensemble_summary(member_df: pd.DataFrame) -> pd.DataFrame:
@@ -614,8 +621,9 @@ def main() -> None:  # noqa: D401
     if len(seed_list) > 1:
         member_frames = []
         agent_member_frames = []
+        effective_model_metadata: dict[str, object] | None = None
         for seed in seed_list:
-            _, seed_df, seed_agent_df = _run_single_simulation(
+            _, seed_df, seed_agent_df, seed_effective_metadata = _run_single_simulation(
                 args=args,
                 events=events,
                 apply_hazards=apply_hazards,
@@ -623,10 +631,14 @@ def main() -> None:  # noqa: D401
                 seed=seed,
                 scenario_display=scenario_display,
             )
+            if effective_model_metadata is None:
+                effective_model_metadata = seed_effective_metadata
             member_frames.append(seed_df)
             if args.save_agent_ensemble:
                 agent_member_frames.append(seed_agent_df)
 
+        if effective_model_metadata:
+            metadata = {**metadata, **effective_model_metadata}
         member_df = pd.concat(member_frames, ignore_index=True)
         member_df = _apply_metadata(member_df, metadata)
         summary_df = _build_ensemble_summary(member_df)
@@ -658,7 +670,7 @@ def main() -> None:  # noqa: D401
         print(f"Ensemble plot saved as {ensemble_plot_path}")
         return
 
-    model, df, agent_df = _run_single_simulation(
+    model, df, agent_df, effective_model_metadata = _run_single_simulation(
         args=args,
         events=events,
         apply_hazards=apply_hazards,
@@ -666,6 +678,7 @@ def main() -> None:  # noqa: D401
         seed=seed_list[0],
         scenario_display=scenario_display,
     )
+    metadata = {**metadata, **effective_model_metadata}
     df = _apply_metadata(df, metadata)
     agent_df = _apply_metadata(agent_df, metadata)
 
