@@ -16,6 +16,7 @@ multiple deployment channels, including:
 - `capital_hardening` for direct-loss attenuation
 - `backup_suppliers` for input-continuity support
 - `stockpiling` and `reserved_capacity` as additional experimental strategies
+  (`stockpiling` currently means a larger finished-goods buffer, not extra input inventories)
 
 ## What the Framework Does
 
@@ -129,6 +130,7 @@ Key configuration blocks:
 - `steps`, `start_year`, `steps_per_year`: simulation horizon
 - `topology`: firm locations and supply-chain edges
 - `consumption_ratios`: final-demand allocation over household-purchased sectors
+  (`retail`, `wholesale`, `services`; non-final sectors are ignored with a warning)
 - `adaptation`: hazard-conditional firm adaptation settings
 
 Using `None` as the hazard `path` encodes an explicit no-hazard warm-up window,
@@ -164,7 +166,9 @@ Main settings in the `adaptation` block:
 - `replacement_frequency`
 
 The current manuscript focuses on `capital_hardening` and `backup_suppliers`,
-but the code also includes `stockpiling` and `reserved_capacity`.
+but the code also includes `stockpiling` and `reserved_capacity`. In the
+current implementation, `stockpiling` increases the finished-goods inventory
+buffer rather than building a separate input stock.
 
 ## Outputs and Reproducibility
 

@@ -283,6 +283,7 @@ class HouseholdAgent(Agent):
             safe_cells = self.model.land_coordinates  # fall back to any land
         new_pos = self.random.choice(safe_cells)
         self.model.grid.move_agent(self, new_pos)
+        self._update_nearby_firms()
 
 
     # ---------------- End of Household.step() bookkeeping -------- #
@@ -387,10 +388,13 @@ class FirmAgent(Agent):
         self.revenue_this_step: float = 0.0
         self.household_sales_last_step: float = 0.0
         self.household_sales_this_step: float = 0.0
+        self.inventory_available_last_step: float = 0.0
         self.wage_bill_this_step: float = 0.0
         self.input_spend_this_step: float = 0.0
         self.depreciation_this_step: float = 0.0
+        self.operating_profit_this_step: float = 0.0
         self.profit_this_step: float = 0.0
+        self.direct_loss_expense_this_step: float = 0.0
         self.dividends_paid_this_step: float = 0.0
         self.investment_spending_this_step: float = 0.0
         self.adaptation_spending_this_step: float = 0.0
@@ -422,10 +426,18 @@ class FirmAgent(Agent):
         self.base_inventory_target: float = 1.0
         self.base_capital_target: float = self.capital_stock
         self.target_capital_stock: float = self.capital_stock
+        self.no_hazard_target_output: float = 0.0
+        self.no_hazard_demand_driven_output: float = 0.0
+        self.no_hazard_damage_factor: float = 1.0
         self._liquidity_buffer: float = 0.0
         self.required_working_capital: float = 0.0
         self.working_capital_credit_limit: float = 0.0
         self.working_capital_credit_used_this_step: float = 0.0
+        self.finance_constrained_this_step: bool = False
+        self.pre_hazard_damage_factor: float = 1.0
+        self.pre_hazard_capital_stock: float = self.capital_stock
+        self.pre_hazard_inventory_output: float = self.inventory_output
+        self.pre_hazard_inventory_inputs: dict[int, float] = {}
 
         adaptation_config = getattr(model, "adaptation_config", {})
         self.adaptation_enabled: bool = getattr(model, "firm_adaptation_enabled", True)
@@ -481,6 +493,7 @@ class FirmAgent(Agent):
         self.adaptation_maintenance_this_step = 0.0
         self.counterfactual_direct_loss_this_step = 0.0
         self.realized_direct_loss_this_step = 0.0
+        self.direct_loss_expense_this_step = 0.0
         self.raw_direct_loss_fraction_this_step = 0.0
         self.adapted_direct_loss_fraction_this_step = 0.0
         self.supplier_disruption_this_step = 0.0
@@ -675,6 +688,10 @@ class FirmAgent(Agent):
         Instead, the chosen action is financed from residual post-operations cash and
         only affects resilience capital going into the next period.
         """
+        if not self.model._households:
+            self.pending_adaptation_increment = 0.0
+            return 0.0, 0.0
+
         scale = self._adaptation_scale()
         desired_spending = self.maintenance_cost_rate * self.continuity_capital * self._adaptation_scale()
         maintenance_spending = min(desired_spending, available_cash, investable_profit)
@@ -732,7 +749,7 @@ class FirmAgent(Agent):
         return True
 
     def _install_capital(self, spending: float) -> float:
-        if spending <= 0:
+        if spending <= 0 or not self.model._households:
             return 0.0
         installable_capital = spending / self.CAPITAL_INSTALLATION_COST
         self.money -= spending
@@ -776,6 +793,8 @@ class FirmAgent(Agent):
             )
 
     def _pay_dividends(self, *, positive_profit: float, operating_cash_reserve: float) -> None:
+        if not self.model._households:
+            return
         available_cash = self._available_cash_after_reserve(operating_cash_reserve)
         desired_dividends = min(
             max(0.0, positive_profit - self.investment_spending_this_step - self.adaptation_spending_this_step),
@@ -788,6 +807,41 @@ class FirmAgent(Agent):
                 desired_dividends,
                 income_kind="dividend",
             )
+
+    def _recovery_liquidity_anchor(self) -> float:
+        revenue_anchor = max(
+            self.expected_sales,
+            self.sales_last_step,
+            self.household_sales_last_step,
+            1.0,
+        ) * max(self.price, 0.5)
+        capital_anchor = max(self.base_capital_target, self.target_capital_stock, 1.0) * max(self.price, 0.5)
+        return max(50.0, revenue_anchor, capital_anchor, self.required_working_capital)
+
+    def _recovery_rate_from_liquidity(self, liquidity_proxy: float) -> float:
+        liquidity_anchor = max(1e-6, self._recovery_liquidity_anchor())
+        liquidity_ratio = min(1.0, max(0.0, liquidity_proxy) / liquidity_anchor)
+        return 0.2 + 0.3 * liquidity_ratio
+
+    def _counterfactual_liquidity_proxy(self) -> float:
+        excess_direct_loss = max(
+            0.0,
+            self.counterfactual_direct_loss_this_step - self.realized_direct_loss_this_step,
+        )
+        return max(0.0, self.money - excess_direct_loss)
+
+    def _apply_damage_recovery(self) -> None:
+        actual_recovery_rate = self._recovery_rate_from_liquidity(self.money)
+        self.damage_factor += (1.0 - self.damage_factor) * actual_recovery_rate
+        self.damage_factor = min(1.0, max(0.0, self.damage_factor))
+
+        counterfactual_recovery_rate = self._recovery_rate_from_liquidity(
+            self._counterfactual_liquidity_proxy()
+        )
+        self.counterfactual_damage_factor += (
+            1.0 - self.counterfactual_damage_factor
+        ) * counterfactual_recovery_rate
+        self.counterfactual_damage_factor = min(1.0, max(0.0, self.counterfactual_damage_factor))
 
     def _update_post_step_state(self) -> None:
         """Update direct-loss diagnostics, continuity beliefs, and demand expectations."""
@@ -1030,10 +1084,15 @@ class FirmAgent(Agent):
         self.profit_this_step = 0.0
         self.dividends_paid_this_step = 0.0
         self.investment_spending_this_step = 0.0
+        self.operating_profit_this_step = 0.0
         self.required_working_capital = 0.0
         self.working_capital_credit_limit = 0.0
         self.working_capital_credit_used_this_step = 0.0
         self.demand_driven_output = 0.0
+        self.no_hazard_target_output = 0.0
+        self.no_hazard_demand_driven_output = 0.0
+        self.no_hazard_damage_factor = max(float(getattr(self, "pre_hazard_damage_factor", self.damage_factor)), 1e-6)
+        self.finance_constrained_this_step = False
 
         self.capital_coeff = self.original_capital_coeff
 
@@ -1042,24 +1101,52 @@ class FirmAgent(Agent):
         effective_buffer_ratio = self._effective_inventory_buffer_ratio()
         inventory_target = max(1.0, self.expected_sales * effective_buffer_ratio)
         demand_driven_output = max(0.0, self.expected_sales + inventory_target - self.inventory_output)
+        no_hazard_inventory_output = max(
+            0.0,
+            float(getattr(self, "pre_hazard_inventory_output", self.inventory_output)),
+        )
+        no_hazard_demand_driven_output = max(
+            0.0,
+            self.expected_sales + inventory_target - no_hazard_inventory_output,
+        )
         self.demand_driven_output = demand_driven_output
+        self.no_hazard_demand_driven_output = no_hazard_demand_driven_output
         desired_output = demand_driven_output
+        no_hazard_desired_output = no_hazard_demand_driven_output
 
         avg_input_price = 0.0
         if self.connected_firms:
             avg_input_price = float(np.mean([s.price for s in self.connected_firms]))
 
         effective_damage = max(self.damage_factor, 1e-6)
+        no_hazard_damage = max(
+            float(getattr(self, "pre_hazard_damage_factor", self.damage_factor)),
+            1e-6,
+        )
         capital_limit = self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf")
+        no_hazard_capital_stock = max(
+            0.0,
+            float(getattr(self, "pre_hazard_capital_stock", self.capital_stock)),
+        )
+        no_hazard_capital_limit = (
+            no_hazard_capital_stock / self.capital_coeff
+            if self.capital_coeff
+            else float("inf")
+        )
         self.target_capital_stock = max(
             self.base_capital_target,
             (demand_driven_output / effective_damage) * self.capital_coeff,
         )
         desired_output = min(desired_output, capital_limit * self.damage_factor)
+        no_hazard_desired_output = min(no_hazard_desired_output, no_hazard_capital_limit * no_hazard_damage)
         unit_variable_cost = (
             self.wage_offer * self.LABOR_COEFF
             + avg_input_price * self.INPUT_COEFF
         ) / effective_damage
+        no_hazard_unit_variable_cost = (
+            self.wage_offer * self.LABOR_COEFF
+            + avg_input_price * self.INPUT_COEFF
+        ) / no_hazard_damage
 
         revenue_anchor = (
             max(
@@ -1077,9 +1164,18 @@ class FirmAgent(Agent):
         )
         available_operating_cash = self._operating_cash_capacity()
         if unit_variable_cost > 0:
-            desired_output = min(desired_output, available_operating_cash / unit_variable_cost)
+            finance_limited_output = available_operating_cash / unit_variable_cost
+            if finance_limited_output + 1e-9 < desired_output:
+                self.finance_constrained_this_step = True
+            desired_output = min(desired_output, finance_limited_output)
+        if no_hazard_unit_variable_cost > 0:
+            no_hazard_desired_output = min(
+                no_hazard_desired_output,
+                available_operating_cash / no_hazard_unit_variable_cost,
+            )
 
         self.target_output = max(0.0, desired_output)
+        self.no_hazard_target_output = max(0.0, no_hazard_desired_output)
         self.required_working_capital = self.target_output * unit_variable_cost
         self.working_capital_credit_limit = min(
             self.required_working_capital,
@@ -1096,7 +1192,6 @@ class FirmAgent(Agent):
     def step(self) -> None:  # noqa: D401, N802
         """Purchase inputs, transform them with labour into output, then sell surplus."""
 
-        # ---------------- Damage recovery ----------------------------- #
         # ---------------- Wage adjustment ----------------------------- #
         # Revenue-based wage targeting: wages track marginal revenue product of labor.
         # This replaces ad-hoc shortage-signal heuristics with a single economic principle:
@@ -1123,17 +1218,6 @@ class FirmAgent(Agent):
         wage_floor = getattr(self.model, 'initial_mean_wage', 1.0) * 0.4
         self.wage_offer = float(max(wage_floor, self.wage_offer))
 
-        # Liquidity-dependent recovery.  Adaptation affects physical damage only
-        # via capital_hardening (get_adapted_loss_fraction); recovery rate here
-        # is driven purely by firm liquidity.
-        liquidity_ratio = min(1.0, self.money / 200.0)
-        base_recovery_rate = 0.2 + 0.3 * liquidity_ratio
-        actual_recovery_rate = base_recovery_rate
-        self.damage_factor += (1.0 - self.damage_factor) * actual_recovery_rate
-        self.damage_factor = min(1.0, max(0.0, self.damage_factor))
-        self.counterfactual_damage_factor += (1.0 - self.counterfactual_damage_factor) * base_recovery_rate
-        self.counterfactual_damage_factor = min(1.0, max(0.0, self.counterfactual_damage_factor))
-
         # ---------------- Dynamic pricing ----------------------------- #
         # Markup pricing: price = unit_cost × (1 + markup), where markup is set
         # by sell-through rate.  This replaces ad-hoc inventory-threshold bands,
@@ -1150,7 +1234,7 @@ class FirmAgent(Agent):
         ) / max(self.damage_factor, 1e-6)
 
         # Sell-through is based on realised demand from the previous full period.
-        available = self.inventory_output + self.sales_last_step
+        available = self.inventory_available_last_step
         if available > 0 and self.sales_last_step > 0:
             sell_through = min(1.0, self.sales_last_step / available)
         else:
@@ -1188,6 +1272,10 @@ class FirmAgent(Agent):
                 self.inventory_inputs.get(supplier.unique_id, 0.0)
                 for supplier in self.connected_firms
             )
+        primary_inventory_capacity = current_input_units + sum(
+            self.model.available_inventory_for_spot_sales(supplier)
+            for supplier in self.connected_firms
+        )
 
         remaining_inputs_needed = max(0.0, desired_input_units - current_input_units)
         if remaining_inputs_needed > 0 and self.connected_firms and self.INPUT_COEFF > 0:
@@ -1203,11 +1291,15 @@ class FirmAgent(Agent):
                     remaining_inputs_needed -= bought
 
         if desired_input_units > 1e-9:
-            input_shortfall_ratio = min(1.0, max(0.0, remaining_inputs_needed / desired_input_units))
+            physical_shortfall_units = max(0.0, desired_input_units - primary_inventory_capacity)
+            physical_shortfall_ratio = min(1.0, max(0.0, physical_shortfall_units / desired_input_units))
         else:
-            input_shortfall_ratio = 0.0
-        hazard_affected_suppliers = self._primary_supplier_shortage_is_hazard_related()
-        raw_supplier_disruption = input_shortfall_ratio if hazard_affected_suppliers else 0.0
+            physical_shortfall_ratio = 0.0
+        hazard_affected_suppliers = (
+            physical_shortfall_ratio > 1e-9
+            and self._primary_supplier_shortage_is_hazard_related()
+        )
+        raw_supplier_disruption = physical_shortfall_ratio if hazard_affected_suppliers else 0.0
         self.raw_supplier_disruption_this_step = raw_supplier_disruption
         self.supplier_disruption_this_step = raw_supplier_disruption
 
@@ -1271,8 +1363,12 @@ class FirmAgent(Agent):
         # Update supplier disruption to reflect actual residual shortfall
         # after backup search.
         if desired_input_units > 1e-9:
+            residual_hazard_shortfall_units = max(
+                0.0,
+                max(0.0, desired_input_units - primary_inventory_capacity) - continuity_purchase_coverage,
+            )
             self.supplier_disruption_this_step = (
-                min(1.0, max(0.0, remaining_inputs_needed / desired_input_units))
+                min(1.0, max(0.0, residual_hazard_shortfall_units / desired_input_units))
                 if hazard_affected_suppliers
                 else 0.0
             )
@@ -1280,7 +1376,30 @@ class FirmAgent(Agent):
             self.supplier_disruption_this_step = 0.0
         self.continuity_gap_coverage_this_step = continuity_purchase_coverage
 
-        no_hazard_output_ceiling = min(self.demand_driven_output, max_output_from_labor)
+        no_hazard_damage = max(self.no_hazard_damage_factor, 1e-6)
+        no_hazard_capital_limit = (
+            float(getattr(self, "pre_hazard_capital_stock", self.capital_stock)) / self.capital_coeff
+            if self.capital_coeff
+            else float("inf")
+        )
+        pre_hazard_total_input_units = sum(
+            float(units)
+            for units in getattr(self, "pre_hazard_inventory_inputs", {}).values()
+        )
+        if self.connected_firms and self.INPUT_COEFF > 0:
+            no_hazard_desired_input_units = (self.no_hazard_target_output / no_hazard_damage) * self.INPUT_COEFF
+            no_hazard_input_units = max(total_input_units, pre_hazard_total_input_units)
+            if hazard_affected_suppliers:
+                no_hazard_input_units = max(no_hazard_input_units, no_hazard_desired_input_units)
+            no_hazard_input_limit = (no_hazard_input_units / self.INPUT_COEFF) * no_hazard_damage
+        else:
+            no_hazard_input_limit = float("inf")
+        no_hazard_output_ceiling = min(
+            self.no_hazard_target_output,
+            max_output_from_labor * no_hazard_damage,
+            no_hazard_capital_limit * no_hazard_damage,
+            no_hazard_input_limit,
+        )
         hazard_related_gap = (
             self.raw_direct_loss_fraction_this_step > 1e-9
             or self.adapted_direct_loss_fraction_this_step > 1e-9
@@ -1289,7 +1408,7 @@ class FirmAgent(Agent):
         )
 
         if self.target_output + 1e-9 < technical_output_limit:
-            self.limiting_factor = "demand"
+            self.limiting_factor = "finance" if self.finance_constrained_this_step else "demand"
         else:
             self.limiting_factor = min(actual_limits, key=actual_limits.get)
 
@@ -1360,12 +1479,16 @@ class FirmAgent(Agent):
             - self.input_spend_this_step
             - self.depreciation_this_step
         )
-        self.profit_this_step = accounting_profit
+        self.operating_profit_this_step = accounting_profit
+        # This is a broader accounting diagnostic than the cash profit used for
+        # payout decisions below because it includes direct hazard write-downs.
+        self.profit_this_step = accounting_profit - self.direct_loss_expense_this_step
 
-        # Positive profits are either paid out to household owners as dividends
-        # or recycled into installed capital. Because the model has no explicit
-        # capital-goods firm, investment spending is transferred to households
-        # as capital-service income so money stays inside the closed economy.
+        # Positive operating cash profit is either paid out to household owners
+        # as dividends or recycled into installed capital. Because the model has
+        # no explicit capital-goods firm, investment spending is transferred to
+        # households as capital-service income so money stays inside the closed
+        # economy.
         #
         # The baseline closure needs firms to preserve their installed productive
         # base before distributing residual profits. We therefore fund capital
@@ -1384,6 +1507,7 @@ class FirmAgent(Agent):
             positive_profit=positive_profit,
             operating_cash_reserve=operating_cash_reserve,
         )
+        self.inventory_available_last_step = self.inventory_output + self.sales_this_step
         self._update_post_step_state()
 
     # ------------------------------------------------------------------ #
