@@ -1480,12 +1480,15 @@ class FirmAgent(Agent):
             - self.depreciation_this_step
         )
         self.operating_profit_this_step = accounting_profit
+        # This is a broader accounting diagnostic than the cash profit used for
+        # payout decisions below because it includes direct hazard write-downs.
         self.profit_this_step = accounting_profit - self.direct_loss_expense_this_step
 
-        # Positive profits are either paid out to household owners as dividends
-        # or recycled into installed capital. Because the model has no explicit
-        # capital-goods firm, investment spending is transferred to households
-        # as capital-service income so money stays inside the closed economy.
+        # Positive operating cash profit is either paid out to household owners
+        # as dividends or recycled into installed capital. Because the model has
+        # no explicit capital-goods firm, investment spending is transferred to
+        # households as capital-service income so money stays inside the closed
+        # economy.
         #
         # The baseline closure needs firms to preserve their installed productive
         # base before distributing residual profits. We therefore fund capital
@@ -1505,7 +1508,6 @@ class FirmAgent(Agent):
             operating_cash_reserve=operating_cash_reserve,
         )
         self.inventory_available_last_step = self.inventory_output + self.sales_this_step
-        self._apply_damage_recovery()
         self._update_post_step_state()
 
     # ------------------------------------------------------------------ #

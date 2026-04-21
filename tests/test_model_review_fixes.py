@@ -15,6 +15,7 @@ def _build_model(
     num_households: int = 300,
     consumption_ratios: dict | None = None,
     household_relocation: bool = False,
+    adaptation_params: dict | None = None,
 ) -> EconomyModel:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
@@ -24,7 +25,7 @@ def _build_model(
             seed=42,
             firm_topology_path=str(REPO_ROOT / "sample_firm_topology.json"),
             apply_hazard_impacts=False,
-            adaptation_params={"enabled": False},
+            adaptation_params=adaptation_params or {"enabled": False},
             consumption_ratios=consumption_ratios or {"services": 0.7, "retail": 0.3},
             household_relocation=household_relocation,
         )
@@ -152,3 +153,69 @@ def test_finance_constraints_get_their_own_limiting_factor() -> None:
 
     assert firm.finance_constrained_this_step is True
     assert firm.limiting_factor == "finance"
+
+
+def test_recovery_is_applied_before_planning_and_not_after_close_step() -> None:
+    model = _build_model()
+    firm = model._firms[0]
+    observed_damage_during_planning: list[float] = []
+    original_plan_operations = firm.plan_operations
+
+    firm.damage_factor = 0.5
+    firm.counterfactual_damage_factor = 0.4
+
+    def wrapped_plan_operations() -> None:
+        observed_damage_during_planning.append(firm.damage_factor)
+        original_plan_operations()
+
+    firm.plan_operations = wrapped_plan_operations
+
+    model.step()
+
+    assert observed_damage_during_planning
+    assert observed_damage_during_planning[0] > 0.5
+    assert np.isclose(firm.damage_factor, observed_damage_during_planning[0], atol=1e-9)
+
+
+def test_reserved_capacity_contracts_only_reserve_on_hand_inventory() -> None:
+    model = _build_model(
+        adaptation_params={
+            "enabled": True,
+            "adaptation_strategy": "reserved_capacity",
+            "reserved_capacity_share": 0.35,
+            "max_backup_suppliers": 5,
+        },
+    )
+    buyer = next(firm for firm in model._firms if firm.connected_firms)
+    supplier_sector = buyer.connected_firms[0].sector
+    primary_ids = {supplier.unique_id for supplier in buyer.connected_firms}
+    backup_supplier = next(
+        firm
+        for firm in model._firms
+        if firm.sector == supplier_sector and firm.unique_id not in primary_ids and firm is not buyer
+    )
+
+    model.firm_adaptation_enabled = True
+    model.adaptation_strategy = "reserved_capacity"
+    for firm in model._firms:
+        firm.adaptation_enabled = False
+        firm.continuity_capital = 0.0
+        firm.target_input_units = 0.0
+        if firm.sector == supplier_sector and firm.unique_id not in primary_ids and firm is not backup_supplier:
+            firm.inventory_output = 0.0
+
+    buyer.adaptation_enabled = True
+    buyer.continuity_capital = 1.0
+    buyer.target_input_units = 100.0
+    backup_supplier.inventory_output = 10.0
+    backup_supplier.target_output = 100.0
+
+    model._prepare_reserved_capacity_contracts()
+
+    reserved_units = sum(
+        quantity
+        for supplier, quantity, _ in model.get_reserved_capacity_contracts(buyer)
+        if supplier is backup_supplier
+    )
+
+    assert np.isclose(reserved_units, 10.0 * model.reserved_capacity_share, atol=1e-9)

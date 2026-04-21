@@ -609,9 +609,9 @@ class EconomyModel(Model):
     def _prepare_reserved_capacity_contracts(self) -> None:
         """Reserve a bounded backup slice for the reserved-capacity strategy.
 
-        Contracts reserve against a supplier's expected available supply this
-        period: current inventory plus planned output, not current inventory
-        alone.
+        Contracts reserve against a supplier's currently available inventory.
+        Reserved capacity is modeled as priority access to a bounded slice of
+        on-hand stock, not as a hard commitment of future production.
         """
         self._reset_reserved_capacity_contracts()
         if not self.firm_adaptation_enabled or self.adaptation_strategy != "reserved_capacity":
@@ -643,10 +643,7 @@ class EconomyModel(Model):
             for supplier in backup_suppliers:
                 if remaining_reserved_units <= 1e-9:
                     break
-                expected_available_supply = max(
-                    0.0,
-                    supplier.inventory_output + max(0.0, getattr(supplier, "target_output", 0.0)),
-                )
+                expected_available_supply = max(0.0, supplier.inventory_output)
                 supplier_limit = reservable_inventory.setdefault(
                     supplier.unique_id,
                     max(0.0, expected_available_supply * self.reserved_capacity_share),
@@ -1167,14 +1164,20 @@ class EconomyModel(Model):
     #                               MESA STEP                               #
     # --------------------------------------------------------------------- #
     def step(self) -> None:  # noqa: D401, N802
-        """Advance model by one timestep (representing one year)."""
+        """Advance model by one timestep."""
         self.current_step += 1
 
         # Firms update resilience decisions before the new hazard state is sampled.
         self._advance_adaptation_learning()
 
-        # Each year: sample hazard independently for every cell based on RP
+        # Sample hazard independently for every cell based on per-step RP draws.
         self._sample_pixelwise_hazard()
+
+        # Recovery happens after current-step hazards are realized but before
+        # firms plan and produce, so decisions and execution share the same
+        # recovered damage state.
+        for firm in self._firms:
+            firm._apply_damage_recovery()
 
         # ---------------- Demand planning phase --------------------- #
         for firm in self._firms:
@@ -1348,9 +1351,10 @@ class EconomyModel(Model):
     def _sample_pixelwise_hazard(self) -> None:
         """Sample hazard only at agent locations using lazy loading.
 
-        Probability cell flooded with intensity from raster *i* is 1/RP_i each
-        year, independent across cells and RPs. If multiple RPs trigger on the
-        same cell in the same year we keep the maximum depth.
+        Annual event probabilities from raster *i* are converted into per-step
+        Bernoulli draws using ``1 - (1 - p_annual) ** (1 / steps_per_year)``,
+        independent across cells and return periods. If multiple return periods
+        trigger on the same cell within a step, we keep the maximum depth.
 
         Uses LazyHazard to sample directly from full-resolution GeoTIFF files
         without loading entire rasters into memory. This reduces memory usage
@@ -1485,6 +1489,9 @@ class EconomyModel(Model):
                 adapted_loss_fraction = ag.get_adapted_loss_fraction(combined_loss_agent)
                 pre_capital_stock = float(ag.capital_stock)
                 pre_output_inventory = float(ag.inventory_output)
+                capital_replacement_value = (
+                    pre_capital_stock * float(getattr(ag, "CAPITAL_INSTALLATION_COST", 1.0))
+                )
                 supplier_price_map = {
                     supplier.unique_id: max(float(supplier.price), 0.5)
                     for supplier in ag.connected_firms
@@ -1503,7 +1510,7 @@ class EconomyModel(Model):
                     adapted_loss_fraction=adapted_loss_fraction,
                 )
                 ag.direct_loss_expense_this_step += (
-                    pre_capital_stock * adapted_loss_fraction
+                    capital_replacement_value * adapted_loss_fraction
                     + pre_output_inventory * max(float(ag.price), 0.5) * adapted_loss_fraction
                     + input_inventory_value * adapted_loss_fraction
                 )
