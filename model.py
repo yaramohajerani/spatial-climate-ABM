@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import math
+import json
 from pathlib import Path
-from typing import Dict, List, Tuple, Iterable
+from typing import Dict, List, Tuple, Iterable, Any
 import warnings
 
 import numpy as np
@@ -14,11 +16,56 @@ from mesa import Model
 from mesa.datacollection import DataCollector
 from mesa.space import MultiGrid
 
-from agents import FirmAgent, HouseholdAgent
-from hazard_utils import lazy_hazard_from_geotiffs, LazyHazard
-from damage_functions import get_damage_functions, get_region_from_coords
+try:  # pragma: no cover - package import path
+    from .agents import FirmAgent, HouseholdAgent
+    from .hazard_utils import lazy_hazard_from_geotiffs, LazyHazard, SyntheticHazard
+    from .damage_functions import get_damage_functions, get_region_from_coords
+    from .shock_inputs import (
+        HazardRasterEvent,
+        LaneShock,
+        NodeShock,
+        RouteShock,
+        normalize_lane_shocks,
+        normalize_node_shocks,
+        normalize_raster_hazard_events,
+        normalize_route_shocks,
+    )
+    from .transport_runtime import (
+        dedupe_pairs,
+        inbound_route_exposure_ratio,
+        make_transport_patch,
+        route_exposure_ratio,
+    )
+except ImportError:  # pragma: no cover - flat script import path
+    from agents import FirmAgent, HouseholdAgent
+    from hazard_utils import lazy_hazard_from_geotiffs, LazyHazard, SyntheticHazard
+    from damage_functions import get_damage_functions, get_region_from_coords
+    from shock_inputs import (
+        HazardRasterEvent,
+        LaneShock,
+        NodeShock,
+        RouteShock,
+        normalize_lane_shocks,
+        normalize_node_shocks,
+        normalize_raster_hazard_events,
+        normalize_route_shocks,
+    )
+    from transport_runtime import (
+        dedupe_pairs,
+        inbound_route_exposure_ratio,
+        make_transport_patch,
+        route_exposure_ratio,
+    )
 
 Coords = Tuple[int, int]
+TransportPairs = List[Tuple[FirmAgent, FirmAgent]]
+ActiveTransportBlock = Tuple[float, TransportPairs]
+
+
+def _lon_between(src_lon: float, dst_lon: float, wp_lon: float) -> bool:
+    span = (dst_lon - src_lon + 540) % 360 - 180
+    wp_offset = (wp_lon - src_lon + 540) % 360 - 180
+    return (0 <= wp_offset <= span) if span >= 0 else (span <= wp_offset <= 0)
 
 
 class EconomyModel(Model):
@@ -45,6 +92,10 @@ class EconomyModel(Model):
         num_firms: int = 20,
         # Iterable of (return_period, start_step, end_step, hazard_type, path) tuples
         hazard_events: Iterable[Tuple[int, int, int, str, str | None]] | None = None,
+        raster_hazard_events: Iterable[HazardRasterEvent | Tuple[int, int, int, str, str | None] | dict[str, Any]] | None = None,
+        node_shocks: Iterable[NodeShock | dict[str, Any]] | None = None,
+        lane_shocks: Iterable[LaneShock | dict[str, Any]] | None = None,
+        route_shocks: Iterable[RouteShock | dict[str, Any]] | None = None,
         seed: int | None = None,
         start_year: int = 0,
         steps_per_year: int = 4,
@@ -55,6 +106,8 @@ class EconomyModel(Model):
         consumption_ratios: dict | None = None,
         grid_resolution: float = 1.0,
         household_relocation: bool = False,
+        damage_functions_path: str | None = None,
+        land_boundaries_path: str | None = None,
     ) -> None:  # noqa: D401
         super().__init__(seed=seed)
 
@@ -115,11 +168,20 @@ class EconomyModel(Model):
         self.start_year: int = start_year
         # Calendar granularity (e.g. 4 → quarterly, 12 → monthly)
         self.steps_per_year: int = steps_per_year
+        self.damage_functions_path = (
+            str(Path(damage_functions_path).expanduser())
+            if damage_functions_path is not None
+            else None
+        )
+        self.land_boundaries_path = (
+            str(Path(land_boundaries_path).expanduser())
+            if land_boundaries_path is not None
+            else None
+        )
 
         # --- Spatial environment & custom topology --- #
         self._firm_topology: dict | None = None
         if firm_topology_path is not None:
-            import json, pathlib
             topo_path = Path(firm_topology_path)
             if not topo_path.exists():
                 raise FileNotFoundError(f"Firm topology JSON not found: {topo_path}")
@@ -128,19 +190,25 @@ class EconomyModel(Model):
             # Override num_firms to match the topology file so downstream
             # components (e.g. dashboards, logging) see the correct value.
             num_firms = len(self._firm_topology.get("firms", []))
+        self._raw_topology: dict = self._firm_topology or {}
 
-        if hazard_events is None:
-            raise ValueError("hazard_events must be provided.")
+        self._raster_hazard_events = normalize_raster_hazard_events(
+            raster_hazard_events,
+            legacy_hazard_events=hazard_events,
+        )
+        self._node_shocks = normalize_node_shocks(node_shocks)
+        self._lane_shocks = normalize_lane_shocks(lane_shocks)
+        self._route_shocks = normalize_route_shocks(route_shocks)
 
         # Group by hazard type while preserving order to keep mapping consistent
         grouped_files: dict[str, list[Tuple[int, str]]] = defaultdict(list)
         grouped_ranges: dict[str, list[Tuple[int, int]]] = defaultdict(list)
 
-        for rp, start, end, htype, path in hazard_events:
-            if path is None:
+        for event in self._raster_hazard_events:
+            if event.path is None:
                 continue
-            grouped_files[htype].append((rp, path))
-            grouped_ranges[htype].append((start, end))
+            grouped_files[event.hazard_type].append((event.return_period, event.path))
+            grouped_ranges[event.hazard_type].append((event.start_step, event.end_step))
 
         # Store mapping of event index -> (start, end) per hazard type
         self._hazard_event_ranges: dict[str, List[Tuple[int, int]]] = dict(grouped_ranges)
@@ -149,13 +217,10 @@ class EconomyModel(Model):
         # This reduces memory from ~4GB to <1MB for global hazard datasets
         self.hazards: dict[str, LazyHazard] = {}
 
-        first_haz = None
         for htype, grp in grouped_files.items():
             haz, _, _ = lazy_hazard_from_geotiffs(grp, haz_type=htype)
             # Store lazy hazard that samples on-demand
             self.hazards[htype] = haz
-            if first_haz is None:
-                first_haz = haz
 
         # Agent grid resolution in degrees per cell (e.g., 1.0, 0.5, 0.25)
         # This is decoupled from the hazard raster resolution.
@@ -337,6 +402,7 @@ class EconomyModel(Model):
                 "ever_indirectly_disrupted_before_direct_hit": lambda a: getattr(a, "ever_indirectly_disrupted_before_direct_hit", np.nan),
             },
         )
+        self._install_transport_reporters()
 
         # ---------------- Land mask to avoid placing agents in the ocean ---------------- #
         self.land_coordinates: List[Coords] = self._load_or_compute_land_coordinates()
@@ -360,6 +426,23 @@ class EconomyModel(Model):
 
         # Populate agent caches after all agents created
         self._rebuild_agent_caches()
+        self._topology_id_to_agent: Dict[int, FirmAgent] = {
+            int(agent.unique_id): agent for agent in self._firms
+        }
+        self._primary_supplier_pairs: set[tuple[int, int]] = {
+            (int(supplier.unique_id), int(buyer.unique_id))
+            for buyer in self._firms
+            for supplier in getattr(buyer, "connected_firms", [])
+            if supplier is not None
+        }
+        self._initialize_transport_route_metrics()
+        self._register_node_shocks()
+        self._precomputed_route_transport_edges: List[Tuple[RouteShock, List[Tuple[FirmAgent, FirmAgent]]]] = []
+        self._precomputed_lane_transport_edges: List[Tuple[LaneShock, List[Tuple[FirmAgent, FirmAgent]]]] = []
+        self._build_route_transport_maps()
+        self._build_lane_transport_maps()
+        self._precomputed_transport_edges = self._precomputed_route_transport_edges
+        self._precomputed_link_edges = self._precomputed_lane_transport_edges
 
         # NOTE: With LazyHazard, we no longer need CLIMADA exposures/centroids.
         # Hazard sampling is done directly from GeoTIFF files at agent locations.
@@ -470,6 +553,12 @@ class EconomyModel(Model):
                 separators=(",", ":"),
                 ensure_ascii=True,
             ),
+            "DamageFunctionsPath": self.damage_functions_path or "",
+            "LandBoundariesPath": self.land_boundaries_path or "",
+            "RasterHazardEventCount": int(len(self._raster_hazard_events)),
+            "NodeShockCount": int(len(self._node_shocks)),
+            "LaneShockCount": int(len(self._lane_shocks)),
+            "RouteShockCount": int(len(self._route_shocks)),
         }
 
     def total_money(self) -> float:
@@ -723,6 +812,302 @@ class EconomyModel(Model):
             )
             return
 
+    def _register_node_shocks(self) -> None:
+        """Resolve node shocks to coordinates and register them as synthetic hazards."""
+        if not self._node_shocks:
+            return
+
+        for shock in self._node_shocks:
+            affected_coords = list(shock.affected_coords)
+            if shock.firm_ids:
+                for firm_id in shock.firm_ids:
+                    firm = self._topology_id_to_agent.get(int(firm_id))
+                    if firm is None or firm.pos is None:
+                        warnings.warn(
+                            f"NodeShock '{shock.label}' references unknown firm id {firm_id} — skipping.",
+                            UserWarning,
+                            stacklevel=2,
+                        )
+                        continue
+                    x, y = firm.pos
+                    affected_coords.append((float(self.lon_vals[x]), float(self.lat_vals[y])))
+
+            if not affected_coords:
+                warnings.warn(
+                    f"NodeShock '{shock.label}' resolved no coordinates — skipping.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                continue
+
+            haz = SyntheticHazard(
+                affected_coords=affected_coords,
+                intensity=shock.intensity,
+                haz_type=shock.hazard_type,
+                radius_deg=shock.radius_deg,
+                return_period=shock.return_period,
+            )
+            haz_key = shock.hazard_type
+            suffix = 0
+            while haz_key in self.hazards:
+                suffix += 1
+                haz_key = f"{shock.hazard_type}_{suffix}"
+            self.hazards[haz_key] = haz
+            self._hazard_event_ranges[haz_key] = [(shock.start_step, shock.end_step)]
+
+    def _build_route_transport_maps(self) -> None:
+        if not self._route_shocks:
+            return
+        topology_firms = self._raw_topology.get("firms", [])
+        topology_edges = self._raw_topology.get("edges", [])
+        for shock in self._route_shocks:
+            pairs = self._resolve_route_shock_edges(shock, topology_firms, topology_edges)
+            self._precomputed_route_transport_edges.append((shock, pairs))
+            if not pairs:
+                warnings.warn(
+                    f"RouteShock '{shock.label}' (tag: {shock.route_tag}) matched no supply edges in the topology.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+    def _build_lane_transport_maps(self) -> None:
+        if not self._lane_shocks:
+            return
+        for shock in self._lane_shocks:
+            pairs = self._resolve_lane_shock_edges(shock)
+            self._precomputed_lane_transport_edges.append((shock, pairs))
+            if not pairs:
+                warnings.warn(
+                    f"LaneShock '{shock.label}' matched no primary supplier edge in the instantiated topology.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+    def _resolve_route_shock_edges(
+        self,
+        shock: RouteShock,
+        topology_firms: list,
+        topology_edges: list,
+    ) -> TransportPairs:
+        firm_lookup: Dict[int, dict] = {int(f["id"]): f for f in topology_firms}
+        exposed_ids = {
+            int(f["id"])
+            for f in topology_firms
+            if shock.route_tag in f.get("route_dependencies", [])
+        }
+        if not exposed_ids:
+            return []
+
+        pairs: TransportPairs = []
+
+        if shock.waypoint_lon is not None and topology_edges:
+            for edge in topology_edges:
+                dst_id = int(edge["dst"])
+                if dst_id not in exposed_ids:
+                    continue
+                src_id = int(edge["src"])
+                src_firm = firm_lookup.get(src_id)
+                dst_firm = firm_lookup.get(dst_id)
+                if not src_firm or not dst_firm:
+                    continue
+                if _lon_between(
+                    float(src_firm["lon"]),
+                    float(dst_firm["lon"]),
+                    float(shock.waypoint_lon),
+                ):
+                    supplier_agent = self._topology_id_to_agent.get(src_id)
+                    buyer_agent = self._topology_id_to_agent.get(dst_id)
+                    if supplier_agent is not None and buyer_agent is not None:
+                        pairs.append((supplier_agent, buyer_agent))
+            if not pairs:
+                warnings.warn(
+                    f"RouteShock '{shock.label}' (tag: {shock.route_tag}) "
+                    f"has waypoint_lon={shock.waypoint_lon} but no topology edges route through it.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            return dedupe_pairs(pairs)
+
+        if topology_edges:
+            for edge in topology_edges:
+                dst_id = int(edge["dst"])
+                if dst_id not in exposed_ids:
+                    continue
+                src_id = int(edge["src"])
+                supplier_agent = self._topology_id_to_agent.get(src_id)
+                buyer_agent = self._topology_id_to_agent.get(dst_id)
+                if supplier_agent is not None and buyer_agent is not None:
+                    pairs.append((supplier_agent, buyer_agent))
+            if pairs:
+                return dedupe_pairs(pairs)
+
+        for exposed_id in exposed_ids:
+            buyer_agent = self._topology_id_to_agent.get(exposed_id)
+            if buyer_agent is None:
+                continue
+            for supplier_agent in getattr(buyer_agent, "connected_firms", []):
+                if supplier_agent is not None:
+                    pairs.append((supplier_agent, buyer_agent))
+
+        return dedupe_pairs(pairs)
+
+    def _resolve_lane_shock_edges(self, shock: LaneShock) -> TransportPairs:
+        supplier_agent = self._topology_id_to_agent.get(int(shock.supplier_id))
+        buyer_agent = self._topology_id_to_agent.get(int(shock.buyer_id))
+        if supplier_agent is None or buyer_agent is None:
+            warnings.warn(
+                f"LaneShock '{shock.label}' references unknown firm ids "
+                f"(supplier_id={shock.supplier_id}, buyer_id={shock.buyer_id}).",
+                UserWarning,
+                stacklevel=2,
+            )
+            return []
+        if (int(shock.supplier_id), int(shock.buyer_id)) not in self._primary_supplier_pairs:
+            warnings.warn(
+                f"LaneShock '{shock.label}' lane "
+                f"(supplier_id={shock.supplier_id}, buyer_id={shock.buyer_id}) "
+                "is not an active primary supplier relationship in this topology.",
+                UserWarning,
+                stacklevel=2,
+            )
+            return []
+        return [(supplier_agent, buyer_agent)]
+
+    def _initialize_transport_route_metrics(self) -> None:
+        for firm in self._firms:
+            firm.route_sales_attempted_this_step = 0.0
+            firm.route_sales_blocked_this_step = 0.0
+            firm.route_revenue_attempted_this_step = 0.0
+            firm.route_revenue_blocked_this_step = 0.0
+            firm.inbound_route_sales_attempted_this_step = 0.0
+            firm.inbound_route_sales_blocked_this_step = 0.0
+            firm.inbound_route_revenue_attempted_this_step = 0.0
+            firm.inbound_route_revenue_blocked_this_step = 0.0
+
+    def _reset_transport_route_metrics(self) -> None:
+        for firm in self._firms:
+            firm.route_sales_attempted_this_step = 0.0
+            firm.route_sales_blocked_this_step = 0.0
+            firm.route_revenue_attempted_this_step = 0.0
+            firm.route_revenue_blocked_this_step = 0.0
+            firm.inbound_route_sales_attempted_this_step = 0.0
+            firm.inbound_route_sales_blocked_this_step = 0.0
+            firm.inbound_route_revenue_attempted_this_step = 0.0
+            firm.inbound_route_revenue_blocked_this_step = 0.0
+
+    def _install_transport_reporters(self) -> None:
+        self.datacollector._new_model_reporter(
+            "Average_Direct_Route_Exposure",
+            lambda m: float(np.mean([route_exposure_ratio(f) for f in m._firms])) if m._firms else 0.0,
+        )
+        self.datacollector._new_model_reporter(
+            "Total_Route_Sales_Attempted",
+            lambda m: sum(getattr(f, "route_sales_attempted_this_step", 0.0) for f in m._firms),
+        )
+        self.datacollector._new_model_reporter(
+            "Total_Route_Sales_Blocked",
+            lambda m: sum(getattr(f, "route_sales_blocked_this_step", 0.0) for f in m._firms),
+        )
+        self.datacollector._new_model_reporter(
+            "Total_Route_Revenue_Attempted",
+            lambda m: sum(getattr(f, "route_revenue_attempted_this_step", 0.0) for f in m._firms),
+        )
+        self.datacollector._new_model_reporter(
+            "Total_Route_Revenue_Blocked",
+            lambda m: sum(getattr(f, "route_revenue_blocked_this_step", 0.0) for f in m._firms),
+        )
+        self.datacollector._new_model_reporter(
+            "Average_Inbound_Route_Exposure",
+            lambda m: float(np.mean([inbound_route_exposure_ratio(f) for f in m._firms])) if m._firms else 0.0,
+        )
+        self.datacollector._new_model_reporter(
+            "Total_Inbound_Route_Revenue_Attempted",
+            lambda m: sum(getattr(f, "inbound_route_revenue_attempted_this_step", 0.0) for f in m._firms),
+        )
+        self.datacollector._new_model_reporter(
+            "Total_Inbound_Route_Revenue_Blocked",
+            lambda m: sum(getattr(f, "inbound_route_revenue_blocked_this_step", 0.0) for f in m._firms),
+        )
+        self.datacollector._new_agent_reporter(
+            "direct_route_exposure",
+            lambda a: route_exposure_ratio(a),
+        )
+        self.datacollector._new_agent_reporter(
+            "inbound_route_exposure",
+            lambda a: inbound_route_exposure_ratio(a),
+        )
+        self.datacollector._new_agent_reporter(
+            "inbound_route_revenue_attempted",
+            lambda a: getattr(a, "inbound_route_revenue_attempted_this_step", np.nan),
+        )
+        self.datacollector._new_agent_reporter(
+            "inbound_route_revenue_blocked",
+            lambda a: getattr(a, "inbound_route_revenue_blocked_this_step", np.nan),
+        )
+        self.datacollector._new_agent_reporter(
+            "route_sales_attempted",
+            lambda a: getattr(a, "route_sales_attempted_this_step", np.nan),
+        )
+        self.datacollector._new_agent_reporter(
+            "route_sales_blocked",
+            lambda a: getattr(a, "route_sales_blocked_this_step", np.nan),
+        )
+        self.datacollector._new_agent_reporter(
+            "route_revenue_attempted",
+            lambda a: getattr(a, "route_revenue_attempted_this_step", np.nan),
+        )
+        self.datacollector._new_agent_reporter(
+            "route_revenue_blocked",
+            lambda a: getattr(a, "route_revenue_blocked_this_step", np.nan),
+        )
+
+    def _active_transport_blocks(self, step_number: int) -> List[ActiveTransportBlock]:
+        active: List[ActiveTransportBlock] = []
+        for shock, pairs in self._precomputed_route_transport_edges:
+            if not (shock.start_step <= step_number <= shock.end_step):
+                continue
+            if shock.return_period is not None:
+                p_fire = 1.0 - math.exp(-1.0 / (float(shock.return_period) * max(self.steps_per_year, 1)))
+                if self.random.random() >= p_fire:
+                    continue
+            active.append((float(shock.intensity), pairs))
+
+        for shock, pairs in self._precomputed_lane_transport_edges:
+            if not (shock.start_step <= step_number <= shock.end_step):
+                continue
+            if shock.blocked_fraction <= 1e-9:
+                continue
+            active.append((float(shock.blocked_fraction), pairs))
+        return active
+
+    def _apply_transport_patches(
+        self,
+        active: List[ActiveTransportBlock],
+    ) -> Dict[int, Tuple[FirmAgent, object]]:
+        if not active:
+            return {}
+
+        supplier_blocks: Dict[int, Tuple[FirmAgent, Dict[int, float]]] = {
+            int(supplier.unique_id): (supplier, {}) for supplier in self._firms
+        }
+        for blocked_fraction, pairs in active:
+            for supplier_agent, buyer_agent in pairs:
+                supplier_id = int(supplier_agent.unique_id)
+                buyer_id = int(buyer_agent.unique_id)
+                current = supplier_blocks[supplier_id][1].get(buyer_id, 0.0)
+                supplier_blocks[supplier_id][1][buyer_id] = max(current, blocked_fraction)
+
+        patches: Dict[int, Tuple[FirmAgent, object]] = {}
+        for supplier_id, (supplier, blocked_buyers) in supplier_blocks.items():
+            original = supplier.sell_goods_to_firm
+            patches[supplier_id] = (supplier, original)
+            supplier.sell_goods_to_firm = make_transport_patch(supplier, original, blocked_buyers)
+        return patches
+
+    def _remove_transport_patches(self, patches: Dict[int, Tuple[FirmAgent, object]]) -> None:
+        for supplier, original in patches.values():
+            supplier.sell_goods_to_firm = original
+
     def _count_reserved_capacity_contracts(self) -> int:
         return sum(
             1
@@ -952,7 +1337,13 @@ class EconomyModel(Model):
         """
 
         try:
-            world = gpd.read_file("./data/ne_110m_admin_0_countries")
+            if self.land_boundaries_path:
+                path = Path(self.land_boundaries_path).expanduser()
+            else:
+                local_path = Path(__file__).resolve().parent / "data" / "ne_110m_admin_0_countries"
+                repo_path = Path(__file__).resolve().parents[1] / "data" / "ne_110m_admin_0_countries"
+                path = local_path if local_path.exists() else repo_path
+            world = gpd.read_file(str(path))
             # Exclude Antarctica so agents are not spawned on that continent
             world = world[world["CONTINENT"] != "Antarctica"]
         except Exception:  # pragma: no cover – dataset missing / offline env
@@ -980,14 +1371,16 @@ class EconomyModel(Model):
     def _load_or_compute_land_coordinates(self) -> List[Coords]:
         """Load cached land coordinates when available, otherwise compute and persist them."""
 
-        cache_key = (len(self.lon_vals), len(self.lat_vals), float(self.grid_resolution))
+        path_tag = self.land_boundaries_path or "__default__"
+        cache_key = (len(self.lon_vals), len(self.lat_vals), float(self.grid_resolution), path_tag)
         cached = self._land_coordinate_cache.get(cache_key)
         if cached is not None:
             return cached.copy()
 
         cache_dir = Path(__file__).resolve().parent / ".cache"
         res_tag = str(self.grid_resolution).replace(".", "p")
-        cache_path = cache_dir / f"land_coordinates_{len(self.lon_vals)}x{len(self.lat_vals)}_{res_tag}.npy"
+        path_suffix = Path(path_tag).name.replace(".", "_").replace("-", "_")
+        cache_path = cache_dir / f"land_coordinates_{len(self.lon_vals)}x{len(self.lat_vals)}_{res_tag}_{path_suffix}.npy"
 
         if cache_path.exists():
             try:
@@ -1166,6 +1559,7 @@ class EconomyModel(Model):
     def step(self) -> None:  # noqa: D401, N802
         """Advance model by one timestep."""
         self.current_step += 1
+        self._reset_transport_route_metrics()
 
         # Firms update resilience decisions before the new hazard state is sampled.
         self._advance_adaptation_learning()
@@ -1198,8 +1592,14 @@ class EconomyModel(Model):
         firms = self._firms.copy()
         # Sort by broad supply-chain tier so upstream sectors replenish before downstream buyers.
         firms.sort(key=self._sector_priority)
-        for firm in firms:
-            firm.step()
+        transport_patches = self._apply_transport_patches(
+            self._active_transport_blocks(self.current_step)
+        )
+        try:
+            for firm in firms:
+                firm.step()
+        finally:
+            self._remove_transport_patches(transport_patches)
 
         # 3. Households consume the goods produced in the current period.
         households = self._households.copy()
@@ -1414,7 +1814,10 @@ class EconomyModel(Model):
                     if not (start <= self.current_step <= end):
                         continue
                 p_annual = haz.frequency[i]
-                p_hit = 1.0 - (1.0 - p_annual) ** (1.0 / max(1, self.steps_per_year))
+                if p_annual >= 1.0:
+                    p_hit = 1.0
+                else:
+                    p_hit = 1.0 - (1.0 - p_annual) ** (1.0 / max(1, self.steps_per_year))
                 if p_hit > 0:
                     active_events.append((i, p_hit))
 
@@ -1447,7 +1850,7 @@ class EconomyModel(Model):
 
         # Apply agent-specific damage using JRC damage functions
         # Get the global damage functions instance (loaded once, cached)
-        damage_funcs = get_damage_functions()
+        damage_funcs = get_damage_functions(self.damage_functions_path)
 
         def apply_damage(ag, is_firm: bool):
             if ag.pos is None:

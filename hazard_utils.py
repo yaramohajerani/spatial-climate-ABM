@@ -16,6 +16,9 @@ import rasterio
 Coords = Tuple[int, int]
 HazardEventSpec = Tuple[int, int, int, str, str | None]
 
+_DEPTH_SCALE: float = 6.0
+_DETERMINISTIC_FREQUENCY: float = 1e6
+
 
 class LazyHazard:
     """Memory-efficient hazard that samples from GeoTIFF files on-demand.
@@ -130,6 +133,62 @@ class LazyHazard:
             intensities[i, :] = self.sample_at_coords(coords, i)
 
         return intensities
+
+
+class SyntheticHazard:
+    """Point-driven hazard matching the ``LazyHazard`` sampling interface."""
+
+    def __init__(
+        self,
+        affected_coords: Sequence[Tuple[float, float]],
+        intensity: float,
+        haz_type: str = "SYNTHETIC",
+        radius_deg: float = 0.5,
+        return_period: float | None = None,
+    ) -> None:
+        self.haz_type = haz_type
+        self._affected = np.array(list(affected_coords), dtype=np.float64)
+        self._pseudo_depth = float(intensity) * _DEPTH_SCALE
+        self._radius_deg = float(radius_deg)
+
+        if return_period is None or return_period <= 0:
+            self.frequency = np.array([_DETERMINISTIC_FREQUENCY], dtype=np.float64)
+        else:
+            self.frequency = np.array([1.0 / float(return_period)], dtype=np.float64)
+
+        self.return_periods: List[int] = [
+            max(1, int(return_period)) if return_period else 1
+        ]
+
+    @property
+    def n_events(self) -> int:
+        return 1
+
+    def sample_at_coords(
+        self,
+        coords: List[Tuple[float, float]],
+        event_idx: int,
+    ) -> np.ndarray:
+        if event_idx != 0:
+            raise IndexError(f"SyntheticHazard has only 1 event; got event_idx={event_idx}")
+
+        result = np.zeros(len(coords), dtype=np.float64)
+        if len(self._affected) == 0:
+            return result
+
+        query = np.array(coords, dtype=np.float64)
+        for i in range(len(query)):
+            diffs = self._affected - query[i]
+            min_dist = float(np.min(np.hypot(diffs[:, 0], diffs[:, 1])))
+            if min_dist <= self._radius_deg:
+                result[i] = self._pseudo_depth
+        return result
+
+    def sample_all_events(
+        self,
+        coords: List[Tuple[float, float]],
+    ) -> np.ndarray:
+        return self.sample_at_coords(coords, 0).reshape(1, -1)
 
 
 def parse_hazard_event_specs(rp_files: list[str] | str | None) -> list[HazardEventSpec]:

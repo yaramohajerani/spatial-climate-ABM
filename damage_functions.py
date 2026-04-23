@@ -18,8 +18,18 @@ import numpy as np
 import pandas as pd
 
 
+def _resolve_default_damage_functions_path() -> Path:
+    local_path = Path(__file__).parent / "data" / "global_flood_depth_damage_functions.xlsx"
+    if local_path.exists():
+        return local_path
+    repo_path = Path(__file__).resolve().parents[1] / "data" / "global_flood_depth_damage_functions.xlsx"
+    if repo_path.exists():
+        return repo_path
+    return local_path
+
+
 # Default path to the JRC damage functions Excel file
-DEFAULT_DAMAGE_FUNCTIONS_PATH = Path(__file__).parent / "data" / "global_flood_depth_damage_functions.xlsx"
+DEFAULT_DAMAGE_FUNCTIONS_PATH = _resolve_default_damage_functions_path()
 
 # Mapping from model sectors to JRC damage classes
 SECTOR_TO_JRC_CLASS = {
@@ -252,16 +262,19 @@ class JRCDamageFunctions:
         return list(REGION_COLUMNS.keys())
 
 
-# Global instance for convenience (lazy loaded)
-_global_damage_functions: Optional[JRCDamageFunctions] = None
+# Global instances for convenience (lazy loaded) keyed by resolved path
+_global_damage_functions: Dict[Path, JRCDamageFunctions] = {}
 
 
-def get_damage_functions() -> JRCDamageFunctions:
-    """Get the global JRCDamageFunctions instance (lazy loaded)."""
-    global _global_damage_functions
-    if _global_damage_functions is None:
-        _global_damage_functions = JRCDamageFunctions()
-    return _global_damage_functions
+def get_damage_functions(excel_path: Optional[Path | str] = None) -> JRCDamageFunctions:
+    """Get a cached JRCDamageFunctions instance for the requested workbook."""
+    resolved_path = Path(excel_path) if excel_path is not None else DEFAULT_DAMAGE_FUNCTIONS_PATH
+    resolved_path = resolved_path.expanduser().resolve()
+    cached = _global_damage_functions.get(resolved_path)
+    if cached is None:
+        cached = JRCDamageFunctions(excel_path=resolved_path)
+        _global_damage_functions[resolved_path] = cached
+    return cached
 
 
 def calc_damage_fraction(
