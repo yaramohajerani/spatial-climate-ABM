@@ -8,10 +8,11 @@ import pytest
 import rasterio
 from rasterio.transform import from_origin
 
-from upstream import HazardRasterEvent, LaneShock, NodeShock, RouteShock, build_model, run_model
+from api import build_model, run_model
+from shock_inputs import HazardRasterEvent, LaneShock, NodeShock, RouteShock
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 _DAMAGE_FUNCTIONS_PATH = _REPO_ROOT / "data" / "global_flood_depth_damage_functions.xlsx"
 _LAND_BOUNDARIES_PATH = _REPO_ROOT / "data" / "ne_110m_admin_0_countries"
 

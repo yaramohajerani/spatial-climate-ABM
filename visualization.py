@@ -10,15 +10,17 @@ and consumption – evolve step-by-step. Parameters can be tweaked live.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any
+import datetime
+import json
 import os
+import pathlib
 import numpy as np
 import geopandas as gpd
 import solara
 from matplotlib.figure import Figure
 from mesa.visualization.utils import update_counter
 import networkx as nx
-import json, pathlib, datetime
 import matplotlib.pyplot as plt
 
 # Capture optional start year passed via environment
@@ -39,7 +41,7 @@ from model import EconomyModel
 # ------------------------------------------------------------------ #
 
 
-def _parse_hazard_events() -> List[Tuple[int, int, int, str, str]]:
+def _parse_hazard_events() -> list[tuple[int, int, int, str, str]]:
     """Parse the semicolon-separated ABM_HAZARD_EVENTS string.
 
     Expected format:
@@ -50,7 +52,7 @@ def _parse_hazard_events() -> List[Tuple[int, int, int, str, str]]:
     if not env_str:
         return []
 
-    events: List[Tuple[int, int, int, str, str]] = []
+    events: list[tuple[int, int, int, str, str]] = []
     for item in env_str.split(";"):
         if not item:
             continue
@@ -131,7 +133,7 @@ def CombinedBottleneckPlot(model):  # noqa: ANN001
 
 # Most parameters remain interactive sliders; the hazard list is fixed.
 
-_BASE_PARAMS: Dict[str, Any] = {
+_BASE_PARAMS: dict[str, Any] = {
     "num_households": {
         "type": "SliderInt",
         "label": "Households",
@@ -437,7 +439,6 @@ def DashboardRow(model):  # noqa: ANN001
         with solara.Column(style={"flex": "1", "minWidth": "300px", "overflowY": "auto"}):
             solara.Markdown("## Household metrics")
             PLOT_HH_WEALTH(model)
-            PLOT_HH_CAP(model)
             PLOT_HH_LABOR(model)
             PLOT_HH_CONS(model)
             PLOT_WAGE(model)
@@ -502,7 +503,6 @@ def SaveExitButton(model):  # noqa: ANN001
         print(f"[SaveExitButton] time-series figure saved to {img_path.absolute()}")
 
         # 3. Terminate app
-        import os
         os._exit(0)
 
     solara.Button(label="Save & Exit", color="danger", on_click=_on_click)

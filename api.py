@@ -4,17 +4,30 @@ from typing import Iterable, Mapping, Any
 
 import pandas as pd
 
-from .model import EconomyModel
-from .shock_inputs import (
-    HazardRasterEvent,
-    LaneShock,
-    NodeShock,
-    RouteShock,
-    normalize_lane_shocks,
-    normalize_node_shocks,
-    normalize_raster_hazard_events,
-    normalize_route_shocks,
-)
+try:  # pragma: no cover - package import path
+    from .model import EconomyModel
+    from .shock_inputs import (
+        HazardRasterEvent,
+        LaneShock,
+        NodeShock,
+        RouteShock,
+        normalize_lane_shocks,
+        normalize_node_shocks,
+        normalize_raster_hazard_events,
+        normalize_route_shocks,
+    )
+except ImportError:  # pragma: no cover - flat script / test import path
+    from model import EconomyModel  # type: ignore[no-redef]
+    from shock_inputs import (  # type: ignore[no-redef]
+        HazardRasterEvent,
+        LaneShock,
+        NodeShock,
+        RouteShock,
+        normalize_lane_shocks,
+        normalize_node_shocks,
+        normalize_raster_hazard_events,
+        normalize_route_shocks,
+    )
 
 
 def build_model(

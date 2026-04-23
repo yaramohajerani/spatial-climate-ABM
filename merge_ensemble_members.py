@@ -47,11 +47,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def build_ensemble_summary(member_df: pd.DataFrame) -> pd.DataFrame:
-    """Summarize member-level model outputs by step and scenario."""
-    return summarize_ensemble(member_df, group_cols=["Scenario", "Step", "Year"])
-
-
 def _step_year_map(df: pd.DataFrame) -> dict | None:
     if "Year" not in df.columns:
         return None
@@ -80,14 +75,6 @@ def _constant_metadata(df: pd.DataFrame, *, ignore: set[str] | None = None) -> d
             raise ValueError(f"{col} varies within a single member file and cannot be merged safely.")
         metadata[col] = values[0] if values else ""
     return metadata
-
-
-def _apply_metadata(df: pd.DataFrame, metadata: dict[str, object]) -> pd.DataFrame:
-    return apply_metadata(df, metadata)
-
-
-def _ensemble_seed_metadata(seed_values: list[int]) -> dict[str, object]:
-    return ensemble_seed_metadata(sorted(int(seed) for seed in seed_values))
 
 
 def merge_member_dataframes(
@@ -171,13 +158,13 @@ def merge_member_dataframes(
     merged_df = merged_df.sort_values(sort_cols).reset_index(drop=True)
     merged_metadata = {
         **(reference_metadata or {}),
-        **_ensemble_seed_metadata(sorted(int(seed) for seed in merged_df["Seed"].dropna().unique())),
+        **ensemble_seed_metadata(sorted(int(seed) for seed in merged_df["Seed"].dropna().unique())),
         f"{METADATA_PREFIX}RunTimestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
         f"{METADATA_PREFIX}SourceMemberFiles": ";".join(labels),
     }
-    merged_df = _apply_metadata(merged_df, merged_metadata)
-    summary_df = build_ensemble_summary(merged_df)
-    summary_df = _apply_metadata(summary_df, merged_metadata)
+    merged_df = apply_metadata(merged_df, merged_metadata)
+    summary_df = summarize_ensemble(merged_df, group_cols=["Scenario", "Step", "Year"])
+    summary_df = apply_metadata(summary_df, merged_metadata)
     return merged_df, summary_df
 
 

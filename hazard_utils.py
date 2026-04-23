@@ -7,14 +7,14 @@ rasters into memory.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Tuple, List, Sequence, Iterable
 
 import numpy as np
 import rasterio
 
-Coords = Tuple[int, int]
-HazardEventSpec = Tuple[int, int, int, str, str | None]
+Coords = tuple[int, int]
+HazardEventSpec = tuple[int, int, int, str, str | None]
 
 _DEPTH_SCALE: float = 6.0
 _DETERMINISTIC_FREQUENCY: float = 1e6
@@ -40,7 +40,7 @@ class LazyHazard:
 
     def __init__(
         self,
-        events: List[Tuple[int, str]],
+        events: list[tuple[int, str]],
         haz_type: str = "FL",
         nodata_threshold: float = -9000.0,
     ) -> None:
@@ -48,8 +48,8 @@ class LazyHazard:
         self.nodata_threshold = nodata_threshold
 
         # Store event metadata
-        self.event_files: List[Path] = []
-        self.return_periods: List[int] = []
+        self.event_files: list[Path] = []
+        self.return_periods: list[int] = []
         self.frequency: np.ndarray
 
         for rp, fpath in events:
@@ -78,7 +78,7 @@ class LazyHazard:
 
     def sample_at_coords(
         self,
-        coords: List[Tuple[float, float]],
+        coords: list[tuple[float, float]],
         event_idx: int,
     ) -> np.ndarray:
         """Sample hazard intensity at given (lon, lat) coordinates for one event.
@@ -112,7 +112,7 @@ class LazyHazard:
 
     def sample_all_events(
         self,
-        coords: List[Tuple[float, float]],
+        coords: list[tuple[float, float]],
     ) -> np.ndarray:
         """Sample all events at given coordinates.
 
@@ -161,7 +161,7 @@ class SyntheticHazard:
         else:
             self.frequency = np.array([1.0 / float(return_period)], dtype=np.float64)
 
-        self.return_periods: List[int] = [
+        self.return_periods: list[int] = [
             max(1, int(return_period)) if return_period else 1
         ]
 
@@ -171,7 +171,7 @@ class SyntheticHazard:
 
     def sample_at_coords(
         self,
-        coords: List[Tuple[float, float]],
+        coords: list[tuple[float, float]],
         event_idx: int,
     ) -> np.ndarray:
         if event_idx != 0:
@@ -191,9 +191,17 @@ class SyntheticHazard:
 
     def sample_all_events(
         self,
-        coords: List[Tuple[float, float]],
+        coords: list[tuple[float, float]],
     ) -> np.ndarray:
         return self.sample_at_coords(coords, 0).reshape(1, -1)
+
+
+def event_signature(events: list[HazardEventSpec]) -> str:
+    """Return a compact string representation of a list of hazard event specs."""
+    return ";".join(
+        f"{rp}:{start}:{end}:{haz_type}:{path if path is not None else 'None'}"
+        for rp, start, end, haz_type, path in events
+    )
 
 
 def parse_hazard_event_specs(rp_files: list[str] | str | None) -> list[HazardEventSpec]:
@@ -226,9 +234,9 @@ def parse_hazard_event_specs(rp_files: list[str] | str | None) -> list[HazardEve
 
 
 def lazy_hazard_from_geotiffs(
-    events: Iterable[Tuple[int, str]],
+    events: Iterable[tuple[int, str]],
     haz_type: str = "FL",
-) -> Tuple[LazyHazard, Sequence[float], Sequence[float]]:
+) -> tuple[LazyHazard, Sequence[float], Sequence[float]]:
     """Create a LazyHazard from GeoTIFF rasters without loading full data.
 
     This function reads only raster metadata, not the actual pixel data.
