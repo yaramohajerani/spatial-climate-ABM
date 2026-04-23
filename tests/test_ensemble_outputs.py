@@ -3,8 +3,19 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from plot_from_csv_paper import summarize_members_for_plot
-from run_simulation import _base_metadata, _build_ensemble_summary, _resolve_seed_list
+from upstream.plot_from_csv import summarize_members_for_plot
+from upstream.run_simulation import (
+    _base_metadata,
+    _build_ensemble_summary,
+    _coerce_shock_inputs,
+    _resolve_seed_list,
+)
+from upstream.shock_inputs import (
+    HazardRasterEvent,
+    LaneShock,
+    NodeShock,
+    RouteShock,
+)
 
 
 def test_resolve_seed_list_deduplicates_explicit_seeds() -> None:
@@ -104,6 +115,7 @@ def test_base_metadata_matches_model_adaptation_defaults() -> None:
         "min_money_survival": 1.0,
         "observation_radius": 4.0,
         "replacement_frequency": 10,
+        "reorganization_inheritance": "inherit_parent",
         "reserved_capacity_markup_cap": 0.1,
         "reserved_capacity_share": 0.35,
     }
@@ -178,7 +190,131 @@ def test_base_metadata_tracks_param_and_cli_provenance() -> None:
         "min_money_survival": 1.0,
         "observation_radius": 4.0,
         "replacement_frequency": 10,
+        "reorganization_inheritance": "inherit_parent",
         "reserved_capacity_markup_cap": 0.1,
         "reserved_capacity_share": 0.35,
     }
     assert metadata["Meta_RunCommand"]
+
+
+def test_base_metadata_records_explicit_resource_paths() -> None:
+    args = SimpleNamespace(
+        param_file="params.json",
+        topology="topology.json",
+        start_year=2000,
+        steps_per_year=4,
+        steps=40,
+        num_households=1000,
+        grid_resolution=0.25,
+        household_relocation=False,
+        no_hazards=False,
+        no_adaptation=False,
+        no_learning=False,
+        adaptation_strategy=None,
+        adaptation_sensitivity_min=None,
+        adaptation_sensitivity_max=None,
+        consumption_ratios={"retail": 1.0},
+        damage_functions_path="/tmp/damage.xlsx",
+        land_boundaries_path="/tmp/land",
+        save_agent_ensemble=False,
+        ensemble_plot_stat="mean",
+    )
+
+    metadata = _base_metadata(
+        args=args,
+        events=[(10, 1, 40, "FL", "hazard.tif")],
+        apply_hazards=True,
+        adaptation_enabled=False,
+        adaptation_config={},
+        scenario_label="hazard_only",
+        timestamp="20260421_000000",
+        param_data={},
+    )
+
+    assert metadata["Meta_DamageFunctionsPath"] == "/tmp/damage.xlsx"
+    assert metadata["Meta_LandBoundariesPath"] == "/tmp/land"
+
+
+def test_coerce_shock_inputs_normalizes_new_param_sections() -> None:
+    raster_events, node_events, lane_events, route_events = _coerce_shock_inputs(
+        legacy_rp_files=["10:1:2:FL:None"],
+        raster_hazard_events=[
+            {
+                "return_period": 25,
+                "start_step": 3,
+                "end_step": 4,
+                "hazard_type": "EQ",
+                "path": None,
+            }
+        ],
+        node_shocks=[
+            {
+                "label": "Node",
+                "hazard_type": "CUSTOM_NODE",
+                "intensity": 0.6,
+                "start_step": 1,
+                "end_step": 2,
+                "affected_coords": [[10.0, 20.0]],
+            }
+        ],
+        lane_shocks=[
+            {
+                "label": "Lane",
+                "links": [[1, 2], [3, 4]],
+                "capacity_fraction": 0.4,
+                "start_step": 5,
+                "end_step": 6,
+            }
+        ],
+        route_shocks=[
+            {
+                "label": "Route",
+                "route_tag": "TEST_ROUTE",
+                "intensity": 0.5,
+                "start_step": 7,
+                "end_step": 8,
+            }
+        ],
+    )
+
+    assert raster_events == [
+        HazardRasterEvent(return_period=10, start_step=1, end_step=2, hazard_type="FL", path=None),
+        HazardRasterEvent(return_period=25, start_step=3, end_step=4, hazard_type="EQ", path=None),
+    ]
+    assert node_events == [
+        NodeShock(
+            label="Node",
+            hazard_type="CUSTOM_NODE",
+            intensity=0.6,
+            start_step=1,
+            end_step=2,
+            affected_coords=((10.0, 20.0),),
+        )
+    ]
+    assert lane_events == [
+        LaneShock(
+            label="Lane #1",
+            supplier_id=1,
+            buyer_id=2,
+            capacity_fraction=0.4,
+            start_step=5,
+            end_step=6,
+        ),
+        LaneShock(
+            label="Lane #2",
+            supplier_id=3,
+            buyer_id=4,
+            capacity_fraction=0.4,
+            start_step=5,
+            end_step=6,
+        ),
+    ]
+    assert route_events == [
+        RouteShock(
+            label="Route",
+            route_tag="TEST_ROUTE",
+            intensity=0.5,
+            start_step=7,
+            end_step=8,
+        )
+    ]

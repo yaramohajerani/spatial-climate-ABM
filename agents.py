@@ -594,6 +594,9 @@ class FirmAgent(Agent):
         )
 
     def _primary_supplier_shortage_is_hazard_related(self) -> bool:
+        eps = 1e-9
+        if getattr(self, "inbound_route_sales_blocked_this_step", 0.0) > eps:
+            return True
         return any(supplier._has_hazard_disruption_signal() for supplier in self.connected_firms)
 
     def _backup_supplier_count(self) -> int:
@@ -1272,11 +1275,6 @@ class FirmAgent(Agent):
                 self.inventory_inputs.get(supplier.unique_id, 0.0)
                 for supplier in self.connected_firms
             )
-        primary_inventory_capacity = current_input_units + sum(
-            self.model.available_inventory_for_spot_sales(supplier)
-            for supplier in self.connected_firms
-        )
-
         remaining_inputs_needed = max(0.0, desired_input_units - current_input_units)
         if remaining_inputs_needed > 0 and self.connected_firms and self.INPUT_COEFF > 0:
             suppliers = sorted(
@@ -1291,7 +1289,7 @@ class FirmAgent(Agent):
                     remaining_inputs_needed -= bought
 
         if desired_input_units > 1e-9:
-            physical_shortfall_units = max(0.0, desired_input_units - primary_inventory_capacity)
+            physical_shortfall_units = max(0.0, remaining_inputs_needed)
             physical_shortfall_ratio = min(1.0, max(0.0, physical_shortfall_units / desired_input_units))
         else:
             physical_shortfall_ratio = 0.0
@@ -1365,7 +1363,7 @@ class FirmAgent(Agent):
         if desired_input_units > 1e-9:
             residual_hazard_shortfall_units = max(
                 0.0,
-                max(0.0, desired_input_units - primary_inventory_capacity) - continuity_purchase_coverage,
+                physical_shortfall_units - continuity_purchase_coverage,
             )
             self.supplier_disruption_this_step = (
                 min(1.0, max(0.0, residual_hazard_shortfall_units / desired_input_units))

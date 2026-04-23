@@ -18,6 +18,15 @@ multiple deployment channels, including:
 - `stockpiling` and `reserved_capacity` as additional experimental strategies
   (`stockpiling` currently means a larger finished-goods buffer, not extra input inventories)
 
+The codebase also supports first-class external shock APIs so callers do not 
+need wrapper-owned monkeypatches to model transport disruption:
+
+- `HazardRasterEvent` for GeoTIFF-backed hazard windows
+- `NodeShock` for explicit direct-damage shocks by coordinates or firm ids
+- `LaneShock` for explicit supplier -> buyer transport throttles
+- `RouteShock` for disruptions keyed by topology `route_dependencies`
+- `build_model(...)` and `run_model(...)` for direct Python use from the repo root
+
 ## What the Framework Does
 
 - Samples flood hazard rasters directly from GeoTIFF files at firm locations
@@ -59,6 +68,40 @@ Run a small headless test:
 ```bash
 python run_simulation.py --param-file quick_test_parameters.json
 ```
+
+Run directly from Python:
+
+```python
+from upstream import NodeShock, RouteShock, run_model
+
+model, results_df, agents_df = run_model(
+    steps=12,
+    num_households=100,
+    num_firms=30,
+    node_shocks=[
+        NodeShock(
+            label="Port outage",
+            hazard_type="PORT_OUTAGE",
+            intensity=0.4,
+            start_step=3,
+            end_step=5,
+            affected_coords=[(32.5, 29.9)],
+        )
+    ],
+    route_shocks=[
+        RouteShock(
+            label="Red Sea bottleneck",
+            route_tag="RED_SEA",
+            intensity=0.5,
+            start_step=3,
+            end_step=8,
+        )
+    ],
+)
+```
+
+`NodeShock.intensity` is normalized to `[0, 1]` and mapped to a synthetic flood
+pseudo-depth of `intensity × 6 m` before the upstream damage curves are applied.
 
 Run the main paper-style 20-seed comparison:
 
@@ -127,8 +170,14 @@ Key configuration blocks:
 
 - `rp_files`: hazard schedule encoded as
   `RP:START_STEP:END_STEP:HAZARD_TYPE:path`
+- `raster_hazard_events`: structured equivalent of `rp_files`
+- `node_shocks`: explicit direct-damage events with timing, normalized intensity
+  (`intensity × 6 m` pseudo-depth), and coordinates / firm ids
+- `lane_shocks`: explicit supplier -> buyer transport throttles
+- `route_shocks`: route-tag transport disruptions keyed by `route_dependencies`
 - `steps`, `start_year`, `steps_per_year`: simulation horizon
 - `topology`: firm locations and supply-chain edges
+- `damage_functions_path`, `land_boundaries_path`: optional explicit resource paths for environments where the data lives outside `upstream/data`
 - `consumption_ratios`: final-demand allocation over household-purchased sectors
   (`retail`, `wholesale`, `services`; non-final sectors are ignored with a warning)
 - `adaptation`: hazard-conditional firm adaptation settings

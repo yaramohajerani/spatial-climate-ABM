@@ -9,17 +9,43 @@ import subprocess
 import sys
 import numpy as np
 import pandas as pd
-# Import model and agent classes
-from model import EconomyModel
-from agents import FirmAgent, HouseholdAgent
-from ensemble_utils import (
-    ENSEMBLE_STAT_ORDER,
-    METADATA_PREFIX,
-    apply_metadata as apply_ensemble_metadata,
-    build_ensemble_summary as summarize_ensemble,
-    ensemble_seed_metadata as summarize_seed_metadata,
-)
-from hazard_utils import parse_hazard_event_specs
+
+try:  # pragma: no cover - package import path
+    from .model import EconomyModel
+    from .agents import FirmAgent, HouseholdAgent
+    from .ensemble_utils import (
+        ENSEMBLE_STAT_ORDER,
+        METADATA_PREFIX,
+        apply_metadata as apply_ensemble_metadata,
+        build_ensemble_summary as summarize_ensemble,
+        ensemble_seed_metadata as summarize_seed_metadata,
+    )
+    from .hazard_utils import parse_hazard_event_specs
+    from .shock_inputs import (
+        legacy_hazard_event_tuples,
+        normalize_lane_shocks,
+        normalize_node_shocks,
+        normalize_raster_hazard_events,
+        normalize_route_shocks,
+    )
+except ImportError:  # pragma: no cover - flat script import path
+    from model import EconomyModel
+    from agents import FirmAgent, HouseholdAgent
+    from ensemble_utils import (
+        ENSEMBLE_STAT_ORDER,
+        METADATA_PREFIX,
+        apply_metadata as apply_ensemble_metadata,
+        build_ensemble_summary as summarize_ensemble,
+        ensemble_seed_metadata as summarize_seed_metadata,
+    )
+    from hazard_utils import parse_hazard_event_specs
+    from shock_inputs import (
+        legacy_hazard_event_tuples,
+        normalize_lane_shocks,
+        normalize_node_shocks,
+        normalize_raster_hazard_events,
+        normalize_route_shocks,
+    )
 # Runner now expects one or more --rp-file arguments in the form
 # "<RP>:<START_STEP>:<END_STEP>:<TYPE>:<path>"
 
@@ -180,6 +206,25 @@ def _normalized_adaptation_config(adaptation_config: dict | None) -> dict[str, o
     }
 
 
+def _coerce_shock_inputs(
+    *,
+    legacy_rp_files: list[str] | None,
+    raster_hazard_events,
+    node_shocks,
+    lane_shocks,
+    route_shocks,
+):
+    legacy_events = parse_hazard_event_specs(legacy_rp_files) if legacy_rp_files else []
+    raster_events = normalize_raster_hazard_events(
+        raster_hazard_events,
+        legacy_hazard_events=legacy_events,
+    )
+    node_events = normalize_node_shocks(node_shocks)
+    lane_events = normalize_lane_shocks(lane_shocks)
+    route_events = normalize_route_shocks(route_shocks)
+    return raster_events, node_events, lane_events, route_events
+
+
 def _base_metadata(
     *,
     args,
@@ -226,6 +271,8 @@ def _base_metadata(
         f"{METADATA_PREFIX}NumHouseholds": int(args.num_households),
         f"{METADATA_PREFIX}GridResolution": float(args.grid_resolution),
         f"{METADATA_PREFIX}HouseholdRelocation": bool(args.household_relocation),
+        f"{METADATA_PREFIX}DamageFunctionsPath": str(getattr(args, "damage_functions_path", "") or ""),
+        f"{METADATA_PREFIX}LandBoundariesPath": str(getattr(args, "land_boundaries_path", "") or ""),
         f"{METADATA_PREFIX}ConsumptionRatios": _metadata_json(getattr(args, "consumption_ratios", None)),
         f"{METADATA_PREFIX}ParamConsumptionRatios": _metadata_json(param_data.get("consumption_ratios")),
         f"{METADATA_PREFIX}HHConsumptionPropensityIncome": float(HouseholdAgent.CONSUMPTION_PROPENSITY_INCOME),
@@ -304,8 +351,11 @@ def _finalize_agent_results(agent_df: pd.DataFrame, *, scenario_display: str, se
 def _run_single_simulation(
     *,
     args,
-    events,
-    apply_hazards: bool,
+    raster_events,
+    node_shocks,
+    lane_shocks,
+    route_shocks,
+    apply_shocks: bool,
     adaptation_config: dict,
     seed: int,
     scenario_display: str,
@@ -313,9 +363,12 @@ def _run_single_simulation(
     model = EconomyModel(
         num_households=args.num_households,
         num_firms=20,
-        hazard_events=events,
+        raster_hazard_events=raster_events,
+        node_shocks=node_shocks,
+        lane_shocks=lane_shocks,
+        route_shocks=route_shocks,
         seed=seed,
-        apply_hazard_impacts=apply_hazards,
+        apply_hazard_impacts=apply_shocks,
         firm_topology_path=args.topology,
         start_year=args.start_year,
         steps_per_year=args.steps_per_year,
@@ -323,6 +376,8 @@ def _run_single_simulation(
         consumption_ratios=args.consumption_ratios,
         grid_resolution=args.grid_resolution,
         household_relocation=args.household_relocation,
+        damage_functions_path=getattr(args, "damage_functions_path", None),
+        land_boundaries_path=getattr(args, "land_boundaries_path", None),
     )
 
     for _ in range(args.steps):
@@ -418,6 +473,12 @@ def _save_ensemble_plot(summary_df: pd.DataFrame, member_df: pd.DataFrame, outpu
 def main() -> None:  # noqa: D401
     args = _parse()
     param_data: dict = {}
+    args.raster_hazard_events = None
+    args.node_shocks = None
+    args.lane_shocks = None
+    args.route_shocks = None
+    args.damage_functions_path = None
+    args.land_boundaries_path = None
 
     # ---------------- Optional parameter file ---------------------------- #
     if args.param_file:
@@ -469,39 +530,50 @@ def main() -> None:  # noqa: D401
         # 4. Topology path --------------------------------------------------
         if not args.topology and param_data.get("topology"):
             args.topology = str(param_data["topology"])
-        
-        # 5. Adaptation parameters ------------------------------------------
+
+        # 5. Explicit shock sections ----------------------------------------
+        args.raster_hazard_events = param_data.get("raster_hazard_events", None)
+        args.node_shocks = param_data.get("node_shocks", None)
+        args.lane_shocks = param_data.get("lane_shocks", None)
+        args.route_shocks = param_data.get("route_shocks", None)
+
+        # 6. Resource paths -------------------------------------------------
+        if param_data.get("damage_functions_path") is not None:
+            args.damage_functions_path = str(param_data["damage_functions_path"])
+        if param_data.get("land_boundaries_path") is not None:
+            args.land_boundaries_path = str(param_data["land_boundaries_path"])
+
+        # 7. Adaptation parameters ------------------------------------------
         args.adaptation_params = param_data.get("adaptation", param_data.get("learning", {}))
 
-        # 6. Consumption ratios by sector -----------------------------------
+        # 8. Consumption ratios by sector -----------------------------------
         args.consumption_ratios = param_data.get("consumption_ratios", None)
 
-        # 7. Number of households -------------------------------------------
+        # 9. Number of households -------------------------------------------
         args.num_households = int(param_data.get("num_households", 100))
 
-        # 8. Grid resolution (degrees per cell) -----------------------------
+        # 10. Grid resolution (degrees per cell) ----------------------------
         args.grid_resolution = float(param_data.get("grid_resolution", 1.0))
 
-        # 9. Household relocation toggle -------------------------------------
+        # 11. Household relocation toggle -----------------------------------
         args.household_relocation = bool(param_data.get("household_relocation", False))
         if not args.save_agent_ensemble and "save_agent_ensemble" in param_data:
             args.save_agent_ensemble = bool(param_data.get("save_agent_ensemble", False))
         if args.ensemble_plot_stat == "mean" and "ensemble_plot_stat" in param_data:
             args.ensemble_plot_stat = str(param_data.get("ensemble_plot_stat", "mean"))
 
-    # Ensure we have at least one RP spec after merging param file -----------
-    if not args.rp_file:
-        raise SystemExit("No --rp-file entries provided and none found in parameter file.")
+    try:
+        raster_events, node_shocks, lane_shocks, route_shocks = _coerce_shock_inputs(
+            legacy_rp_files=args.rp_file,
+            raster_hazard_events=args.raster_hazard_events,
+            node_shocks=args.node_shocks,
+            lane_shocks=args.lane_shocks,
+            route_shocks=args.route_shocks,
+        )
+    except (TypeError, ValueError) as exc:  # noqa: BLE001
+        raise SystemExit(str(exc)) from exc
 
-    # First, parse the RP files into a list irrespective of --viz so we can
-    # pass them on to a potential Solara dashboard.
-    # Parsed as (return_period, start_step, end_step, hazard_type, path|None)
-    events: list[tuple[int, int, int, str, str | None]] = []
-    if args.rp_file:
-        try:
-            events = parse_hazard_event_specs(args.rp_file)
-        except ValueError as exc:  # noqa: BLE001
-            raise SystemExit(str(exc)) from exc
+    events = legacy_hazard_event_tuples(raster_events)
 
     seed_list = _resolve_seed_list(args)
     if args.viz and len(seed_list) > 1:
@@ -510,6 +582,9 @@ def main() -> None:  # noqa: D401
     # If visualization requested, delegate to Solara which hosts the dashboard
     if args.viz:
         import subprocess, sys, os
+
+        if node_shocks or lane_shocks or route_shocks:
+            raise SystemExit("Visualization currently supports raster_hazard_events only.")
 
         env = os.environ.copy()
         # Pass hazard events to the dashboard so it can build the same model
@@ -552,7 +627,8 @@ def main() -> None:  # noqa: D401
         args.household_relocation = False  # default disabled
 
     # Configure scenario settings
-    apply_hazards = not args.no_hazards
+    has_shock_inputs = bool(raster_events or node_shocks or lane_shocks or route_shocks)
+    apply_hazards = bool(has_shock_inputs and not args.no_hazards)
     disable_adaptation = bool(args.no_adaptation or args.no_learning)
     if disable_adaptation:
         adaptation_config = {**args.adaptation_params, "enabled": False}
@@ -625,8 +701,11 @@ def main() -> None:  # noqa: D401
         for seed in seed_list:
             _, seed_df, seed_agent_df, seed_effective_metadata = _run_single_simulation(
                 args=args,
-                events=events,
-                apply_hazards=apply_hazards,
+                raster_events=raster_events,
+                node_shocks=node_shocks,
+                lane_shocks=lane_shocks,
+                route_shocks=route_shocks,
+                apply_shocks=apply_hazards,
                 adaptation_config=adaptation_config,
                 seed=seed,
                 scenario_display=scenario_display,
@@ -672,8 +751,11 @@ def main() -> None:  # noqa: D401
 
     model, df, agent_df, effective_model_metadata = _run_single_simulation(
         args=args,
-        events=events,
-        apply_hazards=apply_hazards,
+        raster_events=raster_events,
+        node_shocks=node_shocks,
+        lane_shocks=lane_shocks,
+        route_shocks=route_shocks,
+        apply_shocks=apply_hazards,
         adaptation_config=adaptation_config,
         seed=seed_list[0],
         scenario_display=scenario_display,
