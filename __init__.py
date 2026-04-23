@@ -10,8 +10,11 @@ if str(_UPSTREAM_ROOT) not in sys.path:
 try:  # pragma: no cover - package import path
     from .api import build_model, run_model
     from .shock_inputs import HazardRasterEvent, LaneShock, NodeShock, RouteShock
-except ImportError:  # pragma: no cover - flat import / test runner context
-    pass
+except ImportError:
+    if __package__:  # pragma: no cover - genuine package import failure
+        raise
+    from api import build_model, run_model  # type: ignore[no-redef]
+    from shock_inputs import HazardRasterEvent, LaneShock, NodeShock, RouteShock  # type: ignore[no-redef]
 
 __all__ = [
     "build_model",

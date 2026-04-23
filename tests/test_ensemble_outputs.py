@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from ensemble_utils import build_ensemble_summary
+from ensemble_utils import apply_metadata, build_ensemble_summary, ensemble_seed_metadata
 from plot_from_csv import summarize_members_for_plot
 from run_simulation import (
     _base_metadata,
@@ -60,6 +60,16 @@ def test_member_summary_helpers_match_and_track_ensemble_size() -> None:
     assert mean_step0["Firm_Production"] == 40.0 / 3.0
     assert mean_step0["Household_Consumption"] == 16.0 / 3.0
     assert "Meta_AdaptationSensitivityMin" not in runner_summary.columns
+
+
+def test_ensemble_utils_metadata_helpers_track_seed_provenance() -> None:
+    df = pd.DataFrame({"Step": [0], "Value": [1.0]})
+
+    seed_metadata = ensemble_seed_metadata([3, 5])
+    enriched = apply_metadata(df, seed_metadata)
+
+    assert enriched["Meta_SeedCount"].iloc[0] == 2
+    assert enriched["Meta_SeedList"].iloc[0] == "3,5"
 
 
 def test_base_metadata_matches_model_adaptation_defaults() -> None:

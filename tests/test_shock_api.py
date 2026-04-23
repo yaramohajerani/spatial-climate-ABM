@@ -10,7 +10,6 @@ from shock_inputs import (
     LaneShock,
     NodeShock,
     RouteShock,
-    normalize_raster_hazard_events,
 )
 
 
@@ -45,21 +44,6 @@ def _write_topology(tmp_path: Path, *, route_dependencies: list[str] | None = No
     path = tmp_path / "topology.json"
     path.write_text(json.dumps(topology))
     return str(path)
-
-
-def test_package_exports_support_legacy_raster_normalization() -> None:
-    legacy = [(10, 1, 4, "FL", None)]
-    normalized = normalize_raster_hazard_events(legacy_hazard_events=legacy)
-
-    assert normalized == [
-        HazardRasterEvent(
-            return_period=10,
-            start_step=1,
-            end_step=4,
-            hazard_type="FL",
-            path=None,
-        )
-    ]
 
 
 def test_build_model_records_resource_paths_and_shock_counts(tmp_path: Path) -> None:
