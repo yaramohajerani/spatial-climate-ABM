@@ -3,19 +3,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from upstream import (
+from api import build_model, run_model
+from run_simulation import _coerce_shock_inputs
+from shock_inputs import (
     HazardRasterEvent,
     LaneShock,
     NodeShock,
     RouteShock,
-    build_model,
-    run_model,
+    normalize_raster_hazard_events,
 )
-from upstream.run_simulation import _coerce_shock_inputs
-from upstream.shock_inputs import normalize_raster_hazard_events
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 _DAMAGE_FUNCTIONS_PATH = _REPO_ROOT / "data" / "global_flood_depth_damage_functions.xlsx"
 _LAND_BOUNDARIES_PATH = _REPO_ROOT / "data" / "ne_110m_admin_0_countries"
 

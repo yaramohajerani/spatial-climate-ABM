@@ -3,14 +3,14 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from upstream.plot_from_csv import summarize_members_for_plot
-from upstream.run_simulation import (
+from ensemble_utils import build_ensemble_summary
+from plot_from_csv import summarize_members_for_plot
+from run_simulation import (
     _base_metadata,
-    _build_ensemble_summary,
     _coerce_shock_inputs,
     _resolve_seed_list,
 )
-from upstream.shock_inputs import (
+from shock_inputs import (
     HazardRasterEvent,
     LaneShock,
     NodeShock,
@@ -44,7 +44,7 @@ def test_member_summary_helpers_match_and_track_ensemble_size() -> None:
         }
     )
 
-    runner_summary = _build_ensemble_summary(member_df)
+    runner_summary = build_ensemble_summary(member_df, group_cols=["Scenario", "Step", "Year"])
     plot_summary = summarize_members_for_plot(member_df)
 
     sort_cols = ["Scenario", "Step", "EnsembleStatistic"]

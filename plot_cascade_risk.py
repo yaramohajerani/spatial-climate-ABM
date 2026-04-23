@@ -11,7 +11,7 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 import pandas as pd
 
-from plot_from_csv_paper import (
+from plot_from_csv import (
     infer_scenario_name,
     is_hazard_scenario,
     scenario_abbrev,

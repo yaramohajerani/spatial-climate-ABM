@@ -2,8 +2,8 @@ from pathlib import Path
 
 import numpy as np
 
-from upstream.hazard_utils import parse_hazard_event_specs
-from upstream.model import EconomyModel
+from hazard_utils import parse_hazard_event_specs
+from model import EconomyModel
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

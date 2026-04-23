@@ -35,7 +35,7 @@ import pandas as pd
 
 from agents import FirmAgent, HouseholdAgent
 from ensemble_utils import ENSEMBLE_STAT_ORDER, METADATA_PREFIX, apply_metadata, build_ensemble_summary as summarize_ensemble
-from hazard_utils import parse_hazard_event_specs
+from hazard_utils import event_signature, parse_hazard_event_specs
 from model import EconomyModel
 from run_simulation import _resolve_seed_list
 
@@ -232,13 +232,6 @@ def _merge_seed_args(args, params: dict) -> list[int]:
     return _resolve_seed_list(args)
 
 
-def _event_signature(events: list[tuple[int, int, int, str, str | None]]) -> str:
-    return ";".join(
-        f"{rp}:{start}:{end}:{haz_type}:{path if path is not None else 'None'}"
-        for rp, start, end, haz_type, path in events
-    )
-
-
 def _sensitivity_metadata(
     *,
     param_file: str,
@@ -259,7 +252,7 @@ def _sensitivity_metadata(
         f"{METADATA_PREFIX}TopologyPath": topology_path,
         f"{METADATA_PREFIX}TopologyStem": Path(topology_path).stem if topology_path else "",
         f"{METADATA_PREFIX}HazardEventCount": len(events),
-        f"{METADATA_PREFIX}HazardEvents": _event_signature(events),
+        f"{METADATA_PREFIX}HazardEvents": event_signature(events),
         f"{METADATA_PREFIX}StartYear": int(params.get("start_year", 0)),
         f"{METADATA_PREFIX}StepsPerYear": int(params.get("steps_per_year", 4)),
         f"{METADATA_PREFIX}StepsRequested": int(n_steps),

@@ -20,7 +20,7 @@ try:  # pragma: no cover - package import path
         build_ensemble_summary as summarize_ensemble,
         ensemble_seed_metadata as summarize_seed_metadata,
     )
-    from .hazard_utils import parse_hazard_event_specs
+    from .hazard_utils import event_signature, parse_hazard_event_specs
     from .shock_inputs import (
         legacy_hazard_event_tuples,
         normalize_lane_shocks,
@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover - flat script import path
         build_ensemble_summary as summarize_ensemble,
         ensemble_seed_metadata as summarize_seed_metadata,
     )
-    from hazard_utils import parse_hazard_event_specs
+    from hazard_utils import event_signature, parse_hazard_event_specs
     from shock_inputs import (
         legacy_hazard_event_tuples,
         normalize_lane_shocks,
@@ -168,13 +168,6 @@ def _safe_git_commit() -> str:
     return proc.stdout.strip()
 
 
-def _event_signature(events: list[tuple[int, int, int, str, str | None]]) -> str:
-    return ";".join(
-        f"{rp}:{start}:{end}:{haz_type}:{path if path is not None else 'None'}"
-        for rp, start, end, haz_type, path in events
-    )
-
-
 def _metadata_json(value: object | None) -> str:
     if value is None:
         return ""
@@ -264,7 +257,7 @@ def _base_metadata(
             "" if getattr(args, "adaptation_sensitivity_max", None) is None else float(args.adaptation_sensitivity_max)
         ),
         f"{METADATA_PREFIX}HazardEventCount": len(events),
-        f"{METADATA_PREFIX}HazardEvents": _event_signature(events),
+        f"{METADATA_PREFIX}HazardEvents": event_signature(events),
         f"{METADATA_PREFIX}StartYear": int(args.start_year),
         f"{METADATA_PREFIX}StepsPerYear": int(args.steps_per_year),
         f"{METADATA_PREFIX}StepsRequested": int(args.steps),
@@ -310,14 +303,6 @@ def _base_metadata(
         f"{METADATA_PREFIX}GitCommit": _safe_git_commit(),
         f"{METADATA_PREFIX}SourceMemberFiles": "",
     }
-
-
-def _ensemble_seed_metadata(seed_list: list[int]) -> dict[str, object]:
-    return summarize_seed_metadata(seed_list)
-
-
-def _apply_metadata(df: pd.DataFrame, metadata: dict[str, object]) -> pd.DataFrame:
-    return apply_ensemble_metadata(df, metadata)
 
 
 def _model_effective_metadata(model: EconomyModel) -> dict[str, object]:
@@ -400,11 +385,6 @@ def _run_single_simulation(
     return model, df, agent_df, _model_effective_metadata(model)
 
 
-def _build_ensemble_summary(member_df: pd.DataFrame) -> pd.DataFrame:
-    """Summarize member-level model outputs by step and scenario."""
-    return summarize_ensemble(member_df, group_cols=["Scenario", "Step", "Year"])
-
-
 def _save_ensemble_plot(summary_df: pd.DataFrame, member_df: pd.DataFrame, output_path: Path, *, highlight_stat: str) -> None:
     """Create a lightweight ensemble plot with faint member lines and a summary line."""
     import matplotlib.pyplot as plt
@@ -479,6 +459,12 @@ def main() -> None:  # noqa: D401
     args.route_shocks = None
     args.damage_functions_path = None
     args.land_boundaries_path = None
+    args.steps_per_year = 4
+    args.adaptation_params = {}
+    args.consumption_ratios = None
+    args.num_households = 100
+    args.grid_resolution = 1.0
+    args.household_relocation = False
 
     # ---------------- Optional parameter file ---------------------------- #
     if args.param_file:
@@ -524,8 +510,7 @@ def main() -> None:  # noqa: D401
             args.start_year = int(param_data["start_year"])
 
         # 3c. Steps per year -----------------------------------------------
-        if not hasattr(args, "steps_per_year"):
-            args.steps_per_year = int(param_data.get("steps_per_year", 4))
+        args.steps_per_year = int(param_data.get("steps_per_year", 4))
 
         # 4. Topology path --------------------------------------------------
         if not args.topology and param_data.get("topology"):
@@ -581,7 +566,7 @@ def main() -> None:  # noqa: D401
 
     # If visualization requested, delegate to Solara which hosts the dashboard
     if args.viz:
-        import subprocess, sys, os
+        import os
 
         if node_shocks or lane_shocks or route_shocks:
             raise SystemExit("Visualization currently supports raster_hazard_events only.")
@@ -601,30 +586,6 @@ def main() -> None:  # noqa: D401
         cmd = [sys.executable, "-m", "solara", "run", "visualization.py"]
         subprocess.run(cmd, env=env, check=False)
         return
-
-    # Ensure steps_per_year attribute exists even if no param file
-    if not hasattr(args, "steps_per_year"):
-        args.steps_per_year = 4
-    
-    # Ensure adaptation_params exists even if no param file
-    if not hasattr(args, "adaptation_params"):
-        args.adaptation_params = {}
-
-    # Ensure consumption_ratios exists even if no param file
-    if not hasattr(args, "consumption_ratios"):
-        args.consumption_ratios = None  # model will use default
-
-    # Ensure num_households exists even if no param file
-    if not hasattr(args, "num_households"):
-        args.num_households = 100  # default
-
-    # Ensure grid_resolution exists even if no param file
-    if not hasattr(args, "grid_resolution"):
-        args.grid_resolution = 1.0  # default 1 degree
-
-    # Ensure household_relocation exists even if no param file
-    if not hasattr(args, "household_relocation"):
-        args.household_relocation = False  # default disabled
 
     # Configure scenario settings
     has_shock_inputs = bool(raster_events or node_shocks or lane_shocks or route_shocks)
@@ -686,7 +647,7 @@ def main() -> None:  # noqa: D401
             timestamp=timestamp,
             param_data=param_data,
         ),
-        **_ensemble_seed_metadata(seed_list),
+        **summarize_seed_metadata(seed_list),
     }
 
     # Save results with scenario label + timestamp
@@ -719,9 +680,9 @@ def main() -> None:  # noqa: D401
         if effective_model_metadata:
             metadata = {**metadata, **effective_model_metadata}
         member_df = pd.concat(member_frames, ignore_index=True)
-        member_df = _apply_metadata(member_df, metadata)
-        summary_df = _build_ensemble_summary(member_df)
-        summary_df = _apply_metadata(summary_df, metadata)
+        member_df = apply_ensemble_metadata(member_df, metadata)
+        summary_df = summarize_ensemble(member_df, group_cols=["Scenario", "Step", "Year"])
+        summary_df = apply_ensemble_metadata(summary_df, metadata)
         summary_df.to_csv(main_csv_path, index=False)
 
         members_csv_path = f"{output_filename}_members.csv"
@@ -729,7 +690,7 @@ def main() -> None:  # noqa: D401
 
         if args.save_agent_ensemble and agent_member_frames:
             agent_member_df = pd.concat(agent_member_frames, ignore_index=True)
-            agent_member_df = _apply_metadata(agent_member_df, metadata)
+            agent_member_df = apply_ensemble_metadata(agent_member_df, metadata)
             agent_member_df.to_csv(agent_csv_path, index=False)
 
         ensemble_plot_path = Path(f"{output_filename}_ensemble.png")
@@ -761,8 +722,8 @@ def main() -> None:  # noqa: D401
         scenario_display=scenario_display,
     )
     metadata = {**metadata, **effective_model_metadata}
-    df = _apply_metadata(df, metadata)
-    agent_df = _apply_metadata(agent_df, metadata)
+    df = apply_ensemble_metadata(df, metadata)
+    agent_df = apply_ensemble_metadata(agent_df, metadata)
 
     df.to_csv(main_csv_path, index=False)
     agent_df.to_csv(agent_csv_path, index=False)
