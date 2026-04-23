@@ -82,6 +82,14 @@ class HazardRasterEvent:
 
 @dataclass(frozen=True)
 class NodeShock:
+    """Explicit direct-damage event for coordinates and/or topology firm ids.
+
+    ``intensity`` is normalized to ``[0, 1]`` and mapped to a synthetic flood
+    pseudo-depth of ``intensity * 6 m`` before passing through the upstream
+    damage curves. This keeps node shocks on the same damage-function scale as
+    raster flood inputs.
+    """
+
     label: str
     hazard_type: str
     intensity: float
@@ -218,9 +226,12 @@ class RouteShock:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "RouteShock":
+        route_tag = value.get("route_tag", value.get("bottleneck_id"))
+        if route_tag is None or not str(route_tag).strip():
+            raise ValueError("RouteShock requires route_tag or bottleneck_id")
         return cls(
             label=str(value.get("label", "Route shock")),
-            route_tag=str(value.get("route_tag", value.get("bottleneck_id"))),
+            route_tag=str(route_tag),
             intensity=float(value["intensity"]),
             start_step=int(value["start_step"]),
             end_step=int(value["end_step"]),

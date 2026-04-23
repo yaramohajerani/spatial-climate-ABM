@@ -100,6 +100,9 @@ model, results_df, agents_df = run_model(
 )
 ```
 
+`NodeShock.intensity` is normalized to `[0, 1]` and mapped to a synthetic flood
+pseudo-depth of `intensity × 6 m` before the upstream damage curves are applied.
+
 Run the main paper-style 20-seed comparison:
 
 ```bash
@@ -168,7 +171,8 @@ Key configuration blocks:
 - `rp_files`: hazard schedule encoded as
   `RP:START_STEP:END_STEP:HAZARD_TYPE:path`
 - `raster_hazard_events`: structured equivalent of `rp_files`
-- `node_shocks`: explicit direct-damage events with timing, intensity, and coordinates / firm ids
+- `node_shocks`: explicit direct-damage events with timing, normalized intensity
+  (`intensity × 6 m` pseudo-depth), and coordinates / firm ids
 - `lane_shocks`: explicit supplier -> buyer transport throttles
 - `route_shocks`: route-tag transport disruptions keyed by `route_dependencies`
 - `steps`, `start_year`, `steps_per_year`: simulation horizon

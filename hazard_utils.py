@@ -136,7 +136,12 @@ class LazyHazard:
 
 
 class SyntheticHazard:
-    """Point-driven hazard matching the ``LazyHazard`` sampling interface."""
+    """Point-driven hazard matching the ``LazyHazard`` sampling interface.
+
+    Synthetic node shocks use a normalized intensity in ``[0, 1]``. That value
+    is mapped to a pseudo-depth via ``intensity * 6 m`` so the resulting damage
+    is evaluated through the same flood damage curves used for raster hazards.
+    """
 
     def __init__(
         self,

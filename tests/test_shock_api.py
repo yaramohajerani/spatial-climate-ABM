@@ -210,3 +210,19 @@ def test_param_input_normalization_expands_lane_link_lists() -> None:
             end_step=8,
         )
     ]
+
+
+def test_route_shock_from_mapping_requires_route_tag_or_bottleneck_id() -> None:
+    try:
+        RouteShock.from_mapping(
+            {
+                "label": "Route",
+                "intensity": 0.4,
+                "start_step": 1,
+                "end_step": 2,
+            }
+        )
+    except ValueError as exc:
+        assert "route_tag or bottleneck_id" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("Expected RouteShock.from_mapping() to reject missing route identifiers")

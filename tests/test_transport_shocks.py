@@ -16,9 +16,15 @@ _DAMAGE_FUNCTIONS_PATH = _REPO_ROOT / "data" / "global_flood_depth_damage_functi
 _LAND_BOUNDARIES_PATH = _REPO_ROOT / "data" / "ne_110m_admin_0_countries"
 
 
-def _write_transport_topology(tmp_path: Path, *, route_dependencies: list[str] | None = None) -> str:
+def _write_transport_topology(
+    tmp_path: Path,
+    *,
+    route_dependencies: list[str] | None = None,
+    firm_ids: tuple[int, int, int, int] = (1, 2, 3, 4),
+) -> str:
+    commodity_a, buyer_id, retail_id, commodity_b = firm_ids
     buyer = {
-        "id": 2,
+        "id": buyer_id,
         "sector": "manufacturing",
         "lon": 1.0,
         "lat": 1.0,
@@ -29,14 +35,14 @@ def _write_transport_topology(tmp_path: Path, *, route_dependencies: list[str] |
 
     topology = {
         "firms": [
-            {"id": 1, "sector": "commodity", "lon": 0.0, "lat": 0.0, "capital": 5.0},
+            {"id": commodity_a, "sector": "commodity", "lon": 0.0, "lat": 0.0, "capital": 5.0},
             buyer,
-            {"id": 3, "sector": "retail", "lon": 2.0, "lat": 1.0, "capital": 5.0},
-            {"id": 4, "sector": "commodity", "lon": -1.0, "lat": 0.0, "capital": 5.0},
+            {"id": retail_id, "sector": "retail", "lon": 2.0, "lat": 1.0, "capital": 5.0},
+            {"id": commodity_b, "sector": "commodity", "lon": -1.0, "lat": 0.0, "capital": 5.0},
         ],
         "edges": [
-            {"src": 1, "dst": 2},
-            {"src": 2, "dst": 3},
+            {"src": commodity_a, "dst": buyer_id},
+            {"src": buyer_id, "dst": retail_id},
         ],
     }
     path = tmp_path / "transport_topology.json"
@@ -211,3 +217,73 @@ def test_mixed_raster_node_and_route_shocks_run_together(tmp_path: Path) -> None
     assert "Average_Realized_Direct_Loss" in results_df.columns
     assert float(results_df["Flooded_Firms"].max()) > 0.0
     assert float(results_df["Average_Realized_Direct_Loss"].max()) > 0.0
+
+
+def test_shocks_resolve_nonsequential_topology_ids(tmp_path: Path) -> None:
+    topology_path = _write_transport_topology(
+        tmp_path,
+        route_dependencies=["TEST_ROUTE"],
+        firm_ids=(10, 20, 30, 40),
+    )
+    model = build_model(
+        num_households=20,
+        firm_topology_path=topology_path,
+        apply_hazard_impacts=False,
+        adaptation_params={"enabled": False},
+        consumption_ratios={"retail": 1.0},
+        seed=13,
+        damage_functions_path=str(_DAMAGE_FUNCTIONS_PATH),
+        land_boundaries_path=str(_LAND_BOUNDARIES_PATH),
+        node_shocks=[
+            NodeShock(
+                label="Node",
+                hazard_type="CUSTOM_NODE",
+                intensity=0.5,
+                start_step=1,
+                end_step=1,
+                firm_ids=(10,),
+            )
+        ],
+        lane_shocks=[
+            LaneShock(
+                label="Lane",
+                supplier_id=10,
+                buyer_id=20,
+                capacity_fraction=0.4,
+                start_step=1,
+                end_step=1,
+            )
+        ],
+        route_shocks=[
+            RouteShock(
+                label="Route",
+                route_tag="TEST_ROUTE",
+                intensity=0.3,
+                start_step=1,
+                end_step=1,
+            )
+        ],
+    )
+
+    supplier = model._topology_id_to_agent[10]
+    buyer = model._topology_id_to_agent[20]
+
+    assert supplier.unique_id != 10
+    assert buyer.unique_id != 20
+
+    lane_pairs = model._precomputed_lane_transport_edges[0][1]
+    route_pairs = model._precomputed_route_transport_edges[0][1]
+
+    assert [
+        (getattr(src, "topology_id", src.unique_id), getattr(dst, "topology_id", dst.unique_id))
+        for src, dst in lane_pairs
+    ] == [(10, 20)]
+    assert [
+        (getattr(src, "topology_id", src.unique_id), getattr(dst, "topology_id", dst.unique_id))
+        for src, dst in route_pairs
+    ] == [(10, 20)]
+
+    x, y = supplier.pos
+    lon = float(model.lon_vals[x])
+    lat = float(model.lat_vals[y])
+    assert model.hazards["CUSTOM_NODE"].sample_at_coords([(lon, lat)], 0)[0] > 0.0

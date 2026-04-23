@@ -427,10 +427,13 @@ class EconomyModel(Model):
         # Populate agent caches after all agents created
         self._rebuild_agent_caches()
         self._topology_id_to_agent: Dict[int, FirmAgent] = {
-            int(agent.unique_id): agent for agent in self._firms
+            int(getattr(agent, "topology_id", agent.unique_id)): agent for agent in self._firms
         }
         self._primary_supplier_pairs: set[tuple[int, int]] = {
-            (int(supplier.unique_id), int(buyer.unique_id))
+            (
+                int(getattr(supplier, "topology_id", supplier.unique_id)),
+                int(getattr(buyer, "topology_id", buyer.unique_id)),
+            )
             for buyer in self._firms
             for supplier in getattr(buyer, "connected_firms", [])
             if supplier is not None
@@ -1447,9 +1450,11 @@ class EconomyModel(Model):
                     pos=(x, y),
                     sector=firm.get("sector", "manufacturing"),
                 )
+                # Preserve the external topology identifier for shock lookups.
+                ag.topology_id = int(firm["id"])
                 ag.capital_stock = float(firm.get("capital", 1.0))
                 self.grid.place_agent(ag, (x, y))
-                id_to_agent[firm["id"]] = ag
+                id_to_agent[int(firm["id"])] = ag
 
             # Now we have populated firm_agents_list
             firm_agents_list = list(id_to_agent.values())
