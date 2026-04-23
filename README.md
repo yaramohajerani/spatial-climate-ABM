@@ -18,8 +18,8 @@ multiple deployment channels, including:
 - `stockpiling` and `reserved_capacity` as additional experimental strategies
   (`stockpiling` currently means a larger finished-goods buffer, not extra input inventories)
 
-This fork also exposes first-class external shock APIs so callers do not need
-wrapper-owned monkeypatches to model transport disruption:
+The codebase also supports first-class external shock APIs so callers do not 
+need wrapper-owned monkeypatches to model transport disruption:
 
 - `HazardRasterEvent` for GeoTIFF-backed hazard windows
 - `NodeShock` for explicit direct-damage shocks by coordinates or firm ids
