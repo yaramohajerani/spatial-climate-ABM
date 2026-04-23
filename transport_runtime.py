@@ -58,10 +58,10 @@ def make_transport_patch(supplier_firm, original_sell, blocked_buyers: dict):
                 unit_price=unit_price,
                 reservation_buyer_id=reservation_buyer_id,
             )
-            supplier_firm.raw_supplier_disruption_this_step = max(
-                supplier_firm.raw_supplier_disruption_this_step,
-                blocked_fraction,
-            )
+            # Keep pair-specific transport attribution on the buyer via the
+            # inbound blocked counters above. Seller-side route metrics still
+            # capture lost sales directly, but blocked lanes should not mark
+            # the supplier as having an upstream input shortage.
             return result
 
         return original_sell(

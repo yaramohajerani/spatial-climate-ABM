@@ -594,6 +594,9 @@ class FirmAgent(Agent):
         )
 
     def _primary_supplier_shortage_is_hazard_related(self) -> bool:
+        eps = 1e-9
+        if getattr(self, "inbound_route_sales_blocked_this_step", 0.0) > eps:
+            return True
         return any(supplier._has_hazard_disruption_signal() for supplier in self.connected_firms)
 
     def _backup_supplier_count(self) -> int:
