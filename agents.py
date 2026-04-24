@@ -59,10 +59,13 @@ class HouseholdAgent(Agent):
         self.labor_income_this_step: float = 0.0
         self.dividend_income_last_step: float = 0.0
         self.dividend_income_this_step: float = 0.0
+        self.dividend_income_received_this_step: float = 0.0
         self.capital_income_last_step: float = 0.0
         self.capital_income_this_step: float = 0.0
+        self.capital_income_received_this_step: float = 0.0
         self.adaptation_income_last_step: float = 0.0
         self.adaptation_income_this_step: float = 0.0
+        self.adaptation_income_received_this_step: float = 0.0
 
         # Filled by the model after all agents are created
         self.nearby_firms: List["FirmAgent"] = []
@@ -149,6 +152,12 @@ class HouseholdAgent(Agent):
                 self.labor_sold += 1
                 return True
         return False
+
+    def begin_step_income_accounting(self) -> None:
+        """Reset per-step income receipt counters before any transfers occur."""
+        self.dividend_income_received_this_step = 0.0
+        self.capital_income_received_this_step = 0.0
+        self.adaptation_income_received_this_step = 0.0
 
     # ---------------- Mesa API ---------------- #
     def supply_labor(self) -> None:
@@ -392,8 +401,8 @@ class FirmAgent(Agent):
         self.wage_bill_this_step: float = 0.0
         self.input_spend_this_step: float = 0.0
         self.depreciation_this_step: float = 0.0
-        self.operating_profit_this_step: float = 0.0
-        self.profit_this_step: float = 0.0
+        self.operating_surplus_this_step: float = 0.0
+        self.net_profit_this_step: float = 0.0
         self.direct_loss_expense_this_step: float = 0.0
         self.dividends_paid_this_step: float = 0.0
         self.investment_spending_this_step: float = 0.0
@@ -476,6 +485,7 @@ class FirmAgent(Agent):
         self.last_perceived_continuity_risk: float = 0.0
         self.pending_adaptation_increment: float = 0.0
         self.adaptation_update_count: int = 0
+        self.deferred_capital_repair: bool = False
 
         # Exposure-state diagnostics for cascading-risk analysis.
         self.ever_directly_hit: bool = False
@@ -510,6 +520,23 @@ class FirmAgent(Agent):
 
         self.pending_adaptation_increment = 0.0
         self.continuity_capital = max(0.0, self.continuity_capital * (1.0 - self.resilience_decay))
+
+    @property
+    def operating_profit_this_step(self) -> float:
+        """Backward-compatible alias for the firm's operating surplus."""
+        return self.operating_surplus_this_step
+
+    @property
+    def profit_this_step(self) -> float:
+        """Backward-compatible alias for the firm's net profit."""
+        return self.net_profit_this_step
+
+    def begin_step_financial_accounting(self) -> None:
+        """Reset profit and payout flows before any within-step cash movements occur."""
+        self.operating_surplus_this_step = 0.0
+        self.net_profit_this_step = 0.0
+        self.dividends_paid_this_step = 0.0
+        self.investment_spending_this_step = 0.0
 
     @property
     def resilience_capital(self) -> float:
@@ -764,43 +791,82 @@ class FirmAgent(Agent):
         )
         return spending
 
-    def _allocate_positive_profit(self, *, positive_profit: float, operating_cash_reserve: float) -> None:
-        """Allocate positive profits across capital maintenance, expansion, and adaptation."""
-        investment_share = 0.5
-        available_cash = self._available_cash_after_reserve(operating_cash_reserve)
+    def _fund_deferred_capital_repair_before_planning(self) -> float:
+        """Spend available cash on disaster-deferred capital repair before planning.
 
+        Flood losses do not destroy cash directly, but they do create a repair need.
+        We represent that need in reduced form by deferring capital replacement
+        until the start of the next step, where it competes with the firm's
+        existing cash buffer before new hazards and operations are realized.
+        """
+        if not self.deferred_capital_repair:
+            return 0.0
+
+        operating_cash_reserve = max(self.MIN_LIQUIDITY_BUFFER, self.money * self.LIQUIDITY_BUFFER_RATIO)
+        available_cash = self._available_cash_after_reserve(operating_cash_reserve)
         maintenance_capital_gap = max(0.0, self.base_capital_target - self.capital_stock)
         maintenance_spending = min(
-            positive_profit,
             maintenance_capital_gap * self.CAPITAL_INSTALLATION_COST,
             available_cash,
         )
         self._install_capital(maintenance_spending)
 
+        remaining_gap = max(0.0, self.base_capital_target - self.capital_stock)
+        self.deferred_capital_repair = remaining_gap > 1e-9
+        return maintenance_spending
+
+    def _fund_base_capital_maintenance_from_earnings(
+        self,
+        *,
+        distributable_earnings: float,
+        operating_cash_reserve: float,
+    ) -> float:
+        """Use current earnings to rebuild the firm's base capital target."""
         available_cash = self._available_cash_after_reserve(operating_cash_reserve)
-        residual_profit = max(0.0, positive_profit - self.investment_spending_this_step)
+        maintenance_capital_gap = max(0.0, self.base_capital_target - self.capital_stock)
+        maintenance_spending = min(
+            distributable_earnings,
+            maintenance_capital_gap * self.CAPITAL_INSTALLATION_COST,
+            available_cash,
+        )
+        self._install_capital(maintenance_spending)
+        return maintenance_spending
+
+    def _allocate_distributable_earnings(
+        self,
+        *,
+        distributable_earnings: float,
+        operating_cash_reserve: float,
+    ) -> None:
+        """Allocate post-loss earnings across expansion and adaptation."""
+        investment_share = 0.5
+        available_cash = self._available_cash_after_reserve(operating_cash_reserve)
+        residual_earnings = max(0.0, distributable_earnings - self.investment_spending_this_step)
         expansion_capital_gap = max(0.0, self.target_capital_stock - self.capital_stock)
         discretionary_investment_spending = min(
-            residual_profit * investment_share,
+            residual_earnings * investment_share,
             expansion_capital_gap * self.CAPITAL_INSTALLATION_COST,
             available_cash,
         )
         self._install_capital(discretionary_investment_spending)
 
         available_cash = self._available_cash_after_reserve(operating_cash_reserve)
-        investable_profit = max(0.0, positive_profit - self.investment_spending_this_step)
-        if self.adaptation_enabled and available_cash > 0 and investable_profit > 0:
+        investable_earnings = max(0.0, distributable_earnings - self.investment_spending_this_step)
+        if self.adaptation_enabled and available_cash > 0 and investable_earnings > 0:
             self._fund_adaptation_after_operations(
                 available_cash=available_cash,
-                investable_profit=investable_profit,
+                investable_profit=investable_earnings,
             )
 
-    def _pay_dividends(self, *, positive_profit: float, operating_cash_reserve: float) -> None:
+    def _pay_dividends(self, *, distributable_earnings: float, operating_cash_reserve: float) -> None:
         if not self.model._households:
             return
         available_cash = self._available_cash_after_reserve(operating_cash_reserve)
         desired_dividends = min(
-            max(0.0, positive_profit - self.investment_spending_this_step - self.adaptation_spending_this_step),
+            max(
+                0.0,
+                distributable_earnings - self.investment_spending_this_step - self.adaptation_spending_this_step,
+            ),
             available_cash,
         )
         if desired_dividends > 0:
@@ -1084,10 +1150,6 @@ class FirmAgent(Agent):
         self.wage_bill_this_step = 0.0
         self.input_spend_this_step = 0.0
         self.depreciation_this_step = 0.0
-        self.profit_this_step = 0.0
-        self.dividends_paid_this_step = 0.0
-        self.investment_spending_this_step = 0.0
-        self.operating_profit_this_step = 0.0
         self.required_working_capital = 0.0
         self.working_capital_credit_limit = 0.0
         self.working_capital_credit_used_this_step = 0.0
@@ -1471,16 +1533,15 @@ class FirmAgent(Agent):
     def close_step(self) -> None:
         """Persist realised sales after all market transactions for the period."""
 
-        accounting_profit = (
+        self.operating_surplus_this_step = (
             self.revenue_this_step
             - self.wage_bill_this_step
             - self.input_spend_this_step
             - self.depreciation_this_step
         )
-        self.operating_profit_this_step = accounting_profit
-        # This is a broader accounting diagnostic than the cash profit used for
-        # payout decisions below because it includes direct hazard write-downs.
-        self.profit_this_step = accounting_profit - self.direct_loss_expense_this_step
+        # Net profit includes current-period direct loss write-downs even though
+        # the cash to fund future repair remains in the firm until it is actually spent.
+        self.net_profit_this_step = self.operating_surplus_this_step - self.direct_loss_expense_this_step
 
         # Positive operating cash profit is either paid out to household owners
         # as dividends or recycled into installed capital. Because the model has
@@ -1496,15 +1557,29 @@ class FirmAgent(Agent):
             self._liquidity_buffer,
             self.wage_bill_this_step + self.input_spend_this_step,
         )
-        positive_profit = max(0.0, accounting_profit)
-        self._allocate_positive_profit(
-            positive_profit=positive_profit,
-            operating_cash_reserve=operating_cash_reserve,
-        )
-        self._pay_dividends(
-            positive_profit=positive_profit,
-            operating_cash_reserve=operating_cash_reserve,
-        )
+        distributable_earnings = max(0.0, self.net_profit_this_step)
+        current_direct_loss = self.direct_loss_expense_this_step > 1e-9
+        if current_direct_loss:
+            # Disaster repair is deferred to the start of the next step so that
+            # shocks constrain same-period payouts instead of being repaired instantly.
+            self.deferred_capital_repair = True
+        else:
+            self._fund_base_capital_maintenance_from_earnings(
+                distributable_earnings=distributable_earnings,
+                operating_cash_reserve=operating_cash_reserve,
+            )
+            remaining_gap = max(0.0, self.base_capital_target - self.capital_stock)
+            self.deferred_capital_repair = self.deferred_capital_repair and remaining_gap > 1e-9
+
+        if not current_direct_loss and not self.deferred_capital_repair:
+            self._allocate_distributable_earnings(
+                distributable_earnings=distributable_earnings,
+                operating_cash_reserve=operating_cash_reserve,
+            )
+            self._pay_dividends(
+                distributable_earnings=distributable_earnings,
+                operating_cash_reserve=operating_cash_reserve,
+            )
         self.inventory_available_last_step = self.inventory_output + self.sales_this_step
         self._update_post_step_state()
 

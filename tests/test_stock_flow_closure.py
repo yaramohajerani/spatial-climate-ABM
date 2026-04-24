@@ -102,7 +102,9 @@ def test_adaptation_spending_is_deferred_and_returned_to_households() -> None:
     assert np.isclose(firm.resilience_capital, decayed_resilience, atol=1e-9)
 
     firm._fund_adaptation_after_operations(available_cash=50.0, investable_profit=50.0)
-    household_adaptation_income = sum(h.adaptation_income_this_step for h in model._households)
+    household_adaptation_income = sum(
+        h.adaptation_income_received_this_step for h in model._households
+    )
 
     assert firm.adaptation_spending_this_step > 0.0
     assert firm.money < 200.0
@@ -118,7 +120,7 @@ def test_firms_replace_base_capital_before_paying_dividends() -> None:
 
     firm.money = 200.0
     firm.base_capital_target = 100.0
-    firm.target_capital_stock = 120.0
+    firm.target_capital_stock = 100.0
     firm.capital_stock = 90.0
     firm.revenue_this_step = 20.0
     firm.wage_bill_this_step = 0.0
@@ -132,6 +134,65 @@ def test_firms_replace_base_capital_before_paying_dividends() -> None:
     assert np.isclose(firm.investment_spending_this_step, 15.0, atol=1e-9)
     assert np.isclose(firm.capital_stock, 105.0, atol=1e-9)
     assert np.isclose(firm.dividends_paid_this_step, 5.0, atol=1e-9)
+    assert np.isclose(model.total_money(), initial_total_money, atol=1e-9)
+
+
+def test_direct_losses_defer_repair_and_block_same_step_discretionary_payouts() -> None:
+    """Disaster losses should block same-step repair, adaptation, and dividends."""
+    model = build_closed_economy_model(adaptation_enabled=True)
+    firm = model._firms[0]
+
+    firm.money = 200.0
+    firm.base_capital_target = 100.0
+    firm.target_capital_stock = 120.0
+    firm.capital_stock = 90.0
+    firm.continuity_capital = 0.5
+    firm.pending_adaptation_increment = 0.10
+    firm.revenue_this_step = 40.0
+    firm.wage_bill_this_step = 0.0
+    firm.input_spend_this_step = 0.0
+    firm.depreciation_this_step = 0.0
+    firm.direct_loss_expense_this_step = 25.0
+    firm._liquidity_buffer = 0.0
+
+    firm.close_step()
+
+    assert np.isclose(firm.operating_surplus_this_step, 40.0, atol=1e-9)
+    assert np.isclose(firm.net_profit_this_step, 15.0, atol=1e-9)
+    assert firm.deferred_capital_repair is True
+    assert np.isclose(firm.investment_spending_this_step, 0.0, atol=1e-9)
+    assert np.isclose(firm.adaptation_spending_this_step, 0.0, atol=1e-9)
+    assert np.isclose(firm.dividends_paid_this_step, 0.0, atol=1e-9)
+    assert np.isclose(firm.capital_stock, 90.0, atol=1e-9)
+    assert np.isclose(firm.money, 200.0, atol=1e-9)
+
+
+def test_deferred_capital_repair_spends_cash_at_start_of_next_step() -> None:
+    """Deferred repair should use cash next step and recycle spending to households."""
+    model = build_closed_economy_model(adaptation_enabled=False)
+    firm = model._firms[0]
+
+    for household in model._households:
+        household.begin_step_income_accounting()
+    firm.begin_step_financial_accounting()
+
+    firm.money = 200.0
+    firm.base_capital_target = 100.0
+    firm.capital_stock = 90.0
+    firm.deferred_capital_repair = True
+
+    initial_total_money = model.total_money()
+    repair_spending = firm._fund_deferred_capital_repair_before_planning()
+    household_capital_income = sum(
+        h.capital_income_received_this_step for h in model._households
+    )
+
+    assert np.isclose(repair_spending, 15.0, atol=1e-9)
+    assert np.isclose(firm.investment_spending_this_step, 15.0, atol=1e-9)
+    assert np.isclose(firm.capital_stock, 100.0, atol=1e-9)
+    assert np.isclose(firm.money, 185.0, atol=1e-9)
+    assert firm.deferred_capital_repair is False
+    assert np.isclose(household_capital_income, repair_spending, atol=1e-9)
     assert np.isclose(model.total_money(), initial_total_money, atol=1e-9)
 
 

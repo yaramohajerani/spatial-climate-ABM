@@ -279,8 +279,8 @@ class EconomyModel(Model):
                 "Firm_Consumption": lambda m: sum(f.consumption for f in m._firms),
                 "Firm_Wealth": lambda m: sum(f.money for f in m._firms),
                 "Firm_Capital": lambda m: sum(f.capital_stock for f in m._firms),
-                "Firm_Profits": lambda m: sum(f.profit_this_step for f in m._firms),
-                "Firm_Operating_Profits": lambda m: sum(f.operating_profit_this_step for f in m._firms),
+                "Firm_Profits": lambda m: sum(f.net_profit_this_step for f in m._firms),
+                "Firm_Operating_Profits": lambda m: sum(f.operating_surplus_this_step for f in m._firms),
                 "Firm_Direct_Loss_Expenses": lambda m: sum(f.direct_loss_expense_this_step for f in m._firms),
                 "Firm_Dividends_Paid": lambda m: sum(f.dividends_paid_this_step for f in m._firms),
                 "Firm_Investment_Spending": lambda m: sum(f.investment_spending_this_step for f in m._firms),
@@ -290,9 +290,9 @@ class EconomyModel(Model):
                 "Household_Labor_Sold": lambda m: sum(h.labor_sold for h in m._households),
                 "Household_Consumption": lambda m: sum(h.consumption for h in m._households),
                 "Household_Labor_Income": lambda m: sum(h.labor_income_this_step for h in m._households),
-                "Household_Dividend_Income": lambda m: sum(h.dividend_income_this_step for h in m._households),
-                "Household_Capital_Income": lambda m: sum(h.capital_income_this_step for h in m._households),
-                "Household_Adaptation_Income": lambda m: sum(h.adaptation_income_this_step for h in m._households),
+                "Household_Dividend_Income": lambda m: sum(h.dividend_income_received_this_step for h in m._households),
+                "Household_Capital_Income": lambda m: sum(h.capital_income_received_this_step for h in m._households),
+                "Household_Adaptation_Income": lambda m: sum(h.adaptation_income_received_this_step for h in m._households),
                 "Average_Risk": lambda m: np.mean(list(m.hazard_map.values())),
                 "Mean_Wage": lambda m: m.mean_wage,
                 "Mean_Price": lambda m: np.mean([f.price for f in m._firms]) if m._firms else 0.0,
@@ -364,11 +364,11 @@ class EconomyModel(Model):
                 "sales_last_step": lambda a: getattr(a, "sales_last_step", np.nan),
                 "household_sales_last_step": lambda a: getattr(a, "household_sales_last_step", np.nan),
                 "labor_income": lambda a: getattr(a, "labor_income_this_step", np.nan),
-                "dividend_income": lambda a: getattr(a, "dividend_income_this_step", np.nan),
-                "capital_income": lambda a: getattr(a, "capital_income_this_step", np.nan),
-                "adaptation_income": lambda a: getattr(a, "adaptation_income_this_step", np.nan),
-                "profit": lambda a: getattr(a, "profit_this_step", np.nan),
-                "operating_profit": lambda a: getattr(a, "operating_profit_this_step", np.nan),
+                "dividend_income": lambda a: getattr(a, "dividend_income_received_this_step", np.nan),
+                "capital_income": lambda a: getattr(a, "capital_income_received_this_step", np.nan),
+                "adaptation_income": lambda a: getattr(a, "adaptation_income_received_this_step", np.nan),
+                "profit": lambda a: getattr(a, "net_profit_this_step", np.nan),
+                "operating_profit": lambda a: getattr(a, "operating_surplus_this_step", np.nan),
                 "direct_loss_expense": lambda a: getattr(a, "direct_loss_expense_this_step", np.nan),
                 "dividends_paid": lambda a: getattr(a, "dividends_paid_this_step", np.nan),
                 "investment_spending": lambda a: getattr(a, "investment_spending_this_step", np.nan),
@@ -578,10 +578,13 @@ class EconomyModel(Model):
             household.money += per_household
             if income_kind == "dividend":
                 household.dividend_income_this_step += per_household
+                household.dividend_income_received_this_step += per_household
             elif income_kind == "capital":
                 household.capital_income_this_step += per_household
+                household.capital_income_received_this_step += per_household
             elif income_kind == "adaptation":
                 household.adaptation_income_this_step += per_household
+                household.adaptation_income_received_this_step += per_household
             else:
                 raise ValueError(f"Unknown household income kind: {income_kind}")
 
@@ -1566,8 +1569,18 @@ class EconomyModel(Model):
         self.current_step += 1
         self._reset_transport_route_metrics()
 
+        for household in self._households:
+            household.begin_step_income_accounting()
+        for firm in self._firms:
+            firm.begin_step_financial_accounting()
+
         # Firms update resilience decisions before the new hazard state is sampled.
         self._advance_adaptation_learning()
+
+        # Capital destroyed in the previous step can only be rebuilt now, before
+        # the new period's hazards and operating decisions are realized.
+        for firm in self._firms:
+            firm._fund_deferred_capital_repair_before_planning()
 
         # Sample hazard independently for every cell based on per-step RP draws.
         self._sample_pixelwise_hazard()
