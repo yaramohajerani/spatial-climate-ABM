@@ -39,7 +39,7 @@ def test_zero_household_payout_paths_do_not_leak_money() -> None:
     initial_total_money = model.total_money()
 
     capital_spending = firm._install_capital(25.0)
-    firm._pay_dividends(positive_profit=40.0, operating_cash_reserve=0.0)
+    firm._pay_dividends(distributable_earnings=40.0, operating_cash_reserve=0.0)
     firm.continuity_capital = 0.5
     firm.pending_adaptation_increment = 0.2
     maintenance_spending, investment_spending = firm._fund_adaptation_after_operations(
@@ -155,7 +155,7 @@ def test_finance_constraints_get_their_own_limiting_factor() -> None:
     assert firm.limiting_factor == "finance"
 
 
-def test_recovery_is_applied_before_planning_and_not_after_close_step() -> None:
+def test_recovery_is_applied_after_close_step_and_not_before_planning() -> None:
     model = _build_model()
     firm = model._firms[0]
     observed_damage_during_planning: list[float] = []
@@ -173,8 +173,8 @@ def test_recovery_is_applied_before_planning_and_not_after_close_step() -> None:
     model.step()
 
     assert observed_damage_during_planning
-    assert observed_damage_during_planning[0] > 0.5
-    assert np.isclose(firm.damage_factor, observed_damage_during_planning[0], atol=1e-9)
+    assert np.isclose(observed_damage_during_planning[0], 0.5, atol=1e-9)
+    assert firm.damage_factor > observed_damage_during_planning[0]
 
 
 def test_reserved_capacity_contracts_only_reserve_on_hand_inventory() -> None:

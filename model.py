@@ -1585,12 +1585,6 @@ class EconomyModel(Model):
         # Sample hazard independently for every cell based on per-step RP draws.
         self._sample_pixelwise_hazard()
 
-        # Recovery happens after current-step hazards are realized but before
-        # firms plan and produce, so decisions and execution share the same
-        # recovered damage state.
-        for firm in self._firms:
-            firm._apply_damage_recovery()
-
         # ---------------- Demand planning phase --------------------- #
         for firm in self._firms:
             firm.plan_operations()
@@ -1629,6 +1623,12 @@ class EconomyModel(Model):
         #    household transactions have been recorded.
         for firm in firms:
             firm.close_step()
+
+        # Recovery happens only after the current period's shock, planning,
+        # production, and accounting have all closed, so any productivity
+        # rebound affects the next step rather than smoothing the current one.
+        for firm in self._firms:
+            firm._apply_damage_recovery()
 
         # ---------------- Record average wage for data collection ----- #
         if self._firms:
