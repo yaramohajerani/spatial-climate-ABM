@@ -161,16 +161,17 @@ The step sequence is:
 1. Increment the model time counter and reset transport-route metrics.
 2. Reset firm adaptation accounting and decay existing continuity capital.
 3. If the step is an adaptation decision step for a firm, refresh its continuity target and pending adaptation increment using the hazard information accumulated from previous steps.
-4. Sample the current hazard realization at all occupied agent cells and apply direct firm losses.
-5. Apply liquidity-dependent recovery to firm damage states before firms plan operations.
+4. Fund any capital repair deferred from the previous period, using available firm cash above the operating reserve.
+5. Sample the current hazard realization at all occupied agent cells and apply direct firm losses.
 6. Each firm plans operations: output target, labor demand, input demand, liquidity buffer, working-capital ceiling, and capital target.
 7. If the reserved-capacity strategy is active, create reserved supplier contracts before procurement begins.
 8. Households supply labor. They search for employers, optionally relocate if that feature is enabled, and sell labor to hiring firms.
 9. Firms execute production in broad sector order. Commodity firms act before manufacturing firms, which act before retail/service firms. Ties within broad sector tiers are randomized each step.
 10. During firm execution, wages and prices are updated first using prior-period information, then firms procure inputs, optionally access continuity-enabled backup channels, produce output, clear employees, and depreciate capital.
 11. Households consume final goods after current-period production is complete.
-12. Firms close the accounting period: compute profits, install productive capital, fund adaptation from residual cash, pay dividends, and update adaptive expectations and exposure diagnostics.
-13. The model updates the mean wage, collects model-level and agent-level observations, and then checks whether failed firms should be reorganized at the configured global replacement interval.
+12. Firms close the accounting period: compute profits, install productive capital when no current direct loss blocks it, fund adaptation from residual cash, pay dividends, and update adaptive expectations and exposure diagnostics.
+13. Firms partially recover damage factors after the current period's production and accounting have closed, so recovery affects the next period rather than smoothing the current shock.
+14. The model updates the mean wage, collects model-level and agent-level observations, and then checks whether failed firms should be reorganized at the configured global replacement interval.
 
 Optional transport shocks are applied only around the firm execution phase by temporarily patching supplier sale functions on affected edges.
 
@@ -786,16 +787,17 @@ There is an absolute floor of 0.5.
 
 #### 3.3.7 Intermediate-input procurement submodel
 
-After updating wages and prices, firms procure the aggregate intermediate input required for planned output.
+After updating wages and prices, firms procure the intermediate inputs required for planned output. Input requirements are bounded by supplier sector: suppliers in the same sector are treated as substitutes, but inventories from one supplier sector do not satisfy requirements for another supplier sector.
 
 Key features are:
 
-- connected suppliers are treated as substitutes,
+- connected suppliers in the same supplier sector are treated as substitutes,
+- supplier-sector requirements are derived from the firm's connected supplier mix,
 - primary suppliers are sorted by price,
 - firms buy cheapest available input first,
 - purchases require real supplier inventory and real buyer cash capacity,
 - input inventories are stored by supplier ID,
-- if no supplier inventory is available, production may become input-limited.
+- if required supplier-sector inventory is unavailable, production may become input-limited.
 
 Supplier disruption is measured as the share of desired inputs that remain unavailable when the shortage is attributed to hazard-related causes.
 
@@ -858,7 +860,7 @@ When a firm experiences any raw direct loss, its `ever_directly_hit` flag become
 
 #### 3.3.10 Damage-recovery submodel
 
-After hazard impact is applied and before planning begins, firms partially recover their damage factors.
+After production, market transactions, and accounting close for the current period, firms partially recover their damage factors. The recovered damage state is therefore available to the next period's planning and production, not to the period in which the shock occurred.
 
 Recovery is liquidity-dependent. The per-step recovery rate is:
 
@@ -963,11 +965,11 @@ Under `stockpiling`, continuity capital increases the target finished-goods inve
 
 #### 3.3.13 Adaptation-funding submodel
 
-Adaptation is funded only after production and market transactions close.
+Adaptation is funded only after production and market transactions close, and only when the current period has no direct-loss event blocking discretionary payouts.
 
-The funding sequence is:
+In ordinary no-direct-loss periods, the funding sequence is:
 
-1. use positive operating profit to restore base productive capital,
+1. use positive post-loss net profit to restore base productive capital,
 2. use some remaining profit for discretionary capital expansion,
 3. if adaptation is enabled, fund continuity maintenance and new continuity investment from residual cash,
 4. distribute remaining positive profit as dividends.
@@ -994,9 +996,9 @@ accounting_profit
     - depreciation
 ```
 
-Reported profit also subtracts direct-loss expense for diagnostics, but payout decisions use positive operating profit.
+Reported net profit subtracts direct-loss expense. Payout and discretionary allocation decisions use positive post-loss net profit, and any current-period direct loss blocks same-period capital repair, adaptation funding, and dividends.
 
-Positive operating profit is allocated in this order:
+When there is no current direct loss and positive post-loss net profit is available, earnings are allocated in this order:
 
 1. productive-capital maintenance up to the base capital target,
 2. discretionary expansion toward the target capital stock,
@@ -1004,6 +1006,8 @@ Positive operating profit is allocated in this order:
 4. dividends.
 
 Because there is no explicit capital-goods sector, productive-capital installation spending is redistributed to households as reduced-form capital income.
+
+If direct hazard losses occur in the current period, capital repair is deferred. At the start of the next period, the firm uses available cash above its operating reserve to rebuild productive capital toward the base capital target before new hazards and operating decisions are realized.
 
 #### 3.3.15 Sales, expectation updating, and exposure-state updating
 
@@ -1083,7 +1087,7 @@ The repository's plotting and analysis scripts consume these files directly.
 The current implementation makes several intentional simplifications.
 
 - Households are not directly assigned physical asset losses; their exposure is mainly indirect through wages, prices, profits, and optional relocation.
-- Firms buy one aggregate intermediate input from potentially multiple suppliers; input categories are not differentiated.
+- Firms use a reduced-form intermediate-input structure: requirements are differentiated only by supplier sector, not by detailed product class.
 - There is no explicit banking sector, government sector, or international trade block.
 - Productive capital is a reduced-form stock, not a traded good produced by a capital-goods sector.
 - Household ownership is pooled rather than firm-specific.

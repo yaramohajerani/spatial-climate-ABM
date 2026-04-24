@@ -238,6 +238,29 @@ def test_inputs_within_same_supplier_sector_remain_substitutable() -> None:
     assert np.isclose(buyer.raw_supplier_disruption_this_step, 0.0, atol=1e-9)
 
 
+def test_input_using_firms_without_suppliers_are_input_limited() -> None:
+    model = _build_model()
+    firm = next(f for f in model._firms if f.sector == "services")
+
+    firm.connected_firms = []
+    firm.inventory_inputs.clear()
+    firm.target_output = 10.0
+    firm.demand_driven_output = 10.0
+    firm.capital_stock = 1_000.0
+    firm.capital_coeff = 1.0
+    firm.LABOR_COEFF = 0.0
+    firm.INPUT_COEFF = 1.0
+    firm.damage_factor = 1.0
+    firm.counterfactual_damage_factor = 1.0
+    firm.price = 1.0
+    firm.wage_offer = 1.0
+
+    firm.step()
+
+    assert np.isclose(firm.production, 0.0, atol=1e-9)
+    assert firm.limiting_factor == "input"
+
+
 def test_reserved_capacity_contracts_only_reserve_on_hand_inventory() -> None:
     model = _build_model(
         adaptation_params={

@@ -661,6 +661,8 @@ class FirmAgent(Agent):
     ) -> float:
         sector_coefficients = self._input_coefficients_by_sector()
         if not sector_coefficients:
+            if self.INPUT_COEFF > 1e-12:
+                return 0.0
             return float("inf")
         sector_limits: list[float] = []
         for sector, coeff in sector_coefficients.items():

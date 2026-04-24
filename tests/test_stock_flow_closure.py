@@ -131,9 +131,9 @@ def test_firms_replace_base_capital_before_paying_dividends() -> None:
     initial_total_money = model.total_money()
     firm.close_step()
 
-    assert np.isclose(firm.investment_spending_this_step, 15.0, atol=1e-9)
-    assert np.isclose(firm.capital_stock, 105.0, atol=1e-9)
-    assert np.isclose(firm.dividends_paid_this_step, 5.0, atol=1e-9)
+    assert np.isclose(firm.investment_spending_this_step, 10.0, atol=1e-9)
+    assert np.isclose(firm.capital_stock, 100.0, atol=1e-9)
+    assert np.isclose(firm.dividends_paid_this_step, 10.0, atol=1e-9)
     assert np.isclose(model.total_money(), initial_total_money, atol=1e-9)
 
 
@@ -187,10 +187,10 @@ def test_deferred_capital_repair_spends_cash_at_start_of_next_step() -> None:
         h.capital_income_received_this_step for h in model._households
     )
 
-    assert np.isclose(repair_spending, 15.0, atol=1e-9)
-    assert np.isclose(firm.investment_spending_this_step, 15.0, atol=1e-9)
+    assert np.isclose(repair_spending, 10.0, atol=1e-9)
+    assert np.isclose(firm.investment_spending_this_step, 10.0, atol=1e-9)
     assert np.isclose(firm.capital_stock, 100.0, atol=1e-9)
-    assert np.isclose(firm.money, 185.0, atol=1e-9)
+    assert np.isclose(firm.money, 190.0, atol=1e-9)
     assert firm.deferred_capital_repair is False
     assert np.isclose(household_capital_income, repair_spending, atol=1e-9)
     assert np.isclose(model.total_money(), initial_total_money, atol=1e-9)
