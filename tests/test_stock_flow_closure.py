@@ -707,7 +707,10 @@ def test_reserved_capacity_contracts_reserve_inventory_and_cap_price() -> None:
     assert model.available_inventory_for_spot_sales(backup) < backup.inventory_output
 
     initial_total_money = model.total_money()
-    remaining_needed, reserved_purchases, reserved_savings = buyer._purchase_from_reserved_capacity(5.0)
+    remaining_needed, reserved_purchases, reserved_savings = buyer._purchase_from_reserved_capacity(
+        primary_supplier.sector,
+        5.0,
+    )
 
     assert remaining_needed < 5.0
     assert reserved_purchases > 0.0

@@ -163,6 +163,7 @@ class EconomyModel(Model):
         self._firms: List[FirmAgent] = []
         # Cached agents by sector
         self._firms_by_sector: Dict[str, List[FirmAgent]] = defaultdict(list)
+        self._firms_by_id: Dict[int, FirmAgent] = {}
 
         # Calendar mapping -------------------------------------------------- #
         self.start_year: int = start_year
@@ -470,6 +471,7 @@ class EconomyModel(Model):
         self._households.clear()
         self._firms.clear()
         self._firms_by_sector.clear()
+        self._firms_by_id.clear()
 
         for ag in self.agents:
             if isinstance(ag, HouseholdAgent):
@@ -477,6 +479,7 @@ class EconomyModel(Model):
             elif isinstance(ag, FirmAgent):
                 self._firms.append(ag)
                 self._firms_by_sector[ag.sector].append(ag)
+                self._firms_by_id[int(ag.unique_id)] = ag
 
     def _register_agent(self, agent) -> None:
         """Register a single agent in the caches."""
@@ -485,6 +488,7 @@ class EconomyModel(Model):
         elif isinstance(agent, FirmAgent):
             self._firms.append(agent)
             self._firms_by_sector[agent.sector].append(agent)
+            self._firms_by_id[int(agent.unique_id)] = agent
 
     def _unregister_agent(self, agent) -> None:
         """Remove a single agent from the caches."""
@@ -496,6 +500,7 @@ class EconomyModel(Model):
                 self._firms.remove(agent)
             if agent in self._firms_by_sector.get(agent.sector, []):
                 self._firms_by_sector[agent.sector].remove(agent)
+            self._firms_by_id.pop(int(agent.unique_id), None)
 
     def get_final_consumption_ratios(self) -> Dict[str, float]:
         """Return household demand shares over final-good sectors only."""
@@ -667,17 +672,22 @@ class EconomyModel(Model):
         self,
         buyer: FirmAgent,
         max_count: int,
+        sector: str | None = None,
     ) -> List[FirmAgent]:
-        """Return non-primary firms in the buyer's supplier sectors with inventory.
+        """Return non-primary firms in the relevant supplier sector(s) with inventory.
 
         Backup suppliers are firms in the same sector(s) as the buyer's primary
-        suppliers, excluding the buyer itself and its existing ``connected_firms``.
-        Results are shuffled for fairness then sorted by price (cheapest first).
+        suppliers, or in one explicitly requested supplier sector, excluding the
+        buyer itself and its existing ``connected_firms``. Results are shuffled
+        for fairness then sorted by price (cheapest first).
         """
         if max_count <= 0:
             return []
 
-        supplier_sectors: set[str] = {s.sector for s in buyer.connected_firms}
+        if sector is not None:
+            supplier_sectors: set[str] = {sector}
+        else:
+            supplier_sectors = {s.sector for s in buyer.connected_firms}
         if not supplier_sectors:
             return []
 
@@ -726,53 +736,58 @@ class EconomyModel(Model):
         self.random.shuffle(buyers)
         reservable_inventory: Dict[int, float] = {}
         for buyer in buyers:
-            remaining_reserved_units = buyer._reserved_capacity_target_units()
-            if remaining_reserved_units <= 1e-9:
-                continue
-
             contract_price_cap = buyer._reserved_capacity_price_cap()
-            backup_suppliers = self.find_backup_suppliers(
-                buyer,
-                buyer._reserved_capacity_supplier_count(),
-            )
-            for supplier in backup_suppliers:
+            for sector, remaining_reserved_units in buyer._reserved_capacity_target_units_by_sector().items():
                 if remaining_reserved_units <= 1e-9:
-                    break
-                expected_available_supply = max(0.0, supplier.inventory_output)
-                supplier_limit = reservable_inventory.setdefault(
-                    supplier.unique_id,
-                    max(0.0, expected_available_supply * self.reserved_capacity_share),
-                )
-                reserved_units = min(supplier_limit, remaining_reserved_units)
-                if reserved_units <= 1e-9:
                     continue
 
-                contract_unit_price = min(max(supplier.price, 0.5), contract_price_cap)
-                self._reserved_capacity_contracts.setdefault(buyer.unique_id, []).append(
-                    {
-                        "supplier": supplier,
-                        "quantity": reserved_units,
-                        "unit_price": contract_unit_price,
-                    }
+                backup_suppliers = self.find_backup_suppliers(
+                    buyer,
+                    buyer._reserved_capacity_supplier_count(),
+                    sector=sector,
                 )
-                self._supplier_reserved_inventory[supplier.unique_id] = (
-                    self._supplier_reserved_inventory.get(supplier.unique_id, 0.0) + reserved_units
-                )
-                reservable_inventory[supplier.unique_id] -= reserved_units
-                remaining_reserved_units -= reserved_units
+                for supplier in backup_suppliers:
+                    if remaining_reserved_units <= 1e-9:
+                        break
+                    expected_available_supply = max(0.0, supplier.inventory_output)
+                    supplier_limit = reservable_inventory.setdefault(
+                        supplier.unique_id,
+                        max(0.0, expected_available_supply * self.reserved_capacity_share),
+                    )
+                    reserved_units = min(supplier_limit, remaining_reserved_units)
+                    if reserved_units <= 1e-9:
+                        continue
+
+                    contract_unit_price = min(max(supplier.price, 0.5), contract_price_cap)
+                    self._reserved_capacity_contracts.setdefault(buyer.unique_id, []).append(
+                        {
+                            "supplier": supplier,
+                            "quantity": reserved_units,
+                            "unit_price": contract_unit_price,
+                        }
+                    )
+                    self._supplier_reserved_inventory[supplier.unique_id] = (
+                        self._supplier_reserved_inventory.get(supplier.unique_id, 0.0) + reserved_units
+                    )
+                    reservable_inventory[supplier.unique_id] -= reserved_units
+                    remaining_reserved_units -= reserved_units
 
     def get_reserved_capacity_contracts(
         self,
         buyer: FirmAgent,
+        sector: str | None = None,
     ) -> List[tuple[FirmAgent, float, float]]:
         contracts = []
         for contract in self._reserved_capacity_contracts.get(buyer.unique_id, []):
             quantity = float(contract.get("quantity", 0.0))
             if quantity <= 1e-9:
                 continue
+            supplier = contract["supplier"]
+            if sector is not None and supplier.sector != sector:
+                continue
             contracts.append(
                 (
-                    contract["supplier"],
+                    supplier,
                     quantity,
                     float(contract.get("unit_price", 0.0)),
                 )

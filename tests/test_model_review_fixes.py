@@ -177,6 +177,67 @@ def test_recovery_is_applied_after_close_step_and_not_before_planning() -> None:
     assert firm.damage_factor > observed_damage_during_planning[0]
 
 
+def test_inputs_from_different_supplier_sectors_do_not_substitute() -> None:
+    model = _build_model()
+    buyer = next(f for f in model._firms if f.sector == "services")
+    agriculture_supplier = next(f for f in model._firms if f.sector == "agriculture")
+    manufacturing_supplier = next(
+        f for f in model._firms if f.sector == "manufacturing" and f is not buyer
+    )
+
+    buyer.connected_firms = [agriculture_supplier, manufacturing_supplier]
+    buyer.inventory_inputs.clear()
+    buyer.inventory_inputs[agriculture_supplier.unique_id] = 10.0
+    buyer.inventory_inputs[manufacturing_supplier.unique_id] = 0.0
+    buyer.target_output = 10.0
+    buyer.demand_driven_output = 10.0
+    buyer.capital_stock = 1_000.0
+    buyer.capital_coeff = 1.0
+    buyer.LABOR_COEFF = 0.0
+    buyer.INPUT_COEFF = 1.0
+    buyer.damage_factor = 1.0
+    buyer.counterfactual_damage_factor = 1.0
+    buyer.price = 1.0
+    buyer.wage_offer = 1.0
+    agriculture_supplier.inventory_output = 0.0
+    manufacturing_supplier.inventory_output = 0.0
+    manufacturing_supplier.raw_direct_loss_fraction_this_step = 0.3
+
+    buyer.step()
+
+    assert np.isclose(buyer.production, 0.0, atol=1e-9)
+    assert buyer.raw_supplier_disruption_this_step > 0.0
+
+
+def test_inputs_within_same_supplier_sector_remain_substitutable() -> None:
+    model = _build_model()
+    buyer = next(f for f in model._firms if f.sector == "services")
+    manufacturing_suppliers = [f for f in model._firms if f.sector == "manufacturing" and f is not buyer]
+    supplier_a, supplier_b = manufacturing_suppliers[:2]
+
+    buyer.connected_firms = [supplier_a, supplier_b]
+    buyer.inventory_inputs.clear()
+    buyer.inventory_inputs[supplier_a.unique_id] = 10.0
+    buyer.inventory_inputs[supplier_b.unique_id] = 0.0
+    buyer.target_output = 10.0
+    buyer.demand_driven_output = 10.0
+    buyer.capital_stock = 1_000.0
+    buyer.capital_coeff = 1.0
+    buyer.LABOR_COEFF = 0.0
+    buyer.INPUT_COEFF = 1.0
+    buyer.damage_factor = 1.0
+    buyer.counterfactual_damage_factor = 1.0
+    buyer.price = 1.0
+    buyer.wage_offer = 1.0
+    supplier_a.inventory_output = 0.0
+    supplier_b.inventory_output = 0.0
+
+    buyer.step()
+
+    assert np.isclose(buyer.production, 10.0, atol=1e-9)
+    assert np.isclose(buyer.raw_supplier_disruption_this_step, 0.0, atol=1e-9)
+
+
 def test_reserved_capacity_contracts_only_reserve_on_hand_inventory() -> None:
     model = _build_model(
         adaptation_params={

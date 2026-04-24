@@ -598,6 +598,123 @@ class FirmAgent(Agent):
             buffer_ratio += self.continuity_capital * self.last_perceived_hazard_risk
         return buffer_ratio
 
+    def _supplier_sector_shares(self) -> dict[str, float]:
+        if not self.connected_firms:
+            return {}
+        sector_counts: dict[str, int] = defaultdict(int)
+        for supplier in self.connected_firms:
+            sector_counts[supplier.sector] += 1
+        total_suppliers = sum(sector_counts.values())
+        if total_suppliers <= 0:
+            return {}
+        return {
+            sector: count / total_suppliers
+            for sector, count in sector_counts.items()
+            if count > 0
+        }
+
+    def _input_coefficients_by_sector(self) -> dict[str, float]:
+        if self.INPUT_COEFF <= 0:
+            return {}
+        return {
+            sector: self.INPUT_COEFF * share
+            for sector, share in self._supplier_sector_shares().items()
+            if share > 1e-12
+        }
+
+    def _desired_input_units_by_sector(self, desired_pre_damage_output: float) -> dict[str, float]:
+        if desired_pre_damage_output <= 0:
+            return {}
+        return {
+            sector: desired_pre_damage_output * coeff
+            for sector, coeff in self._input_coefficients_by_sector().items()
+            if coeff > 1e-12
+        }
+
+    def _supplier_sector_for_id(self, supplier_id: int) -> str | None:
+        supplier = self.model._firms_by_id.get(int(supplier_id))
+        if supplier is not None:
+            return supplier.sector
+        return None
+
+    def _input_inventory_by_sector(
+        self,
+        *,
+        inventory_inputs: dict[int, float] | None = None,
+    ) -> dict[str, float]:
+        totals: dict[str, float] = defaultdict(float)
+        source = self.inventory_inputs if inventory_inputs is None else inventory_inputs
+        for supplier_id, units in source.items():
+            if units <= 1e-12:
+                continue
+            sector = self._supplier_sector_for_id(int(supplier_id))
+            if sector is None:
+                continue
+            totals[sector] += float(units)
+        return totals
+
+    def _max_output_from_sector_inputs(
+        self,
+        input_units_by_sector: dict[str, float],
+        *,
+        damage_factor: float,
+    ) -> float:
+        sector_coefficients = self._input_coefficients_by_sector()
+        if not sector_coefficients:
+            return float("inf")
+        sector_limits: list[float] = []
+        for sector, coeff in sector_coefficients.items():
+            if coeff <= 1e-12:
+                continue
+            sector_limits.append((input_units_by_sector.get(sector, 0.0) / coeff) * damage_factor)
+        return min(sector_limits) if sector_limits else float("inf")
+
+    def _consume_inputs_by_sector(self, required_units_by_sector: dict[str, float]) -> float:
+        if not required_units_by_sector:
+            return 0.0
+
+        remaining_by_sector = {
+            sector: max(0.0, units)
+            for sector, units in required_units_by_sector.items()
+            if units > 1e-12
+        }
+        if not remaining_by_sector:
+            return 0.0
+
+        for supplier in self.connected_firms:
+            sector = supplier.sector
+            remaining_needed = remaining_by_sector.get(sector, 0.0)
+            if remaining_needed <= 1e-12:
+                continue
+            supp_id = supplier.unique_id
+            available = self.inventory_inputs.get(supp_id, 0.0)
+            if available <= 1e-12:
+                continue
+            use_qty = min(available, remaining_needed)
+            self.inventory_inputs[supp_id] -= use_qty
+            remaining_by_sector[sector] = remaining_needed - use_qty
+
+        primary_ids = {s.unique_id for s in self.connected_firms}
+        for supp_id in list(self.inventory_inputs.keys()):
+            if supp_id in primary_ids:
+                continue
+            sector = self._supplier_sector_for_id(int(supp_id))
+            if sector is None:
+                continue
+            remaining_needed = remaining_by_sector.get(sector, 0.0)
+            if remaining_needed <= 1e-12:
+                continue
+            available = self.inventory_inputs[supp_id]
+            if available <= 1e-12:
+                continue
+            use_qty = min(available, remaining_needed)
+            self.inventory_inputs[supp_id] -= use_qty
+            remaining_by_sector[sector] = remaining_needed - use_qty
+
+        required_total = sum(required_units_by_sector.values())
+        remaining_total = sum(max(0.0, units) for units in remaining_by_sector.values())
+        return max(0.0, required_total - remaining_total)
+
     def _has_hazard_disruption_signal(self) -> bool:
         """Return whether this firm shows direct or indirect hazard stress.
 
@@ -649,12 +766,16 @@ class FirmAgent(Agent):
             return 0
         return max(1, int(np.ceil(self.continuity_capital * max_backup_count)))
 
-    def _purchase_from_backup_suppliers(self, remaining_inputs_needed: float) -> tuple[float, float]:
+    def _purchase_from_backup_suppliers(self, sector: str, remaining_inputs_needed: float) -> tuple[float, float]:
         if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
             return remaining_inputs_needed, 0.0
 
         backup_purchases = 0.0
-        backup_suppliers = self.model.find_backup_suppliers(self, self._backup_supplier_count())
+        backup_suppliers = self.model.find_backup_suppliers(
+            self,
+            self._backup_supplier_count(),
+            sector=sector,
+        )
         for supplier in backup_suppliers:
             if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
                 break
@@ -677,6 +798,15 @@ class FirmAgent(Agent):
             return 0.0
         return max(0.0, self.target_input_units * self.continuity_capital)
 
+    def _reserved_capacity_target_units_by_sector(self) -> dict[str, float]:
+        if self.target_input_units <= 0 or self.continuity_capital <= 0:
+            return {}
+        return {
+            sector: self.target_input_units * share * self.continuity_capital
+            for sector, share in self._supplier_sector_shares().items()
+            if share > 1e-12
+        }
+
     def _reserved_capacity_price_cap(self) -> float:
         if not self.connected_firms:
             return float("inf")
@@ -684,13 +814,16 @@ class FirmAgent(Agent):
         markup_cap = float(getattr(self.model, "reserved_capacity_markup_cap", 0.1))
         return max(0.5, anchor_price * (1.0 + markup_cap))
 
-    def _purchase_from_reserved_capacity(self, remaining_inputs_needed: float) -> tuple[float, float, float]:
+    def _purchase_from_reserved_capacity(self, sector: str, remaining_inputs_needed: float) -> tuple[float, float, float]:
         if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
             return remaining_inputs_needed, 0.0, 0.0
 
         reserved_purchases = 0.0
         reserved_price_savings = 0.0
-        for supplier, reserved_units, contract_unit_price in self.model.get_reserved_capacity_contracts(self):
+        for supplier, reserved_units, contract_unit_price in self.model.get_reserved_capacity_contracts(
+            self,
+            sector=sector,
+        ):
             if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
                 break
             requested_quantity = min(remaining_inputs_needed, reserved_units)
@@ -1329,32 +1462,43 @@ class FirmAgent(Agent):
             labour_units / self.LABOR_COEFF if self.LABOR_COEFF else float("inf"),
             self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf"),
         )
-        desired_input_units = desired_pre_damage_output * self.INPUT_COEFF
+        desired_input_units_by_sector = self._desired_input_units_by_sector(desired_pre_damage_output)
+        desired_input_units = sum(desired_input_units_by_sector.values())
+        current_input_units_by_sector = self._input_inventory_by_sector()
+        sector_remaining_inputs_needed: dict[str, float] = {}
+        for sector, desired_sector_units in desired_input_units_by_sector.items():
+            current_sector_units = current_input_units_by_sector.get(sector, 0.0)
+            remaining_sector_inputs = max(0.0, desired_sector_units - current_sector_units)
+            sector_remaining_inputs_needed[sector] = remaining_sector_inputs
 
-        current_input_units = 0.0
-        if self.connected_firms:
-            current_input_units = sum(
-                self.inventory_inputs.get(supplier.unique_id, 0.0)
-                for supplier in self.connected_firms
-            )
-        remaining_inputs_needed = max(0.0, desired_input_units - current_input_units)
-        if remaining_inputs_needed > 0 and self.connected_firms and self.INPUT_COEFF > 0:
-            suppliers = sorted(
-                [supplier for supplier in self.connected_firms if supplier.inventory_output > 0],
-                key=lambda supplier: supplier.price,
-            )
-            for supplier in suppliers:
-                if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
-                    break
-                bought = supplier.sell_goods_to_firm(self, remaining_inputs_needed)
-                if bought > 0:
-                    remaining_inputs_needed -= bought
+        if self.connected_firms and self.INPUT_COEFF > 0:
+            for sector, remaining_inputs_needed in list(sector_remaining_inputs_needed.items()):
+                if remaining_inputs_needed <= 1e-9:
+                    continue
+                suppliers = sorted(
+                    [
+                        supplier
+                        for supplier in self.connected_firms
+                        if supplier.sector == sector and supplier.inventory_output > 0
+                    ],
+                    key=lambda supplier: supplier.price,
+                )
+                for supplier in suppliers:
+                    if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
+                        break
+                    bought = supplier.sell_goods_to_firm(self, remaining_inputs_needed)
+                    if bought > 0:
+                        remaining_inputs_needed -= bought
+                sector_remaining_inputs_needed[sector] = remaining_inputs_needed
 
-        if desired_input_units > 1e-9:
-            physical_shortfall_units = max(0.0, remaining_inputs_needed)
-            physical_shortfall_ratio = min(1.0, max(0.0, physical_shortfall_units / desired_input_units))
-        else:
-            physical_shortfall_ratio = 0.0
+        physical_shortfall_ratio = max(
+            (
+                min(1.0, max(0.0, sector_remaining_inputs_needed.get(sector, 0.0) / desired_sector_units))
+                for sector, desired_sector_units in desired_input_units_by_sector.items()
+                if desired_sector_units > 1e-9
+            ),
+            default=0.0,
+        )
         hazard_affected_suppliers = (
             physical_shortfall_ratio > 1e-9
             and self._primary_supplier_shortage_is_hazard_related()
@@ -1373,25 +1517,40 @@ class FirmAgent(Agent):
         if (
             self._uses_adaptation_strategy("backup_suppliers")
             and hazard_affected_suppliers
-            and remaining_inputs_needed > 1e-9
+            and any(remaining > 1e-9 for remaining in sector_remaining_inputs_needed.values())
             and self.continuity_capital > 0
             and self._operating_cash_capacity() > 1e-9
         ):
-            remaining_inputs_needed, backup_purchases = self._purchase_from_backup_suppliers(
-                remaining_inputs_needed
-            )
+            for sector, remaining_inputs_needed in list(sector_remaining_inputs_needed.items()):
+                if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
+                    continue
+                remaining_inputs_needed, sector_backup_purchases = self._purchase_from_backup_suppliers(
+                    sector,
+                    remaining_inputs_needed,
+                )
+                sector_remaining_inputs_needed[sector] = remaining_inputs_needed
+                backup_purchases += sector_backup_purchases
         elif (
             self._uses_adaptation_strategy("reserved_capacity")
             and hazard_affected_suppliers
-            and remaining_inputs_needed > 1e-9
+            and any(remaining > 1e-9 for remaining in sector_remaining_inputs_needed.values())
             and self.continuity_capital > 0
             and self._operating_cash_capacity() > 1e-9
         ):
-            (
-                remaining_inputs_needed,
-                reserved_capacity_purchases,
-                reserved_capacity_price_savings,
-            ) = self._purchase_from_reserved_capacity(remaining_inputs_needed)
+            for sector, remaining_inputs_needed in list(sector_remaining_inputs_needed.items()):
+                if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
+                    continue
+                (
+                    remaining_inputs_needed,
+                    sector_reserved_purchases,
+                    sector_reserved_price_savings,
+                ) = self._purchase_from_reserved_capacity(
+                    sector,
+                    remaining_inputs_needed,
+                )
+                sector_remaining_inputs_needed[sector] = remaining_inputs_needed
+                reserved_capacity_purchases += sector_reserved_purchases
+                reserved_capacity_price_savings += sector_reserved_price_savings
         self.backup_purchases_this_step = backup_purchases
         self.reserved_capacity_purchases_this_step = reserved_capacity_purchases
         self.reserved_capacity_price_savings_this_step = reserved_capacity_price_savings
@@ -1401,20 +1560,18 @@ class FirmAgent(Agent):
         # ----------------------------------------------------------------
         # 2. Compute possible output: demand target capped by technical limits
         # ----------------------------------------------------------------
-        if self.connected_firms and self.INPUT_COEFF > 0:
-            # sum(values()) captures both primary and backup-purchased inputs
-            total_input_units = sum(self.inventory_inputs.values())
-            max_output_from_inputs = total_input_units / self.INPUT_COEFF
-        else:
-            total_input_units = 0.0
-            max_output_from_inputs = float("inf")
+        current_input_units_by_sector = self._input_inventory_by_sector()
+        max_output_from_inputs = self._max_output_from_sector_inputs(
+            current_input_units_by_sector,
+            damage_factor=self.damage_factor,
+        )
 
         max_output_from_capital = self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf")
         max_output_from_labor = labour_units / self.LABOR_COEFF if self.LABOR_COEFF else float("inf")
 
         actual_limits = {
             "labor": max_output_from_labor * self.damage_factor,
-            "input": max_output_from_inputs * self.damage_factor,
+            "input": max_output_from_inputs,
             "capital": max_output_from_capital * self.damage_factor,
         }
         technical_output_limit = min(actual_limits.values())
@@ -1422,18 +1579,20 @@ class FirmAgent(Agent):
 
         # Update supplier disruption to reflect actual residual shortfall
         # after backup search.
-        if desired_input_units > 1e-9:
-            residual_hazard_shortfall_units = max(
-                0.0,
-                physical_shortfall_units - continuity_purchase_coverage,
+        residual_sector_shortfall_ratios: dict[str, float] = {}
+        for sector, desired_sector_units in desired_input_units_by_sector.items():
+            if desired_sector_units <= 1e-9:
+                continue
+            available_sector_units = current_input_units_by_sector.get(sector, 0.0)
+            residual_sector_shortfall_ratios[sector] = min(
+                1.0,
+                max(0.0, desired_sector_units - available_sector_units) / desired_sector_units,
             )
-            self.supplier_disruption_this_step = (
-                min(1.0, max(0.0, residual_hazard_shortfall_units / desired_input_units))
-                if hazard_affected_suppliers
-                else 0.0
-            )
-        else:
-            self.supplier_disruption_this_step = 0.0
+        self.supplier_disruption_this_step = (
+            max(residual_sector_shortfall_ratios.values(), default=0.0)
+            if hazard_affected_suppliers
+            else 0.0
+        )
         self.continuity_gap_coverage_this_step = continuity_purchase_coverage
 
         no_hazard_damage = max(self.no_hazard_damage_factor, 1e-6)
@@ -1442,18 +1601,28 @@ class FirmAgent(Agent):
             if self.capital_coeff
             else float("inf")
         )
-        pre_hazard_total_input_units = sum(
-            float(units)
-            for units in getattr(self, "pre_hazard_inventory_inputs", {}).values()
+        pre_hazard_input_units_by_sector = self._input_inventory_by_sector(
+            inventory_inputs=getattr(self, "pre_hazard_inventory_inputs", {}),
         )
-        if self.connected_firms and self.INPUT_COEFF > 0:
-            no_hazard_desired_input_units = (self.no_hazard_target_output / no_hazard_damage) * self.INPUT_COEFF
-            no_hazard_input_units = max(total_input_units, pre_hazard_total_input_units)
+        no_hazard_desired_input_units_by_sector = self._desired_input_units_by_sector(
+            self.no_hazard_target_output / no_hazard_damage
+        )
+        no_hazard_input_units_by_sector: dict[str, float] = {}
+        for sector in self._input_coefficients_by_sector():
+            no_hazard_sector_units = max(
+                current_input_units_by_sector.get(sector, 0.0),
+                pre_hazard_input_units_by_sector.get(sector, 0.0),
+            )
             if hazard_affected_suppliers:
-                no_hazard_input_units = max(no_hazard_input_units, no_hazard_desired_input_units)
-            no_hazard_input_limit = (no_hazard_input_units / self.INPUT_COEFF) * no_hazard_damage
-        else:
-            no_hazard_input_limit = float("inf")
+                no_hazard_sector_units = max(
+                    no_hazard_sector_units,
+                    no_hazard_desired_input_units_by_sector.get(sector, 0.0),
+                )
+            no_hazard_input_units_by_sector[sector] = no_hazard_sector_units
+        no_hazard_input_limit = self._max_output_from_sector_inputs(
+            no_hazard_input_units_by_sector,
+            damage_factor=no_hazard_damage,
+        )
         no_hazard_output_ceiling = min(
             self.no_hazard_target_output,
             max_output_from_labor * no_hazard_damage,
@@ -1483,33 +1652,15 @@ class FirmAgent(Agent):
         if possible_output > 0:
             # Damage lowers effective output per unit input, so input use scales with
             # the pre-damage quantity required to achieve the realised output.
-            total_inputs_needed = (possible_output / effective_damage) * self.INPUT_COEFF
-            remaining_to_consume = total_inputs_needed
-
-            for supplier in self.connected_firms:
-                supp_id = supplier.unique_id
-                if supp_id in self.inventory_inputs and remaining_to_consume > 0:
-                    available = self.inventory_inputs[supp_id]
-                    use_qty = min(available, remaining_to_consume)
-                    self.inventory_inputs[supp_id] -= use_qty
-                    remaining_to_consume -= use_qty
-
-            # Consume backup-sourced inputs (stored under non-primary supplier IDs)
-            if remaining_to_consume > 1e-9:
-                primary_ids = {s.unique_id for s in self.connected_firms}
-                for supp_id in list(self.inventory_inputs.keys()):
-                    if supp_id in primary_ids or remaining_to_consume <= 1e-9:
-                        continue
-                    available = self.inventory_inputs[supp_id]
-                    if available > 0:
-                        use_qty = min(available, remaining_to_consume)
-                        self.inventory_inputs[supp_id] -= use_qty
-                        remaining_to_consume -= use_qty
+            required_input_units_by_sector = self._desired_input_units_by_sector(
+                possible_output / effective_damage
+            )
+            consumed_inputs = self._consume_inputs_by_sector(required_input_units_by_sector)
 
             # Add production to inventory
             self.inventory_output += possible_output
 
-            self.consumption = total_inputs_needed - remaining_to_consume
+            self.consumption = consumed_inputs
 
         # ----------------------------------------------------------------
         # 3. Clear employee list for next step
