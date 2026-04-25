@@ -125,7 +125,6 @@ def test_base_metadata_matches_model_adaptation_defaults() -> None:
         "min_money_survival": 1.0,
         "observation_radius": 4.0,
         "replacement_frequency": 10,
-        "reorganization_inheritance": "inherit_parent",
         "reserved_capacity_markup_cap": 0.1,
         "reserved_capacity_share": 0.35,
     }
@@ -200,7 +199,6 @@ def test_base_metadata_tracks_param_and_cli_provenance() -> None:
         "min_money_survival": 1.0,
         "observation_radius": 4.0,
         "replacement_frequency": 10,
-        "reorganization_inheritance": "inherit_parent",
         "reserved_capacity_markup_cap": 0.1,
         "reserved_capacity_share": 0.35,
     }

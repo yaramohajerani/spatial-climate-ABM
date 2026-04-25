@@ -1186,24 +1186,6 @@ class FirmAgent(Agent):
         if raw_loss_fraction > 0:
             self.ever_directly_hit = True
 
-    def copy_adaptation_state_from(self, parent: "FirmAgent") -> None:
-        self.adaptation_strategy = parent.adaptation_strategy
-        self.continuity_capital = parent.continuity_capital
-        self.expected_direct_loss_ewma = parent.expected_direct_loss_ewma
-        self.realized_direct_loss_ewma = parent.realized_direct_loss_ewma
-        self.local_observed_loss_ewma = parent.local_observed_loss_ewma
-        self.supplier_disruption_ewma = parent.supplier_disruption_ewma
-        self.expected_operating_shortfall_ewma = parent.expected_operating_shortfall_ewma
-        self.local_observed_shortfall_ewma = parent.local_observed_shortfall_ewma
-        self.adaptation_sensitivity = parent.adaptation_sensitivity
-        self.last_adaptation_action = "inherited"
-        self.last_adaptation_target = parent.last_adaptation_target
-        self.last_perceived_hazard_risk = parent.last_perceived_hazard_risk
-        self.last_continuity_target = parent.last_continuity_target
-        self.last_perceived_continuity_risk = parent.last_perceived_continuity_risk
-        self.pending_adaptation_increment = 0.0
-        self.adaptation_update_count = 0
-
     def reset_adaptation_state(self) -> None:
         """Reset adaptation state to a fresh post-entry draw."""
         adaptation_config = getattr(self.model, "adaptation_config", {})

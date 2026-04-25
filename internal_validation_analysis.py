@@ -172,12 +172,11 @@ def _plot_warmup(summary: pd.DataFrame, out_path: Path) -> None:
     plt.close(fig)
 
 
-def _strategy_config(base_adaptation: dict, *, strategy: str, replacement_frequency: int, inheritance: str) -> dict:
+def _strategy_config(base_adaptation: dict, *, strategy: str, replacement_frequency: int) -> dict:
     config = dict(base_adaptation)
     config["enabled"] = True
     config["adaptation_strategy"] = strategy
     config["replacement_frequency"] = replacement_frequency
-    config["reorganization_inheritance"] = inheritance
     if strategy == "backup_suppliers":
         config["adaptation_sensitivity_min"] = 0.8
         config["adaptation_sensitivity_max"] = 1.4
@@ -191,7 +190,6 @@ def _noadapt_config(base_adaptation: dict, *, replacement_frequency: int) -> dic
     config = dict(base_adaptation)
     config["enabled"] = False
     config["replacement_frequency"] = replacement_frequency
-    config["reorganization_inheritance"] = "inherit_parent"
     return config
 
 
@@ -268,10 +266,8 @@ def _run_reorganization_robustness() -> tuple[pd.DataFrame, pd.DataFrame]:
     base_adaptation = dict(param_data.get("adaptation", {}))
 
     config_labels = [
-        ("freq10_inherit", 10, "inherit_parent", "10-step\ninherit"),
-        ("freq5_inherit", 5, "inherit_parent", "5-step\ninherit"),
-        ("freq20_inherit", 20, "inherit_parent", "20-step\ninherit"),
-        ("freq10_reset", 10, "reset", "10-step\nreset"),
+        ("freq5", 5, "5-step"),
+        ("freq20", 20, "20-step"),
     ]
     strategies = [
         ("backup_suppliers", "Backup suppliers"),
@@ -292,9 +288,7 @@ def _run_reorganization_robustness() -> tuple[pd.DataFrame, pd.DataFrame]:
             )
             baseline_by_seed[(freq, seed)] = _final_decade_metrics(df)
 
-    for config_key, freq, inheritance, display_label in config_labels:
-        if config_key == "freq10_inherit":
-            continue
+    for config_key, freq, display_label in config_labels:
         for strategy_key, strategy_label in strategies:
             seed_rows = []
             for seed in ROBUSTNESS_SEEDS:
@@ -305,7 +299,6 @@ def _run_reorganization_robustness() -> tuple[pd.DataFrame, pd.DataFrame]:
                         base_adaptation,
                         strategy=strategy_key,
                         replacement_frequency=freq,
-                        inheritance=inheritance,
                     ),
                     steps=steps,
                     base_kwargs=base_kwargs,

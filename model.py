@@ -137,9 +137,6 @@ class EconomyModel(Model):
         self.firm_learning_enabled: bool = self.firm_adaptation_enabled
         self.min_money_survival: float = self.adaptation_config.get("min_money_survival", 1.0)
         self.replacement_frequency: int = self.adaptation_config.get("replacement_frequency", 10)
-        self.reorganization_inheritance: str = str(
-            self.adaptation_config.get("reorganization_inheritance", "inherit_parent")
-        )
         self.adaptation_observation_radius: int = int(self.adaptation_config.get("observation_radius", 4))
         self.adaptation_updates_this_step: int = 0
         self.max_backup_suppliers: int = int(self.adaptation_config.get("max_backup_suppliers", 5))
@@ -1350,6 +1347,12 @@ class EconomyModel(Model):
             )
         firm.capital_stock = seeded_capital
         firm.money = max(firm.money, working_capital)
+        firm.startup_expected_sales = expected_sales
+        firm.startup_inventory_target = inventory_target
+        firm.startup_capital_stock = seeded_capital
+        firm.startup_money = firm.money
+        firm.startup_price = firm.price
+        firm.startup_wage_offer = firm.wage_offer
 
     def _initialize_firm_operating_state(self) -> None:
         """Initialize firms from demand-consistent inventories and working capital."""
@@ -1766,10 +1769,7 @@ class EconomyModel(Model):
     #                      FIRM REORGANIZATION METHODS                       #
     # --------------------------------------------------------------------- #
     def _apply_firm_reorganization(self) -> None:
-        """Reorganize failed firms in place under the configured inheritance rule."""
-        if len(self._firms) < 2:
-            return
-
+        """Reinitialize failed firms from their original startup state."""
         if self.current_step < 5:
             return
 
@@ -1784,56 +1784,58 @@ class EconomyModel(Model):
         max_replacements = max(1, len(self._firms) // 4)
         failed_firms = failed_firms[:max_replacements]
 
-        successful_firms = [
-            f for f in self._firms
-            if f not in failed_firms and f.money >= self.min_money_survival
-        ]
-        if not successful_firms:
-            successful_firms = [f for f in self._firms if f not in failed_firms]
-
-        if not successful_firms:
-            return
-
         for failed_firm in failed_firms:
-            sector_candidates = [f for f in successful_firms if f.sector == failed_firm.sector]
-            if not sector_candidates:
-                sector_candidates = successful_firms
-
-            if len(sector_candidates) == 1:
-                parent = sector_candidates[0]
-            else:
-                weights = [max(f.money, 0.0) + max(f.production, 0.0) + 1.0 for f in sector_candidates]
-                parent = self.random.choices(sector_candidates, weights=weights, k=1)[0]
-
-            target_expected_sales = max(failed_firm.expected_sales, parent.expected_sales * 0.5, 1.0)
-            inventory_target = max(1.0, float(target_expected_sales))
-            capital_target = max(1.0, float(target_expected_sales) * failed_firm.capital_coeff)
-            technical_suppliers = failed_firm._technical_input_suppliers()
-            avg_input_price = (
-                float(np.mean([s.price for s in technical_suppliers]))
-                if technical_suppliers else 0.0
+            startup_expected_sales = float(getattr(failed_firm, "startup_expected_sales", 1.0))
+            startup_inventory_target = float(getattr(failed_firm, "startup_inventory_target", 1.0))
+            startup_capital_stock = float(
+                getattr(
+                    failed_firm,
+                    "startup_capital_stock",
+                    max(1.0, startup_expected_sales * failed_firm.original_capital_coeff),
+                )
             )
-            unit_variable_cost = (
-                failed_firm.wage_offer * failed_firm.LABOR_COEFF
-                + avg_input_price * failed_firm.INPUT_COEFF
-            )
-            working_capital_target = max(10.0, target_expected_sales * unit_variable_cost * 1.25)
+            startup_money = float(getattr(failed_firm, "startup_money", 100.0))
 
-            failed_firm.expected_sales = target_expected_sales
-            failed_firm.base_inventory_target = inventory_target
-            failed_firm.base_capital_target = max(failed_firm.capital_stock, capital_target)
+            failed_firm.expected_sales = max(1.0, startup_expected_sales)
+            failed_firm.base_inventory_target = max(1.0, startup_inventory_target)
+            failed_firm.base_capital_target = max(1.0, startup_capital_stock)
             failed_firm.target_capital_stock = failed_firm.base_capital_target
-            if self.reorganization_inheritance == "reset":
-                failed_firm.adaptation_strategy = parent.adaptation_strategy
-                failed_firm.reset_adaptation_state()
-            else:
-                failed_firm.copy_adaptation_state_from(parent)
+            failed_firm.capital_stock = failed_firm.base_capital_target
+            failed_firm.inventory_output = failed_firm.base_inventory_target
+            failed_firm.inventory_inputs.clear()
+            failed_firm.price = float(getattr(failed_firm, "startup_price", failed_firm.price))
+            failed_firm.wage_offer = float(getattr(failed_firm, "startup_wage_offer", self.initial_mean_wage))
+            failed_firm.damage_factor = 1.0
+            failed_firm.counterfactual_damage_factor = 1.0
+            failed_firm.deferred_capital_repair = False
             failed_firm.survival_time = 0
             failed_firm.sales_last_step = 0.0
             failed_firm.revenue_last_step = 0.0
-            failed_firm.counterfactual_damage_factor = failed_firm.damage_factor
+            failed_firm.sales_this_step = 0.0
+            failed_firm.revenue_this_step = 0.0
+            failed_firm.household_sales_last_step = 0.0
+            failed_firm.household_sales_this_step = 0.0
+            failed_firm.inventory_available_last_step = failed_firm.inventory_output
+            failed_firm.production = 0.0
+            failed_firm.consumption = 0.0
+            failed_firm.wage_bill_this_step = 0.0
+            failed_firm.input_spend_this_step = 0.0
+            failed_firm.depreciation_this_step = 0.0
+            failed_firm.operating_surplus_this_step = 0.0
+            failed_firm.net_profit_this_step = 0.0
+            failed_firm.direct_loss_expense_this_step = 0.0
+            failed_firm.dividends_paid_this_step = 0.0
+            failed_firm.investment_spending_this_step = 0.0
+            failed_firm.working_capital_credit_used_this_step = 0.0
+            failed_firm.working_capital_credit_limit = 0.0
+            failed_firm.raw_direct_loss_fraction_this_step = 0.0
+            failed_firm.adapted_direct_loss_fraction_this_step = 0.0
+            failed_firm.supplier_disruption_this_step = 0.0
+            failed_firm.raw_supplier_disruption_this_step = 0.0
+            failed_firm.hazard_operating_shortfall_this_step = 0.0
+            failed_firm.reset_adaptation_state()
 
-            equity_needed = max(0.0, working_capital_target - failed_firm.money)
+            equity_needed = max(0.0, startup_money - failed_firm.money)
             self.transfer_household_equity_to_firm(failed_firm, equity_needed)
 
             self._debug_recent_replacements.append(failed_firm.unique_id)
@@ -1843,8 +1845,7 @@ class EconomyModel(Model):
             self.total_firm_replacements += 1
             print(
                 f"[REORGANIZATION] Step {self.current_step}: Reorganized failed firm "
-                f"{failed_firm.unique_id} using parent {parent.unique_id} "
-                f"with {self.reorganization_inheritance} adaptation state "
+                f"{failed_firm.unique_id} from startup state "
                 f"(total: {self.total_firm_replacements})"
             )
 

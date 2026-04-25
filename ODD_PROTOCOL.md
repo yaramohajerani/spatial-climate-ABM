@@ -138,7 +138,7 @@ Each firm maintains:
 - exposure-state flags,
 - survival time.
 
-Firms do not maintain explicit balance-sheet debt instruments or equity shares. Short-term finance is represented by a bounded operating overdraft tied to sales capacity, and household equity recapitalization is used only during reorganization.
+Firms do not maintain explicit balance-sheet debt instruments or equity shares. Short-term finance is represented by a bounded operating overdraft tied to sales capacity, and household equity recapitalization is used only to restore replacement firms to their startup cash state during reorganization.
 
 #### 1.2.6 Environment and external data
 
@@ -199,7 +199,7 @@ Household and firm behavior is intentionally simple and transparent rather than 
 
 #### Stock-flow consistency at the level of money
 
-The model tracks total household plus firm money as an accounting diagnostic. When firms spend on reduced-form capital installation or adaptation services, those payments are redistributed to households so that money remains inside the closed economy. Reorganization recapitalization is financed by drawing cash from households rather than creating money.
+The model tracks total household plus firm money as an accounting diagnostic. When firms spend on reduced-form capital installation or adaptation services, those payments are redistributed to households so that money remains inside the closed economy. Replacement-firm startup cash is financed by drawing cash from households rather than creating money.
 
 #### Reduced-form adaptation stock
 
@@ -913,7 +913,7 @@ The model records whether the action is:
 - `dormant`,
 - `adjust`,
 - `hold`,
-- or inherited/reset during reorganization.
+- or `reset` during firm reorganization.
 
 #### 3.3.12 Adaptation-deployment submodels
 
@@ -1033,11 +1033,10 @@ Firms are not replaced immediately. Instead, at a global replacement interval:
 
 - all failed firms are identified,
 - at most one quarter of firms are reorganized in a given sweep,
-- each failed firm selects a successful parent, preferring same-sector firms,
-- parent choice is weighted by money and production,
 - the failed firm remains in place with its shell and links intact,
-- working capital is recapitalized using household equity transfers,
-- adaptation state is either inherited from the parent or reset depending on configuration.
+- startup expected sales, inventory, productive capital, price, wage, and cash targets are restored from the firm's initialization state,
+- stale sales, input inventory, working-capital, damage, and adaptation state are reset,
+- any cash needed to restore the startup cash target is financed using household equity transfers.
 
 This produces an endogenous replacement lag between failure and re-entry. With quarterly steps and the default replacement frequency of 10, the realized lag ranges from effectively immediate at the next sweep to at most 10 quarters.
 

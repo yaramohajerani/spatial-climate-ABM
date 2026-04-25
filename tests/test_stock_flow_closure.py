@@ -300,8 +300,8 @@ def test_none_hazard_entries_allow_explicit_warmup_windows() -> None:
     assert np.allclose(df["Flooded_Households"].to_numpy(), 0.0, atol=1e-12)
 
 
-def test_firm_reorganization_preserves_total_money_and_inherits_adaptation_state() -> None:
-    """Reorganization should keep money closed and copy parent adaptation state."""
+def test_firm_reorganization_preserves_total_money_and_resets_startup_state() -> None:
+    """Reorganization should keep money closed and restore startup operating state."""
     model = build_closed_economy_model(adaptation_enabled=True)
 
     for _ in range(6):
@@ -311,30 +311,46 @@ def test_firm_reorganization_preserves_total_money_and_inherits_adaptation_state
     failed_firm, parent = retail_firms[:2]
     for candidate in retail_firms[2:]:
         candidate.money = 0.0
-    parent.resilience_capital = 0.4
-    parent.expected_direct_loss_ewma = 0.2
-    parent.realized_direct_loss_ewma = 0.15
-    parent.local_observed_loss_ewma = 0.1
-    parent.supplier_disruption_ewma = 0.1
-    parent.adaptation_sensitivity = 3.5
-    parent.last_adaptation_target = 0.45
-    parent.last_perceived_hazard_risk = 0.12
 
+    startup_money = failed_firm.startup_money
+    startup_capital = failed_firm.startup_capital_stock
+    startup_inventory = failed_firm.startup_inventory_target
+    startup_price = failed_firm.startup_price
+    startup_wage = failed_firm.startup_wage_offer
     failed_firm.money = 0.0
+    failed_firm.capital_stock = 0.1
+    failed_firm.inventory_output = 0.0
+    failed_firm.inventory_inputs[parent.unique_id] = 5.0
+    failed_firm.price = 1_000.0
+    failed_firm.wage_offer = 50.0
+    for supplier in failed_firm.connected_firms:
+        supplier.price = 1_000_000.0
+    failed_firm.resilience_capital = 0.4
+    failed_firm.expected_direct_loss_ewma = 0.2
+    failed_firm.realized_direct_loss_ewma = 0.15
+    failed_firm.local_observed_loss_ewma = 0.1
+    failed_firm.supplier_disruption_ewma = 0.1
+    failed_firm.last_adaptation_target = 0.45
+    failed_firm.last_perceived_hazard_risk = 0.12
     initial_total_money = model.total_money()
 
     model._apply_firm_reorganization()
 
     assert model.total_firm_replacements >= 1
     assert np.isclose(model.total_money(), initial_total_money, atol=1e-6)
-    assert np.isclose(failed_firm.resilience_capital, parent.resilience_capital, atol=1e-9)
-    assert failed_firm.expected_direct_loss_ewma == parent.expected_direct_loss_ewma
-    assert failed_firm.realized_direct_loss_ewma == parent.realized_direct_loss_ewma
-    assert failed_firm.local_observed_loss_ewma == parent.local_observed_loss_ewma
-    assert failed_firm.supplier_disruption_ewma == parent.supplier_disruption_ewma
-    assert np.isclose(failed_firm.adaptation_sensitivity, parent.adaptation_sensitivity, atol=1e-9)
-    assert np.isclose(failed_firm.last_adaptation_target, parent.last_adaptation_target, atol=1e-9)
-    assert np.isclose(failed_firm.last_perceived_hazard_risk, parent.last_perceived_hazard_risk, atol=1e-9)
+    assert np.isclose(failed_firm.money, startup_money, atol=1e-6)
+    assert np.isclose(failed_firm.capital_stock, startup_capital, atol=1e-9)
+    assert np.isclose(failed_firm.inventory_output, startup_inventory, atol=1e-9)
+    assert np.isclose(failed_firm.price, startup_price, atol=1e-9)
+    assert np.isclose(failed_firm.wage_offer, startup_wage, atol=1e-9)
+    assert not failed_firm.inventory_inputs
+    assert np.isclose(failed_firm.resilience_capital, 0.0, atol=1e-9)
+    assert failed_firm.expected_direct_loss_ewma == 0.0
+    assert failed_firm.realized_direct_loss_ewma == 0.0
+    assert failed_firm.local_observed_loss_ewma == 0.0
+    assert failed_firm.supplier_disruption_ewma == 0.0
+    assert failed_firm.last_adaptation_target == 0.0
+    assert failed_firm.last_perceived_hazard_risk == 0.0
 
 
 def test_adapted_loss_fraction_strategy_dependent() -> None:

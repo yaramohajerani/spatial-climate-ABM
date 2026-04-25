@@ -195,7 +195,6 @@ def _normalized_adaptation_config(adaptation_config: dict | None) -> dict[str, o
         "reserved_capacity_markup_cap": float(config.get("reserved_capacity_markup_cap", 0.10)),
         "min_money_survival": float(config.get("min_money_survival", 1.0)),
         "replacement_frequency": int(config.get("replacement_frequency", 10)),
-        "reorganization_inheritance": str(config.get("reorganization_inheritance", "inherit_parent")),
     }
 
 
@@ -295,7 +294,6 @@ def _base_metadata(
         f"{METADATA_PREFIX}ReservedCapacityMarkupCap": float(effective_adaptation_config["reserved_capacity_markup_cap"]),
         f"{METADATA_PREFIX}MinMoneySurvival": float(effective_adaptation_config["min_money_survival"]),
         f"{METADATA_PREFIX}ReplacementFrequency": int(effective_adaptation_config["replacement_frequency"]),
-        f"{METADATA_PREFIX}ReorganizationInheritance": str(effective_adaptation_config["reorganization_inheritance"]),
         f"{METADATA_PREFIX}EffectiveAdaptationConfig": _metadata_json(effective_adaptation_config),
         f"{METADATA_PREFIX}ParamAdaptationConfig": _metadata_json(param_adaptation_config),
         f"{METADATA_PREFIX}EnsemblePlotStat": str(getattr(args, "ensemble_plot_stat", "mean")),
