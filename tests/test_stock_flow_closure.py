@@ -8,6 +8,13 @@ from model import EconomyModel
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+SAMPLE_INPUT_RECIPE_RANGES = {
+    "agriculture": {},
+    "manufacturing": {"agriculture": [1.0, 1.0]},
+    "services": {"manufacturing": [1.0, 1.0]},
+    "retail": {"services": [1.0, 1.0]},
+}
+
 
 def build_closed_economy_model(*, adaptation_enabled: bool, adaptation_strategy: str = "backup_suppliers") -> EconomyModel:
     """Return a small no-hazard economy for accounting and adaptation tests."""
@@ -33,6 +40,7 @@ def build_closed_economy_model(*, adaptation_enabled: bool, adaptation_strategy:
             "replacement_frequency": 10,
         },
         consumption_ratios={"services": 0.7, "retail": 0.3},
+        input_recipe_ranges=SAMPLE_INPUT_RECIPE_RANGES,
         household_relocation=False,
     )
 
@@ -278,6 +286,7 @@ def test_none_hazard_entries_allow_explicit_warmup_windows() -> None:
         apply_hazard_impacts=True,
         adaptation_params={"enabled": False},
         consumption_ratios={"services": 0.7, "retail": 0.3},
+        input_recipe_ranges=SAMPLE_INPUT_RECIPE_RANGES,
         household_relocation=False,
     )
 

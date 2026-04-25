@@ -9,6 +9,13 @@ from model import EconomyModel
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+SAMPLE_INPUT_RECIPE_RANGES = {
+    "agriculture": {},
+    "manufacturing": {"agriculture": [1.0, 1.0]},
+    "services": {"manufacturing": [1.0, 1.0]},
+    "retail": {"services": [1.0, 1.0]},
+}
+
 
 def _build_model(
     *,
@@ -27,6 +34,7 @@ def _build_model(
             apply_hazard_impacts=False,
             adaptation_params=adaptation_params or {"enabled": False},
             consumption_ratios=consumption_ratios or {"services": 0.7, "retail": 0.3},
+            input_recipe_ranges=SAMPLE_INPUT_RECIPE_RANGES,
             household_relocation=household_relocation,
         )
 
@@ -78,6 +86,7 @@ def test_effective_configuration_metadata_tracks_filtered_demand_and_capital_flo
             apply_hazard_impacts=False,
             adaptation_params={"enabled": False},
             consumption_ratios={"manufacturing": 0.4, "services": 0.6},
+            input_recipe_ranges=SAMPLE_INPUT_RECIPE_RANGES,
             household_relocation=False,
         )
         filtered_metadata = filtered_model.effective_configuration_metadata()
@@ -89,6 +98,7 @@ def test_effective_configuration_metadata_tracks_filtered_demand_and_capital_flo
             apply_hazard_impacts=False,
             adaptation_params={"enabled": False},
             consumption_ratios={"services": 0.7, "retail": 0.3},
+            input_recipe_ranges=SAMPLE_INPUT_RECIPE_RANGES,
             household_relocation=False,
         )
         default_metadata = default_model.effective_configuration_metadata()
@@ -238,6 +248,37 @@ def test_inputs_within_same_supplier_sector_remain_substitutable() -> None:
     assert np.isclose(buyer.raw_supplier_disruption_this_step, 0.0, atol=1e-9)
 
 
+def test_same_sector_lateral_links_do_not_create_required_input_categories() -> None:
+    model = _build_model()
+    buyer = next(f for f in model._firms if f.sector == "manufacturing")
+    agriculture_supplier = next(f for f in model._firms if f.sector == "agriculture")
+    lateral_supplier = next(
+        f for f in model._firms
+        if f.sector == "manufacturing" and f is not buyer
+    )
+
+    buyer.connected_firms = [agriculture_supplier, lateral_supplier]
+    buyer.input_recipe_shares = {"agriculture": 1.0}
+    buyer.inventory_inputs.clear()
+    buyer.inventory_inputs[agriculture_supplier.unique_id] = 10.0
+    buyer.inventory_inputs[lateral_supplier.unique_id] = 0.0
+    buyer.target_output = 10.0
+    buyer.demand_driven_output = 10.0
+    buyer.capital_stock = 1_000.0
+    buyer.capital_coeff = 1.0
+    buyer.LABOR_COEFF = 0.0
+    buyer.INPUT_COEFF = 1.0
+    buyer.damage_factor = 1.0
+    buyer.counterfactual_damage_factor = 1.0
+    buyer.price = 1.0
+    buyer.wage_offer = 1.0
+
+    buyer.step()
+
+    assert np.isclose(buyer.production, 10.0, atol=1e-9)
+    assert np.isclose(buyer.raw_supplier_disruption_this_step, 0.0, atol=1e-9)
+
+
 def test_input_using_firms_without_suppliers_are_input_limited() -> None:
     model = _build_model()
     firm = next(f for f in model._firms if f.sector == "services")
@@ -259,6 +300,47 @@ def test_input_using_firms_without_suppliers_are_input_limited() -> None:
 
     assert np.isclose(firm.production, 0.0, atol=1e-9)
     assert firm.limiting_factor == "input"
+
+
+def test_topology_missing_recipe_supplier_warns_without_rewriting(tmp_path) -> None:
+    topology = {
+        "firms": [
+            {"id": 1, "sector": "agriculture", "lon": 90.4, "lat": 23.7, "capital": 5.0},
+            {"id": 2, "sector": "manufacturing", "lon": -90.0, "lat": 29.9, "capital": 3.0},
+            {"id": 3, "sector": "manufacturing", "lon": -91.3, "lat": 30.4, "capital": 3.0},
+        ],
+        "edges": [
+            {"src": 3, "dst": 2},
+        ],
+    }
+    topology_path = tmp_path / "same_sector_only_topology.json"
+    topology_path.write_text(json.dumps(topology))
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", RuntimeWarning)
+        model = EconomyModel(
+            num_households=20,
+            hazard_events=[],
+            seed=42,
+            firm_topology_path=str(topology_path),
+            apply_hazard_impacts=False,
+            adaptation_params={"enabled": False},
+            consumption_ratios={"manufacturing": 1.0},
+            input_recipe_ranges={
+                "agriculture": {},
+                "manufacturing": {
+                    "agriculture": [0.5, 0.5],
+                    "manufacturing": [0.5, 0.5],
+                },
+            },
+            household_relocation=False,
+        )
+    buyer = next(firm for firm in model._firms if getattr(firm, "topology_id", None) == 2)
+
+    assert not any(supplier.sector == "agriculture" for supplier in buyer.connected_firms)
+    assert any(supplier.sector == "manufacturing" for supplier in buyer.connected_firms)
+    assert set(buyer._input_coefficients_by_sector()) == {"agriculture", "manufacturing"}
+    assert any("requires input sector 'agriculture'" in str(item.message) for item in caught)
 
 
 def test_reserved_capacity_contracts_only_reserve_on_hand_inventory() -> None:

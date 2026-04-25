@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 import math
 import json
+import copy
 from pathlib import Path
 from typing import Dict, List, Tuple, Iterable, Any
 import warnings
@@ -76,10 +77,11 @@ class EconomyModel(Model):
     SECTOR_ORDER = {
         "commodity": 0,
         "agriculture": 0,
-        "manufacturing": 1,
-        "retail": 2,
-        "wholesale": 2,
-        "services": 2,
+        "components": 1,
+        "manufacturing": 2,
+        "retail": 3,
+        "wholesale": 3,
+        "services": 3,
     }
 
     def __init__(
@@ -104,6 +106,7 @@ class EconomyModel(Model):
         adaptation_params: dict | None = None,
         learning_params: dict | None = None,
         consumption_ratios: dict | None = None,
+        input_recipe_ranges: dict | None = None,
         grid_resolution: float = 1.0,
         household_relocation: bool = False,
         damage_functions_path: str | None = None,
@@ -153,6 +156,11 @@ class EconomyModel(Model):
         self.consumption_ratios: dict = consumption_ratios or {
             'retail': 1.0,
         }
+        self.input_recipe_ranges: dict = copy.deepcopy(
+            input_recipe_ranges
+            if input_recipe_ranges is not None
+            else FirmAgent.DEFAULT_INPUT_RECIPE_RANGES
+        )
         self.final_consumption_sectors = set(self.FINAL_CONSUMPTION_SECTORS)
         self._consumption_ratio_warning_emitted: bool = False
         self._startup_capital_floor_overrides: list[dict[str, float | int]] = []
@@ -427,6 +435,8 @@ class EconomyModel(Model):
 
         # Populate agent caches after all agents created
         self._rebuild_agent_caches()
+        self._assign_firm_input_recipes()
+        self._warn_missing_recipe_supplier_coverage()
         self._topology_id_to_agent: Dict[int, FirmAgent] = {
             int(getattr(agent, "topology_id", agent.unique_id)): agent for agent in self._firms
         }
@@ -549,6 +559,12 @@ class EconomyModel(Model):
         return {
             "EffectiveConsumptionRatios": json.dumps(
                 self.get_final_consumption_ratios(),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ),
+            "InputRecipeRanges": json.dumps(
+                self.input_recipe_ranges,
                 sort_keys=True,
                 separators=(",", ":"),
                 ensure_ascii=True,
@@ -1261,16 +1277,21 @@ class EconomyModel(Model):
         for _ in range(200):
             updated = base_demand.copy()
             for buyer in self._firms:
-                if buyer.INPUT_COEFF <= 0 or not buyer.connected_firms:
-                    continue
-                supplier_share = buyer.INPUT_COEFF / len(buyer.connected_firms)
-                if supplier_share <= 0:
+                suppliers_by_sector: dict[str, list[FirmAgent]] = defaultdict(list)
+                for supplier in buyer._technical_input_suppliers():
+                    suppliers_by_sector[supplier.sector].append(supplier)
+                if buyer.INPUT_COEFF <= 0 or not suppliers_by_sector:
                     continue
                 buyer_sales = expected_sales.get(buyer.unique_id, 0.0)
                 if buyer_sales <= 0:
                     continue
-                for supplier in buyer.connected_firms:
-                    updated[supplier.unique_id] += supplier_share * buyer_sales
+                for sector, sector_coeff in buyer._input_coefficients_by_sector().items():
+                    sector_suppliers = suppliers_by_sector.get(sector, [])
+                    if not sector_suppliers or sector_coeff <= 0:
+                        continue
+                    supplier_share = sector_coeff / len(sector_suppliers)
+                    for supplier in sector_suppliers:
+                        updated[supplier.unique_id] += supplier_share * buyer_sales
 
             max_delta = max(abs(updated[uid] - expected_sales[uid]) for uid in expected_sales) if expected_sales else 0.0
             expected_sales = updated
@@ -1304,7 +1325,8 @@ class EconomyModel(Model):
         expected_sales = max(1.0, float(expected_sales))
         inventory_target = max(1.0, expected_sales * inventory_coverage)
         capital_target = max(1.0, expected_sales * firm.capital_coeff * capital_coverage)
-        avg_input_price = float(np.mean([s.price for s in firm.connected_firms])) if firm.connected_firms else 0.0
+        technical_suppliers = firm._technical_input_suppliers()
+        avg_input_price = float(np.mean([s.price for s in technical_suppliers])) if technical_suppliers else 0.0
         unit_variable_cost = (
             firm.wage_offer * firm.LABOR_COEFF
             + avg_input_price * firm.INPUT_COEFF
@@ -1576,6 +1598,86 @@ class EconomyModel(Model):
                 hh = HouseholdAgent(model=self, pos=pos)
                 self.grid.place_agent(hh, pos)
 
+    def _parse_recipe_range(self, value: object) -> tuple[float, float]:
+        if isinstance(value, (int, float)):
+            share = float(value)
+            return share, share
+        if isinstance(value, dict):
+            low = float(value.get("min", value.get("low", 0.0)))
+            high = float(value.get("max", value.get("high", low)))
+            return low, high
+        if isinstance(value, (list, tuple)) and value:
+            low = float(value[0])
+            high = float(value[1] if len(value) > 1 else value[0])
+            return low, high
+        return 0.0, 0.0
+
+    def _resolve_recipe_sector(self, sector: str, available_sectors: set[str]) -> str | None:
+        if sector in available_sectors:
+            return sector
+        if sector in {"commodity", "agriculture"}:
+            for fallback in ("commodity", "agriculture"):
+                if fallback in available_sectors:
+                    return fallback
+        return sector
+
+    def _draw_input_recipe_shares(
+        self,
+        firm: FirmAgent,
+        available_sectors: set[str],
+    ) -> dict[str, float]:
+        if firm.INPUT_COEFF <= 0:
+            return {}
+
+        configured_ranges = self.input_recipe_ranges.get(firm.sector, {})
+        raw_shares: dict[str, float] = defaultdict(float)
+        for configured_sector, range_spec in configured_ranges.items():
+            resolved_sector = self._resolve_recipe_sector(str(configured_sector), available_sectors)
+            if resolved_sector is None:
+                continue
+            low, high = self._parse_recipe_range(range_spec)
+            low = max(0.0, low)
+            high = max(low, high)
+            raw_shares[resolved_sector] += self.random.uniform(low, high)
+
+        if not raw_shares:
+            sector_counts: dict[str, int] = defaultdict(int)
+            for supplier in firm.connected_firms:
+                sector_counts[supplier.sector] += 1
+            raw_shares.update({sector: float(count) for sector, count in sector_counts.items()})
+
+        total = sum(raw_shares.values())
+        if total <= 1e-12:
+            return {}
+        return {
+            sector: share / total
+            for sector, share in raw_shares.items()
+            if share > 1e-12
+        }
+
+    def _assign_firm_input_recipes(self) -> None:
+        available_sectors = {firm.sector for firm in self._firms}
+        for firm in self._firms:
+            firm.input_recipe_shares = self._draw_input_recipe_shares(firm, available_sectors)
+
+    def _warn_missing_recipe_supplier_coverage(self) -> None:
+        """Warn when a firm's recipe requires a supplier sector absent from topology."""
+        for buyer in self._firms:
+            if buyer.INPUT_COEFF <= 0 or not buyer.input_recipe_shares:
+                continue
+
+            for required_sector in buyer.input_recipe_shares:
+                if any(supplier.sector == required_sector for supplier in buyer.connected_firms):
+                    continue
+                warnings.warn(
+                    "Topology firm "
+                    f"{getattr(buyer, 'topology_id', buyer.unique_id)} requires "
+                    f"input sector {required_sector!r} but has no linked supplier "
+                    "in that sector; this recipe input can bind production.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+
     # --------------------------------------------------------------------- #
     #                               MESA STEP                               #
     # --------------------------------------------------------------------- #
@@ -1706,9 +1808,10 @@ class EconomyModel(Model):
             target_expected_sales = max(failed_firm.expected_sales, parent.expected_sales * 0.5, 1.0)
             inventory_target = max(1.0, float(target_expected_sales))
             capital_target = max(1.0, float(target_expected_sales) * failed_firm.capital_coeff)
+            technical_suppliers = failed_firm._technical_input_suppliers()
             avg_input_price = (
-                float(np.mean([s.price for s in failed_firm.connected_firms]))
-                if failed_firm.connected_firms else 0.0
+                float(np.mean([s.price for s in technical_suppliers]))
+                if technical_suppliers else 0.0
             )
             unit_variable_cost = (
                 failed_firm.wage_offer * failed_firm.LABOR_COEFF

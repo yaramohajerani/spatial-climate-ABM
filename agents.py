@@ -312,6 +312,7 @@ class FirmAgent(Agent):
         # Commodity (raw materials): labor-intensive extraction, VERY capital-intensive (heavy equipment)
         "commodity": {"labor": 0.6, "input": 0.0, "capital": 0.7},
         "agriculture": {"labor": 0.6, "input": 0.0, "capital": 0.7},
+        "components": {"labor": 0.3, "input": 0.6, "capital": 0.6},
         # Manufacturing: automated (low labor), capital-intensive, high input needs
         "manufacturing": {"labor": 0.3, "input": 0.6, "capital": 0.6},
         # Retail: moderate labor (modern retail has automation), low capital, moderate inputs
@@ -322,6 +323,31 @@ class FirmAgent(Agent):
     }
     # Default coefficients for unknown sectors
     DEFAULT_COEFFICIENTS: dict = {"labor": 0.5, "input": 0.5, "capital": 0.5}
+
+    # Default intermediate-input recipes. Values are ranges for firm-level shares
+    # of total intermediate input requirements; the model draws and normalizes one
+    # recipe per firm at initialization. Supplier firms within a required sector
+    # are substitutes, while required sectors are complementary Leontief inputs.
+    DEFAULT_INPUT_RECIPE_RANGES: dict = {
+        "commodity": {},
+        "agriculture": {},
+        "components": {
+            "commodity": [1.00, 1.00],
+        },
+        "manufacturing": {
+            "commodity": [0.50, 0.60],
+            "components": [0.40, 0.50],
+        },
+        "retail": {
+            "manufacturing": [1.00, 1.00],
+        },
+        "wholesale": {
+            "manufacturing": [1.00, 1.00],
+        },
+        "services": {
+            "manufacturing": [1.00, 1.00],
+        },
+    }
 
     INVENTORY_BUFFER_RATIO: float = 0.25
     LIQUIDITY_BUFFER_RATIO: float = 0.15
@@ -361,6 +387,7 @@ class FirmAgent(Agent):
         base_price_by_sector = {
             "commodity": 0.8,
             "agriculture": 0.8,
+            "components": 1.0,
             "manufacturing": 1.0,
             "retail": 1.5,
             "wholesale": 1.5,
@@ -381,6 +408,7 @@ class FirmAgent(Agent):
         # Links to other agents (filled by model)
         self.connected_firms: List["FirmAgent"] = []
         self.employees: List[HouseholdAgent] = []
+        self.input_recipe_shares: dict[str, float] = {}
 
         # Statistics
         self.production: float = 0.0  # units produced this step
@@ -599,10 +627,17 @@ class FirmAgent(Agent):
         return buffer_ratio
 
     def _supplier_sector_shares(self) -> dict[str, float]:
-        if not self.connected_firms:
+        if self.input_recipe_shares:
+            return {
+                sector: share
+                for sector, share in self.input_recipe_shares.items()
+                if share > 1e-12
+            }
+        technical_suppliers = self._technical_input_suppliers()
+        if not technical_suppliers:
             return {}
         sector_counts: dict[str, int] = defaultdict(int)
-        for supplier in self.connected_firms:
+        for supplier in technical_suppliers:
             sector_counts[supplier.sector] += 1
         total_suppliers = sum(sector_counts.values())
         if total_suppliers <= 0:
@@ -621,6 +656,30 @@ class FirmAgent(Agent):
             for sector, share in self._supplier_sector_shares().items()
             if share > 1e-12
         }
+
+    def _technical_input_suppliers(self) -> list["FirmAgent"]:
+        """Return suppliers that define the firm's technical input recipe.
+
+        The explicit recipe defines the required input sectors. Supplier links
+        only determine feasible counterparties inside those sectors. Unknown or
+        legacy sectors without recipes fall back to topology-implied sectors.
+        """
+        if self.INPUT_COEFF <= 0 or not self.connected_firms:
+            return []
+        if self.input_recipe_shares:
+            recipe_sectors = {
+                sector
+                for sector, share in self.input_recipe_shares.items()
+                if share > 1e-12
+            }
+            return [
+                supplier for supplier in self.connected_firms
+                if supplier.sector in recipe_sectors
+            ]
+        return [
+            supplier for supplier in self.connected_firms
+            if supplier is not self
+        ]
 
     def _desired_input_units_by_sector(self, desired_pre_damage_output: float) -> dict[str, float]:
         if desired_pre_damage_output <= 0:
@@ -683,7 +742,7 @@ class FirmAgent(Agent):
         if not remaining_by_sector:
             return 0.0
 
-        for supplier in self.connected_firms:
+        for supplier in self._technical_input_suppliers():
             sector = supplier.sector
             remaining_needed = remaining_by_sector.get(sector, 0.0)
             if remaining_needed <= 1e-12:
@@ -696,7 +755,7 @@ class FirmAgent(Agent):
             self.inventory_inputs[supp_id] -= use_qty
             remaining_by_sector[sector] = remaining_needed - use_qty
 
-        primary_ids = {s.unique_id for s in self.connected_firms}
+        primary_ids = {s.unique_id for s in self._technical_input_suppliers()}
         for supp_id in list(self.inventory_inputs.keys()):
             if supp_id in primary_ids:
                 continue
@@ -1095,7 +1154,8 @@ class FirmAgent(Agent):
         self.revenue_this_step = 0.0
 
     def estimate_direct_value_at_risk(self) -> float:
-        avg_input_price = float(np.mean([s.price for s in self.connected_firms])) if self.connected_firms else self.price
+        technical_suppliers = self._technical_input_suppliers()
+        avg_input_price = float(np.mean([s.price for s in technical_suppliers])) if technical_suppliers else self.price
         input_units = sum(self.inventory_inputs.values())
         downtime_units = max(self.expected_sales, self.sales_last_step, self.target_output, 1.0)
         inventory_value = self.inventory_output * max(self.price, 0.5)
@@ -1315,8 +1375,9 @@ class FirmAgent(Agent):
         no_hazard_desired_output = no_hazard_demand_driven_output
 
         avg_input_price = 0.0
-        if self.connected_firms:
-            avg_input_price = float(np.mean([s.price for s in self.connected_firms]))
+        technical_suppliers = self._technical_input_suppliers()
+        if technical_suppliers:
+            avg_input_price = float(np.mean([s.price for s in technical_suppliers]))
 
         effective_damage = max(self.damage_factor, 1e-6)
         no_hazard_damage = max(
@@ -1426,8 +1487,9 @@ class FirmAgent(Agent):
 
         # Unit cost from actual production inputs
         avg_input_price = 0.0
-        if self.connected_firms:
-            avg_input_price = float(np.mean([s.price for s in self.connected_firms]))
+        technical_suppliers = self._technical_input_suppliers()
+        if technical_suppliers:
+            avg_input_price = float(np.mean([s.price for s in technical_suppliers]))
         unit_cost = (
             self.wage_offer * self.LABOR_COEFF
             + avg_input_price * self.INPUT_COEFF
@@ -1473,14 +1535,15 @@ class FirmAgent(Agent):
             remaining_sector_inputs = max(0.0, desired_sector_units - current_sector_units)
             sector_remaining_inputs_needed[sector] = remaining_sector_inputs
 
-        if self.connected_firms and self.INPUT_COEFF > 0:
+        technical_suppliers = self._technical_input_suppliers()
+        if technical_suppliers and self.INPUT_COEFF > 0:
             for sector, remaining_inputs_needed in list(sector_remaining_inputs_needed.items()):
                 if remaining_inputs_needed <= 1e-9:
                     continue
                 suppliers = sorted(
                     [
                         supplier
-                        for supplier in self.connected_firms
+                        for supplier in technical_suppliers
                         if supplier.sector == sector and supplier.inventory_output > 0
                     ],
                     key=lambda supplier: supplier.price,

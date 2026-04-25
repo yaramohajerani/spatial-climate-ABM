@@ -787,16 +787,17 @@ There is an absolute floor of 0.5.
 
 #### 3.3.7 Intermediate-input procurement submodel
 
-After updating wages and prices, firms procure the intermediate inputs required for planned output. Input requirements are bounded by supplier sector: suppliers in the same sector are treated as substitutes, but inventories from one supplier sector do not satisfy requirements for another supplier sector.
+After updating wages and prices, firms procure the intermediate inputs required for planned output. Input requirements are set by a firm-specific sector recipe drawn from predetermined sector-level ranges at initialization. The recipe defines the complementary supplier-sector categories required for production, while the supply network defines which firms can provide each category. Suppliers within the same required sector are substitutes, but inventories from one required sector do not satisfy requirements for another required sector.
 
 Key features are:
 
 - connected suppliers in the same supplier sector are treated as substitutes,
-- supplier-sector requirements are derived from the firm's connected supplier mix,
+- supplier-sector requirements are derived from the firm's input recipe, not from raw supplier edge counts,
 - primary suppliers are sorted by price,
 - firms buy cheapest available input first,
 - purchases require real supplier inventory and real buyer cash capacity,
 - input inventories are stored by supplier ID,
+- when a topology omits a supplier for a required recipe sector, the model emits a runtime warning and the unresolved recipe input can bind production,
 - if required supplier-sector inventory is unavailable, production may become input-limited.
 
 Supplier disruption is measured as the share of desired inputs that remain unavailable when the shortage is attributed to hazard-related causes.
@@ -1087,7 +1088,7 @@ The repository's plotting and analysis scripts consume these files directly.
 The current implementation makes several intentional simplifications.
 
 - Households are not directly assigned physical asset losses; their exposure is mainly indirect through wages, prices, profits, and optional relocation.
-- Firms use a reduced-form intermediate-input structure: requirements are differentiated only by supplier sector, not by detailed product class.
+- Firms use a reduced-form intermediate-input structure: requirements are differentiated by firm-specific supplier-sector recipes, not by detailed product class.
 - There is no explicit banking sector, government sector, or international trade block.
 - Productive capital is a reduced-form stock, not a traded good produced by a capital-goods sector.
 - Household ownership is pooled rather than firm-specific.

@@ -268,6 +268,7 @@ def _base_metadata(
         f"{METADATA_PREFIX}LandBoundariesPath": str(getattr(args, "land_boundaries_path", "") or ""),
         f"{METADATA_PREFIX}ConsumptionRatios": _metadata_json(getattr(args, "consumption_ratios", None)),
         f"{METADATA_PREFIX}ParamConsumptionRatios": _metadata_json(param_data.get("consumption_ratios")),
+        f"{METADATA_PREFIX}ParamInputRecipeRanges": _metadata_json(param_data.get("input_recipe_ranges")),
         f"{METADATA_PREFIX}HHConsumptionPropensityIncome": float(HouseholdAgent.CONSUMPTION_PROPENSITY_INCOME),
         f"{METADATA_PREFIX}HHConsumptionPropensityWealth": float(HouseholdAgent.CONSUMPTION_PROPENSITY_WEALTH),
         f"{METADATA_PREFIX}HHTargetCashBuffer": float(HouseholdAgent.TARGET_CASH_BUFFER),
@@ -359,6 +360,7 @@ def _run_single_simulation(
         steps_per_year=args.steps_per_year,
         adaptation_params=adaptation_config,
         consumption_ratios=args.consumption_ratios,
+        input_recipe_ranges=getattr(args, "input_recipe_ranges", None),
         grid_resolution=args.grid_resolution,
         household_relocation=args.household_relocation,
         damage_functions_path=getattr(args, "damage_functions_path", None),
@@ -533,6 +535,7 @@ def main() -> None:  # noqa: D401
 
         # 8. Consumption ratios by sector -----------------------------------
         args.consumption_ratios = param_data.get("consumption_ratios", None)
+        args.input_recipe_ranges = param_data.get("input_recipe_ranges", None)
 
         # 9. Number of households -------------------------------------------
         args.num_households = int(param_data.get("num_households", 100))

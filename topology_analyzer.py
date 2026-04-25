@@ -113,6 +113,7 @@ def _abbr(sector: str) -> str:
         "agriculture": "A",
         # "mining": "M",
         "extraction": "E",
+        "components": "C",
         "manufacturing": "M",
         "services": "S",
         "retail": "R",
@@ -160,6 +161,7 @@ def _draw_network(ax, g: nx.DiGraph, levels: Dict[int, int]):
     sector_colors = {
         "commodity": "#1f77b4",      # blue
         "agriculture": "#1f77b4",    # blue
+        "components": "#ff7f0e",     # orange
         "manufacturing": "#d62728",  # red
         "retail": "#2ca02c",         # green
         "wholesale": "#2ca02c",      # green
@@ -296,6 +298,7 @@ def plot_world_map(ax, g: nx.DiGraph, household_locations: List[Tuple[float, flo
     sector_colors = {
         "commodity": "#1f77b4",      # blue
         "agriculture": "#1f77b4",    # blue
+        "components": "#ff7f0e",     # orange
         "manufacturing": "#d62728",  # red
         "retail": "#2ca02c",         # green
         "wholesale": "#2ca02c",      # green
