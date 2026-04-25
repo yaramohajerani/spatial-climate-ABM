@@ -167,7 +167,7 @@ The step sequence is:
 7. If the reserved-capacity strategy is active, create reserved supplier contracts before procurement begins.
 8. Households supply labor. They search for employers, optionally relocate if that feature is enabled, and sell labor to hiring firms.
 9. Firms execute production in broad sector order. Commodity firms act before manufacturing firms, which act before retail/service firms. Ties within broad sector tiers are randomized each step.
-10. During firm execution, wages and prices are updated first using prior-period information, then firms procure inputs, optionally access continuity-enabled backup channels, produce output, clear employees, and depreciate capital.
+10. During firm execution, wages and prices are updated first using prior-period information, then firms procure inputs, optionally add bounded new supplier links for unavailable required input sectors, optionally access continuity-enabled backup channels, produce output, clear employees, and depreciate capital.
 11. Households consume final goods after current-period production is complete.
 12. Firms close the accounting period: compute profits, install productive capital when no current direct loss blocks it, fund adaptation from residual cash, pay dividends, and update adaptive expectations and exposure diagnostics.
 13. Firms partially recover damage factors after the current period's production and accounting have closed, so recovery affects the next period rather than smoothing the current shock.
@@ -797,6 +797,8 @@ Key features are:
 - firms buy cheapest available input first,
 - purchases require real supplier inventory and real buyer cash capacity,
 - input inventories are stored by supplier ID,
+- if dynamic supplier search is enabled, firms with unresolved required input demand can add a bounded number of new supplier links within the missing recipe sector,
+- dynamically added suppliers must be active firms with available inventory or current production and are ranked by price and then distance,
 - when a topology omits a supplier for a required recipe sector, the model emits a runtime warning and the unresolved recipe input can bind production,
 - if required supplier-sector inventory is unavailable, production may become input-limited.
 
@@ -1029,7 +1031,9 @@ Firm failure is defined operationally by low cash:
 firm.money < min_money_survival
 ```
 
-Firms are not replaced immediately. Instead, at a global replacement interval:
+Firms are not replaced immediately. Instead, at a global replacement interval the `firm_replacement` parameter determines whether failed firms are reset in place or leave the active economy.
+
+Under the default `firm_replacement = "startup_reset"`:
 
 - all failed firms are identified,
 - at most one quarter of firms are reorganized in a given sweep,
@@ -1039,6 +1043,8 @@ Firms are not replaced immediately. Instead, at a global replacement interval:
 - any cash needed to restore the startup cash target is financed using household equity transfers.
 
 This produces an endogenous replacement lag between failure and re-entry. With quarterly steps and the default replacement frequency of 10, the realized lag ranges from effectively immediate at the next sweep to at most 10 quarters.
+
+Under `firm_replacement = "none"`, failed firms are deactivated at the replacement sweep. They remain in the agent panel for diagnostics but no longer produce, hire, sell goods, supply inputs, or form active procurement relationships. This mode allows scenario runs in which climate risk permanently removes firms rather than immediately replacing productive capacity.
 
 #### 3.3.17 Transport-disruption submodel
 

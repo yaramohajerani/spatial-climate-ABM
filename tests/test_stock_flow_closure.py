@@ -353,6 +353,32 @@ def test_firm_reorganization_preserves_total_money_and_resets_startup_state() ->
     assert failed_firm.last_perceived_hazard_risk == 0.0
 
 
+def test_no_replacement_deactivates_failed_firm_without_recapitalization() -> None:
+    """No-replacement mode should remove failed firms from active markets."""
+    model = build_closed_economy_model(adaptation_enabled=False)
+    model.firm_replacement = "none"
+    model.current_step = 5
+    failed_firm = model._firms[0]
+
+    for firm in model._firms:
+        firm.money = 100.0
+    failed_firm.money = 0.0
+    failed_firm.inventory_output = 10.0
+    failed_firm.target_labor = 1
+    initial_total_money = model.total_money()
+
+    model._apply_firm_reorganization()
+
+    assert model.total_firm_exits == 1
+    assert model.total_firm_replacements == 0
+    assert np.isclose(model.total_money(), initial_total_money, atol=1e-9)
+    assert not failed_firm.active
+    assert failed_firm.inventory_output == 0.0
+    assert failed_firm.limiting_factor == "inactive"
+    assert failed_firm.sell_goods_to_household(model._households[0], 1.0) == 0.0
+    assert not failed_firm.hire_labor(model._households[0], failed_firm.wage_offer)
+
+
 def test_adapted_loss_fraction_strategy_dependent() -> None:
     """Non-hardening strategies pass through; capital_hardening attenuates."""
     model = build_closed_economy_model(adaptation_enabled=True)

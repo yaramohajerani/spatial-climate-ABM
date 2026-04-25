@@ -87,7 +87,7 @@ class HouseholdAgent(Agent):
     def _relocate_for_job(self) -> None:
         """Move closer to a random firm to improve employment prospects."""
         # Allow relocation to any firm (cross-sector employment is permitted)
-        all_firms = self.model._firms
+        all_firms = [firm for firm in self.model._firms if getattr(firm, "active", True)]
         if not all_firms:
             return  # no firms exist
 
@@ -187,9 +187,12 @@ class HouseholdAgent(Agent):
         # prefer nearby same-sector firms first, then broaden to the full market.
         # This keeps labor tied to the local production structure while preserving
         # cross-sector fallback when the preferred market is weak.
-        all_firms = self.model._firms
+        all_firms = [firm for firm in self.model._firms if getattr(firm, "active", True)]
         if all_firms:
-            primary_firms = self.nearby_firms if self.nearby_firms else [
+            primary_firms = [
+                firm for firm in self.nearby_firms
+                if getattr(firm, "active", True)
+            ] if self.nearby_firms else [
                 firm for firm in all_firms if firm.sector == self.sector
             ]
             if not self._try_hire_from_ranked_list(primary_firms):
@@ -232,7 +235,7 @@ class HouseholdAgent(Agent):
                 # Group firms by sector
                 firms_by_sector: dict[str, list] = {}
                 for f in self.model._firms:
-                    if f.inventory_output > 0 and f.sector in consumption_ratios:
+                    if getattr(f, "active", True) and f.inventory_output > 0 and f.sector in consumption_ratios:
                         sector = f.sector
                         if sector not in firms_by_sector:
                             firms_by_sector[sector] = []
@@ -409,6 +412,7 @@ class FirmAgent(Agent):
         self.connected_firms: List["FirmAgent"] = []
         self.employees: List[HouseholdAgent] = []
         self.input_recipe_shares: dict[str, float] = {}
+        self.active: bool = True
 
         # Statistics
         self.production: float = 0.0  # units produced this step
@@ -674,11 +678,11 @@ class FirmAgent(Agent):
             }
             return [
                 supplier for supplier in self.connected_firms
-                if supplier.sector in recipe_sectors
+                if supplier.sector in recipe_sectors and getattr(supplier, "active", True)
             ]
         return [
             supplier for supplier in self.connected_firms
-            if supplier is not self
+            if supplier is not self and getattr(supplier, "active", True)
         ]
 
     def _desired_input_units_by_sector(self, desired_pre_damage_output: float) -> dict[str, float]:
@@ -1217,6 +1221,8 @@ class FirmAgent(Agent):
         Returns True if the contract succeeded (wage transferred),
         False otherwise (insufficient funds).
         """
+        if not self.active:
+            return False
 
         # Firms hire up to the vacancy count implied by planned output, not until cash is exhausted.
         if len(self.employees) >= self.target_labor:
@@ -1241,6 +1247,8 @@ class FirmAgent(Agent):
         quantity, sells the largest affordable fraction. Always returns 0 if
         no transaction occurs.
         """
+        if not self.active:
+            return 0.0
 
         available_inventory = self.model.available_inventory_for_spot_sales(self)
         if quantity <= 0 or available_inventory <= 0:
@@ -1275,6 +1283,8 @@ class FirmAgent(Agent):
         reservation_buyer_id: int | None = None,
     ) -> float:
         """Sell intermediate goods to another firm."""
+        if not self.active:
+            return 0.0
         if reservation_buyer_id is None:
             available_inventory = self.model.available_inventory_for_spot_sales(self)
         else:
@@ -1335,6 +1345,16 @@ class FirmAgent(Agent):
         self.no_hazard_demand_driven_output = 0.0
         self.no_hazard_damage_factor = max(float(getattr(self, "pre_hazard_damage_factor", self.damage_factor)), 1e-6)
         self.finance_constrained_this_step = False
+
+        if not self.active:
+            self.target_output = 0.0
+            self.no_hazard_target_output = 0.0
+            self.required_working_capital = 0.0
+            self.working_capital_credit_limit = 0.0
+            self.target_labor = 0
+            self.target_input_units = 0.0
+            self.limiting_factor = "inactive"
+            return
 
         self.capital_coeff = self.original_capital_coeff
 
@@ -1434,6 +1454,12 @@ class FirmAgent(Agent):
     # ---------------- Mesa API (production) --------------------------- #
     def step(self) -> None:  # noqa: D401, N802
         """Purchase inputs, transform them with labour into output, then sell surplus."""
+        if not self.active:
+            self.production = 0.0
+            self.consumption = 0.0
+            self.limiting_factor = "inactive"
+            self.employees.clear()
+            return
 
         # ---------------- Wage adjustment ----------------------------- #
         # Revenue-based wage targeting: wages track marginal revenue product of labor.
@@ -1527,6 +1553,29 @@ class FirmAgent(Agent):
                         supplier
                         for supplier in technical_suppliers
                         if supplier.sector == sector and supplier.inventory_output > 0
+                    ],
+                    key=lambda supplier: supplier.price,
+                )
+                for supplier in suppliers:
+                    if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
+                        break
+                    bought = supplier.sell_goods_to_firm(self, remaining_inputs_needed)
+                    if bought > 0:
+                        remaining_inputs_needed -= bought
+                sector_remaining_inputs_needed[sector] = remaining_inputs_needed
+
+        if self.model.dynamic_supplier_search_enabled and self.INPUT_COEFF > 0:
+            for sector, remaining_inputs_needed in list(sector_remaining_inputs_needed.items()):
+                if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
+                    continue
+                new_suppliers = self.model.add_dynamic_supplier_edges(self, sector)
+                if not new_suppliers:
+                    continue
+                suppliers = sorted(
+                    [
+                        supplier
+                        for supplier in new_suppliers
+                        if supplier.inventory_output > 0
                     ],
                     key=lambda supplier: supplier.price,
                 )

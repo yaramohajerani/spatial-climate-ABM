@@ -189,6 +189,7 @@ def test_recovery_is_applied_after_close_step_and_not_before_planning() -> None:
 
 def test_inputs_from_different_supplier_sectors_do_not_substitute() -> None:
     model = _build_model()
+    model.dynamic_supplier_search_enabled = False
     buyer = next(f for f in model._firms if f.sector == "services")
     agriculture_supplier = next(f for f in model._firms if f.sector == "agriculture")
     manufacturing_supplier = next(
@@ -281,6 +282,7 @@ def test_same_sector_lateral_links_do_not_create_required_input_categories() -> 
 
 def test_input_using_firms_without_suppliers_are_input_limited() -> None:
     model = _build_model()
+    model.dynamic_supplier_search_enabled = False
     firm = next(f for f in model._firms if f.sector == "services")
 
     firm.connected_firms = []
@@ -300,6 +302,40 @@ def test_input_using_firms_without_suppliers_are_input_limited() -> None:
 
     assert np.isclose(firm.production, 0.0, atol=1e-9)
     assert firm.limiting_factor == "input"
+
+
+def test_dynamic_supplier_search_adds_active_same_recipe_sector_edges() -> None:
+    model = _build_model()
+    buyer = next(f for f in model._firms if f.sector == "services")
+    sector = "manufacturing"
+    model.dynamic_supplier_search_enabled = True
+    model.max_dynamic_suppliers_per_sector = 1
+
+    primary_ids = {supplier.unique_id for supplier in buyer.connected_firms}
+    active_candidate = next(
+        firm
+        for firm in model._firms_by_sector[sector]
+        if firm.unique_id not in primary_ids
+    )
+    inactive_candidate = next(
+        firm
+        for firm in model._firms_by_sector[sector]
+        if firm.unique_id not in primary_ids and firm is not active_candidate
+    )
+    active_candidate.inventory_output = 5.0
+    active_candidate.price = 0.2
+    inactive_candidate.active = False
+    inactive_candidate.inventory_output = 100.0
+    inactive_candidate.price = 0.1
+
+    new_suppliers = model.add_dynamic_supplier_edges(buyer, sector)
+    second_attempt = model.add_dynamic_supplier_edges(buyer, sector)
+
+    assert new_suppliers == [active_candidate]
+    assert active_candidate in buyer.connected_firms
+    assert inactive_candidate not in buyer.connected_firms
+    assert second_attempt == []
+    assert model.total_dynamic_supplier_edges == 1
 
 
 def test_topology_missing_recipe_supplier_warns_without_rewriting(tmp_path) -> None:

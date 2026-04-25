@@ -107,6 +107,9 @@ class EconomyModel(Model):
         learning_params: dict | None = None,
         consumption_ratios: dict | None = None,
         input_recipe_ranges: dict | None = None,
+        firm_replacement: str = "startup_reset",
+        dynamic_supplier_search: bool = True,
+        max_dynamic_suppliers_per_sector: int = 2,
         grid_resolution: float = 1.0,
         household_relocation: bool = False,
         damage_functions_path: str | None = None,
@@ -137,6 +140,14 @@ class EconomyModel(Model):
         self.firm_learning_enabled: bool = self.firm_adaptation_enabled
         self.min_money_survival: float = self.adaptation_config.get("min_money_survival", 1.0)
         self.replacement_frequency: int = self.adaptation_config.get("replacement_frequency", 10)
+        self.firm_replacement: str = str(firm_replacement or "startup_reset")
+        if self.firm_replacement not in {"startup_reset", "none"}:
+            raise ValueError("firm_replacement must be 'startup_reset' or 'none'")
+        self.dynamic_supplier_search_enabled: bool = bool(dynamic_supplier_search)
+        self.max_dynamic_suppliers_per_sector: int = max(0, int(max_dynamic_suppliers_per_sector))
+        self.total_firm_exits: int = 0
+        self.total_dynamic_supplier_edges: int = 0
+        self._dynamic_supplier_pairs: set[tuple[int, int]] = set()
         self.adaptation_observation_radius: int = int(self.adaptation_config.get("observation_radius", 4))
         self.adaptation_updates_this_step: int = 0
         self.max_backup_suppliers: int = int(self.adaptation_config.get("max_backup_suppliers", 5))
@@ -338,6 +349,9 @@ class EconomyModel(Model):
                 "Adaptation_Updates": lambda m: m.adaptation_updates_this_step,
                 "Fixed_Labor_Share": lambda m: np.mean([getattr(f, "LABOR_SHARE", np.nan) for f in m._firms]) if m._firms else 0.0,
                 "Firm_Replacements": lambda m: getattr(m, 'total_firm_replacements', 0),
+                "Firm_Exits": lambda m: getattr(m, 'total_firm_exits', 0),
+                "Active_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "active", True)),
+                "Dynamic_Supplier_Edges": lambda m: getattr(m, 'total_dynamic_supplier_edges', 0),
                 "Total_Sales": lambda m: sum(f.sales_last_step for f in m._firms),
                 "Total_Firms": lambda m: len(m._firms),
                 "Flooded_Firms": lambda m: sum(1 for f in m._firms if m.hazard_map.get(f.pos, 0) > 0),
@@ -366,6 +380,7 @@ class EconomyModel(Model):
                 "wage": lambda a: getattr(a, "wage_offer", np.nan),
                 "sector": lambda a: getattr(a, "sector", ""),
                 "type": lambda a: type(a).__name__,
+                "active": lambda a: getattr(a, "active", np.nan),
                 "survival_time": lambda a: getattr(a, "survival_time", 0),
                 "sales_last_step": lambda a: getattr(a, "sales_last_step", np.nan),
                 "household_sales_last_step": lambda a: getattr(a, "household_sales_last_step", np.nan),
@@ -566,6 +581,9 @@ class EconomyModel(Model):
                 separators=(",", ":"),
                 ensure_ascii=True,
             ),
+            "FirmReplacement": self.firm_replacement,
+            "DynamicSupplierSearch": bool(self.dynamic_supplier_search_enabled),
+            "MaxDynamicSuppliersPerSector": int(self.max_dynamic_suppliers_per_sector),
             "StartupCapitalFloorCount": int(len(self._startup_capital_floor_overrides)),
             "StartupCapitalFloorTotal": float(startup_added_capital),
             "StartupCapitalFloorFirms": json.dumps(
@@ -710,6 +728,8 @@ class EconomyModel(Model):
             for firm in self._firms_by_sector.get(sector, []):
                 if firm is buyer or firm.unique_id in primary_ids:
                     continue
+                if not getattr(firm, "active", True):
+                    continue
                 if firm.inventory_output > 0:
                     candidates.append(firm)
 
@@ -719,6 +739,55 @@ class EconomyModel(Model):
         self.random.shuffle(candidates)
         candidates.sort(key=lambda f: f.price)
         return candidates[:max_count]
+
+    def add_dynamic_supplier_edges(self, buyer: FirmAgent, sector: str) -> List[FirmAgent]:
+        """Add bounded new supplier links in a required recipe sector."""
+        if not self.dynamic_supplier_search_enabled:
+            return []
+        max_count = self.max_dynamic_suppliers_per_sector
+        if max_count <= 0 or not getattr(buyer, "active", True):
+            return []
+
+        dynamic_sector_suppliers = [
+            supplier for supplier in buyer.connected_firms
+            if supplier.sector == sector
+            and (supplier.unique_id, buyer.unique_id) in self._dynamic_supplier_pairs
+        ]
+        if len(dynamic_sector_suppliers) >= max_count:
+            return []
+
+        existing_ids = {supplier.unique_id for supplier in buyer.connected_firms}
+        candidates: List[FirmAgent] = []
+        for supplier in self._firms_by_sector.get(sector, []):
+            if supplier is buyer or supplier.unique_id in existing_ids:
+                continue
+            if not getattr(supplier, "active", True):
+                continue
+            if supplier.inventory_output <= 1e-9 and supplier.production <= 1e-9:
+                continue
+            candidates.append(supplier)
+
+        if not candidates:
+            return []
+
+        bx, by = buyer.pos
+        self.random.shuffle(candidates)
+        candidates.sort(
+            key=lambda supplier: (
+                supplier.price,
+                abs(supplier.pos[0] - bx) + abs(supplier.pos[1] - by),
+            )
+        )
+        slots = max_count - len(dynamic_sector_suppliers)
+        new_suppliers: List[FirmAgent] = []
+        for supplier in candidates[:slots]:
+            buyer.connected_firms.append(supplier)
+            pair = (supplier.unique_id, buyer.unique_id)
+            if pair not in self._dynamic_supplier_pairs:
+                self._dynamic_supplier_pairs.add(pair)
+                self.total_dynamic_supplier_edges += 1
+            new_suppliers.append(supplier)
+        return new_suppliers
 
     def _reset_reserved_capacity_contracts(self) -> None:
         self._reserved_capacity_contracts = {}
@@ -739,6 +808,7 @@ class EconomyModel(Model):
             firm
             for firm in self._firms
             if firm.adaptation_enabled
+            and getattr(firm, "active", True)
             and getattr(firm, "continuity_capital", 0.0) > 0
             and getattr(firm, "target_input_units", 0.0) > 0
             and firm.connected_firms
@@ -814,6 +884,8 @@ class EconomyModel(Model):
         return 0.0
 
     def available_inventory_for_spot_sales(self, supplier: FirmAgent) -> float:
+        if not getattr(supplier, "active", True):
+            return 0.0
         reserved_total = self._supplier_reserved_inventory.get(supplier.unique_id, 0.0)
         return max(0.0, supplier.inventory_output - reserved_total)
 
@@ -1230,6 +1302,8 @@ class EconomyModel(Model):
             return
 
         for firm in self._firms:
+            if not getattr(firm, "active", True):
+                continue
             if not firm.adaptation_enabled:
                 continue
             interval = max(1, int(firm.decision_interval))
@@ -1775,7 +1849,7 @@ class EconomyModel(Model):
 
         failed_firms = []
         for firm in self._firms:
-            if firm.money < self.min_money_survival:
+            if getattr(firm, "active", True) and firm.money < self.min_money_survival:
                 failed_firms.append(firm)
 
         if not failed_firms:
@@ -1785,6 +1859,25 @@ class EconomyModel(Model):
         failed_firms = failed_firms[:max_replacements]
 
         for failed_firm in failed_firms:
+            if self.firm_replacement == "none":
+                if getattr(failed_firm, "active", True):
+                    failed_firm.active = False
+                    failed_firm.production = 0.0
+                    failed_firm.consumption = 0.0
+                    failed_firm.target_output = 0.0
+                    failed_firm.target_labor = 0
+                    failed_firm.target_input_units = 0.0
+                    failed_firm.inventory_output = 0.0
+                    failed_firm.inventory_inputs.clear()
+                    failed_firm.employees.clear()
+                    failed_firm.limiting_factor = "inactive"
+                    self.total_firm_exits += 1
+                    print(
+                        f"[EXIT] Step {self.current_step}: Deactivated failed firm "
+                        f"{failed_firm.unique_id} (total exits: {self.total_firm_exits})"
+                    )
+                continue
+
             startup_expected_sales = float(getattr(failed_firm, "startup_expected_sales", 1.0))
             startup_inventory_target = float(getattr(failed_firm, "startup_inventory_target", 1.0))
             startup_capital_stock = float(
@@ -1797,6 +1890,7 @@ class EconomyModel(Model):
             startup_money = float(getattr(failed_firm, "startup_money", 100.0))
 
             failed_firm.expected_sales = max(1.0, startup_expected_sales)
+            failed_firm.active = True
             failed_firm.base_inventory_target = max(1.0, startup_inventory_target)
             failed_firm.base_capital_target = max(1.0, startup_capital_stock)
             failed_firm.target_capital_stock = failed_firm.base_capital_target

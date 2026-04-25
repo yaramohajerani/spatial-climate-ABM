@@ -99,6 +99,31 @@ def _parse():
         help="Override adaptation_sensitivity_max from the parameter file",
     )
     p.add_argument("--no-learning", action="store_true", help="Deprecated alias for --no-adaptation")
+    p.add_argument(
+        "--firm-replacement",
+        choices=("startup_reset", "none"),
+        default="startup_reset",
+        help="How failed firms are handled at replacement sweeps: reset in place or exit permanently",
+    )
+    p.add_argument(
+        "--dynamic-supplier-search",
+        dest="dynamic_supplier_search",
+        action="store_true",
+        default=True,
+        help="Allow firms to form bounded new supplier edges when required inputs are unavailable",
+    )
+    p.add_argument(
+        "--no-dynamic-supplier-search",
+        dest="dynamic_supplier_search",
+        action="store_false",
+        help="Disable bounded new supplier edge formation",
+    )
+    p.add_argument(
+        "--max-dynamic-suppliers-per-sector",
+        type=int,
+        default=2,
+        help="Maximum dynamically added supplier edges per buyer and required input sector",
+    )
     p.add_argument("--save-agent-ensemble", action="store_true", help="When running multiple seeds, also save the combined agent panel")
     p.add_argument("--ensemble-plot-stat", choices=("mean", "median"), default="mean", help="Statistic to highlight in ensemble plots and summaries")
     return p.parse_args()
@@ -268,6 +293,11 @@ def _base_metadata(
         f"{METADATA_PREFIX}ConsumptionRatios": _metadata_json(getattr(args, "consumption_ratios", None)),
         f"{METADATA_PREFIX}ParamConsumptionRatios": _metadata_json(param_data.get("consumption_ratios")),
         f"{METADATA_PREFIX}ParamInputRecipeRanges": _metadata_json(param_data.get("input_recipe_ranges")),
+        f"{METADATA_PREFIX}ParamFirmReplacement": str(param_data.get("firm_replacement", "")),
+        f"{METADATA_PREFIX}ParamDynamicSupplierSearch": _metadata_json(param_data.get("dynamic_supplier_search")),
+        f"{METADATA_PREFIX}ParamMaxDynamicSuppliersPerSector": str(
+            param_data.get("max_dynamic_suppliers_per_sector", "")
+        ),
         f"{METADATA_PREFIX}HHConsumptionPropensityIncome": float(HouseholdAgent.CONSUMPTION_PROPENSITY_INCOME),
         f"{METADATA_PREFIX}HHConsumptionPropensityWealth": float(HouseholdAgent.CONSUMPTION_PROPENSITY_WEALTH),
         f"{METADATA_PREFIX}HHTargetCashBuffer": float(HouseholdAgent.TARGET_CASH_BUFFER),
@@ -359,6 +389,9 @@ def _run_single_simulation(
         adaptation_params=adaptation_config,
         consumption_ratios=args.consumption_ratios,
         input_recipe_ranges=getattr(args, "input_recipe_ranges", None),
+        firm_replacement=getattr(args, "firm_replacement", "startup_reset"),
+        dynamic_supplier_search=bool(getattr(args, "dynamic_supplier_search", True)),
+        max_dynamic_suppliers_per_sector=int(getattr(args, "max_dynamic_suppliers_per_sector", 2)),
         grid_resolution=args.grid_resolution,
         household_relocation=args.household_relocation,
         damage_functions_path=getattr(args, "damage_functions_path", None),
@@ -534,6 +567,14 @@ def main() -> None:  # noqa: D401
         # 8. Consumption ratios by sector -----------------------------------
         args.consumption_ratios = param_data.get("consumption_ratios", None)
         args.input_recipe_ranges = param_data.get("input_recipe_ranges", None)
+        args.firm_replacement = str(param_data.get("firm_replacement", "startup_reset"))
+        dynamic_supplier_config = param_data.get("dynamic_supplier_search", {})
+        if isinstance(dynamic_supplier_config, dict):
+            args.dynamic_supplier_search = bool(dynamic_supplier_config.get("enabled", True))
+            args.max_dynamic_suppliers_per_sector = int(dynamic_supplier_config.get("max_suppliers_per_sector", 2))
+        else:
+            args.dynamic_supplier_search = bool(dynamic_supplier_config)
+            args.max_dynamic_suppliers_per_sector = int(param_data.get("max_dynamic_suppliers_per_sector", 2))
 
         # 9. Number of households -------------------------------------------
         args.num_households = int(param_data.get("num_households", 100))
