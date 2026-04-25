@@ -300,6 +300,49 @@ def test_none_hazard_entries_allow_explicit_warmup_windows() -> None:
     assert np.allclose(df["Flooded_Households"].to_numpy(), 0.0, atol=1e-12)
 
 
+def test_raster_return_period_layers_are_sampled_as_nested_exceedances(monkeypatch) -> None:
+    """One severity draw should select one RP layer per hazard type and step."""
+
+    class FakeHazard:
+        frequency = np.array([0.5, 0.1], dtype=float)
+        n_events = 2
+
+        def __init__(self) -> None:
+            self.sampled_events: list[int] = []
+
+        def sample_at_coords(self, coords, event_idx: int) -> np.ndarray:
+            self.sampled_events.append(event_idx)
+            # Sentinels intentionally make the common layer larger. The old
+            # independent-draw/max sampler would stack both hits for cell 0 and
+            # return 100.0; the exceedance sampler must return the selected
+            # rarer layer only.
+            depth = 100.0 if event_idx == 0 else 10.0
+            return np.full(len(coords), depth, dtype=float)
+
+    model = build_closed_economy_model(adaptation_enabled=False)
+    model.current_step = 1
+    model.steps_per_year = 1
+    hazard = FakeHazard()
+    cell_coords = [(0, 0), (1, 0), (2, 0)]
+    geo_coords = [(0.5, 0.5), (1.5, 0.5), (2.5, 0.5)]
+
+    monkeypatch.setattr(np.random, "random", lambda: 0.05)
+
+    intensities = model._sample_exceedance_hazard_intensities(
+        hazard,
+        ranges=[(1, 1), (1, 1)],
+        cell_coords=cell_coords,
+        geo_coords=geo_coords,
+    )
+
+    assert intensities == {
+        (0, 0): 10.0,
+        (1, 0): 10.0,
+        (2, 0): 10.0,
+    }
+    assert hazard.sampled_events == [1]
+
+
 def test_startup_reset_preserves_total_money_and_restores_startup_state() -> None:
     """Reorganization should keep money closed and restore startup operating state."""
     model = build_closed_economy_model(adaptation_enabled=True)

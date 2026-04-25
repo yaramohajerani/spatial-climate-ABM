@@ -1774,7 +1774,7 @@ class EconomyModel(Model):
         for firm in self._firms:
             firm._fund_deferred_capital_repair_before_planning()
 
-        # Sample hazard independently for every cell based on per-step RP draws.
+        # Sample one nested return-period severity per hazard type and step.
         self._sample_pixelwise_hazard()
 
         # ---------------- Demand planning phase --------------------- #
@@ -1997,13 +1997,64 @@ class EconomyModel(Model):
     #                       EVENT APPLICATION LOGIC                      #
     # ------------------------------------------------------------------ #
 
+    def _sample_exceedance_hazard_intensities(
+        self,
+        haz: LazyHazard | SyntheticHazard,
+        ranges: List[Tuple[int, int]],
+        cell_coords: list[Coords],
+        geo_coords: list[tuple[float, float]],
+    ) -> dict[Coords, float]:
+        """Sample one nested return-period layer for a hazard type and step."""
+        cell_intensities: dict[Coords, float] = {c: 0.0 for c in cell_coords}
+        n_agent_cells = len(cell_coords)
+        if n_agent_cells == 0:
+            return cell_intensities
+
+        active_events: list[tuple[int, float]] = []
+        for idx_ev in range(haz.n_events):
+            if idx_ev < len(ranges):
+                start, end = ranges[idx_ev]
+                if not (start <= self.current_step <= end):
+                    continue
+
+            p_annual = float(haz.frequency[idx_ev])
+            if p_annual >= 1.0:
+                p_hit = 1.0
+            else:
+                p_hit = 1.0 - (1.0 - p_annual) ** (1.0 / max(1, self.steps_per_year))
+            if p_hit > 0:
+                active_events.append((idx_ev, p_hit))
+
+        if not active_events:
+            return cell_intensities
+
+        # Nested exceedance layers: common events have larger p_hit, rarer and
+        # usually more severe layers have smaller p_hit. A single uniform draw
+        # per hazard type and step chooses the rarest threshold exceeded.
+        active_events.sort(key=lambda item: item[1], reverse=True)
+        severity_draw = float(np.random.random())
+        selected_event_idx = -1
+
+        for idx_ev, p_hit in active_events:
+            if severity_draw < p_hit:
+                selected_event_idx = idx_ev
+
+        if selected_event_idx < 0:
+            return cell_intensities
+
+        agent_depths = haz.sample_at_coords(geo_coords, selected_event_idx)
+        for i, coord in enumerate(cell_coords):
+            cell_intensities[coord] = float(agent_depths[i])
+
+        return cell_intensities
+
     def _sample_pixelwise_hazard(self) -> None:
         """Sample hazard only at agent locations using lazy loading.
 
-        Annual event probabilities from raster *i* are converted into per-step
-        Bernoulli draws using ``1 - (1 - p_annual) ** (1 / steps_per_year)``,
-        independent across cells and return periods. If multiple return periods
-        trigger on the same cell within a step, we keep the maximum depth.
+        Return-period rasters are interpreted as nested exceedance thresholds
+        from one hazard distribution for each hazard type. Each hazard type
+        receives one uniform severity draw per step; that draw is mapped to at
+        most one active return-period layer and sampled at all agent cells.
 
         Uses LazyHazard to sample directly from full-resolution GeoTIFF files
         without loading entire rasters into memory. This reduces memory usage
@@ -2051,38 +2102,16 @@ class EconomyModel(Model):
         hazard_intensities: dict[str, dict[Coords, float]] = {}
 
         for htype, haz in self.hazards.items():
-            # Initialize intensity dict for this hazard type
-            cell_intensities: dict[Coords, float] = {c: 0.0 for c in cell_coords}
             ranges = self._hazard_event_ranges.get(htype, [])
+            cell_intensities = self._sample_exceedance_hazard_intensities(
+                haz,
+                ranges,
+                cell_coords,
+                geo_coords,
+            )
 
-            # Find active events for current step
-            active_events: list[tuple[int, float]] = []
-            for i in range(haz.n_events):
-                if i < len(ranges):
-                    start, end = ranges[i]
-                    if not (start <= self.current_step <= end):
-                        continue
-                p_annual = haz.frequency[i]
-                if p_annual >= 1.0:
-                    p_hit = 1.0
-                else:
-                    p_hit = 1.0 - (1.0 - p_annual) ** (1.0 / max(1, self.steps_per_year))
-                if p_hit > 0:
-                    active_events.append((i, p_hit))
-
-            if active_events:
-                for idx_ev, p_hit in active_events:
-                    # Use lazy sampling - only reads pixels at agent locations
-                    agent_depths = haz.sample_at_coords(geo_coords, idx_ev)
-
-                    # Bernoulli sampling: each agent cell has p_hit chance of flooding
-                    hit_mask = np.random.random(n_agent_cells) < p_hit
-                    if hit_mask.any():
-                        for i, coord in enumerate(cell_coords):
-                            if hit_mask[i]:
-                                cell_intensities[coord] = max(cell_intensities[coord], agent_depths[i])
-
-            # Update hazard_map with max depth for this hazard type
+            # Update the aggregate depth map. Multiple hazard types can overlap;
+            # return-period layers within this hazard type are already exclusive.
             for coord, intensity in cell_intensities.items():
                 self.hazard_map[coord] = max(self.hazard_map[coord], intensity)
 
@@ -2120,7 +2149,9 @@ class EconomyModel(Model):
             lat = float(self.lat_vals[y])
             region = get_region_from_coords(lon, lat)
 
-            # Calculate combined loss across all hazard types for this agent
+            # Calculate combined loss across hazard types for this agent. The
+            # return-period layers inside each hazard type have already been
+            # reduced to a single sampled severity above.
             combined_loss_agent = 0.0
             for htype, intens_dict in hazard_intensities.items():
                 intensity = intens_dict.get(coord, 0.0)
