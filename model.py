@@ -306,7 +306,10 @@ class EconomyModel(Model):
                 "Household_Adaptation_Income": lambda m: sum(h.adaptation_income_received_this_step for h in m._households),
                 "Average_Risk": lambda m: np.mean(list(m.hazard_map.values())),
                 "Mean_Wage": lambda m: m.mean_wage,
-                "Mean_Price": lambda m: np.mean([f.price for f in m._firms]) if m._firms else 0.0,
+                "Mean_Price": lambda m: (
+                    float(np.dot([f.price for f in m._firms], [f.sales_last_step for f in m._firms]) / max(sum(f.sales_last_step for f in m._firms), 1e-9))
+                    if m._firms else 0.0
+                ),
                 "Total_Money": lambda m: m.total_money(),
                 "Money_Drift": lambda m: m.total_money() - getattr(m, "initial_total_money", 0.0),
                 "Labor_Limited_Firms": lambda m: sum(1 for f in m._firms if getattr(f, "limiting_factor", "") == "labor"),
