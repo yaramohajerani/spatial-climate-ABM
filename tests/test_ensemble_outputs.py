@@ -8,6 +8,7 @@ from plot_from_csv import summarize_members_for_plot
 from run_simulation import (
     _base_metadata,
     _coerce_shock_inputs,
+    _merge_market_structure_settings,
     _resolve_seed_list,
 )
 from shock_inputs import (
@@ -26,6 +27,52 @@ def test_resolve_seed_list_deduplicates_explicit_seeds() -> None:
 def test_resolve_seed_list_builds_consecutive_range() -> None:
     args = SimpleNamespace(seeds=None, n_seeds=4, seed_start=10, seed=42)
     assert _resolve_seed_list(args) == [10, 11, 12, 13]
+
+
+def test_market_structure_cli_settings_override_parameter_file() -> None:
+    args = SimpleNamespace(
+        firm_replacement="none",
+        dynamic_supplier_search=True,
+        max_dynamic_suppliers_per_sector=4,
+    )
+
+    _merge_market_structure_settings(
+        args,
+        {
+            "firm_replacement": "startup_reset",
+            "dynamic_supplier_search": {
+                "enabled": False,
+                "max_suppliers_per_sector": 1,
+            },
+        },
+    )
+
+    assert args.firm_replacement == "none"
+    assert args.dynamic_supplier_search is True
+    assert args.max_dynamic_suppliers_per_sector == 4
+
+
+def test_market_structure_settings_fall_back_to_parameter_file() -> None:
+    args = SimpleNamespace(
+        firm_replacement=None,
+        dynamic_supplier_search=None,
+        max_dynamic_suppliers_per_sector=None,
+    )
+
+    _merge_market_structure_settings(
+        args,
+        {
+            "firm_replacement": "none",
+            "dynamic_supplier_search": {
+                "enabled": False,
+                "max_suppliers_per_sector": 1,
+            },
+        },
+    )
+
+    assert args.firm_replacement == "none"
+    assert args.dynamic_supplier_search is False
+    assert args.max_dynamic_suppliers_per_sector == 1
 
 
 def test_member_summary_helpers_match_and_track_ensemble_size() -> None:

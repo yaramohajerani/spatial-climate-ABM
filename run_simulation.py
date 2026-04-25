@@ -102,14 +102,14 @@ def _parse():
     p.add_argument(
         "--firm-replacement",
         choices=("startup_reset", "none"),
-        default="startup_reset",
+        default=None,
         help="How failed firms are handled at replacement sweeps: reset in place or exit permanently",
     )
     p.add_argument(
         "--dynamic-supplier-search",
         dest="dynamic_supplier_search",
         action="store_true",
-        default=True,
+        default=None,
         help="Allow firms to form bounded new supplier edges when required inputs are unavailable",
     )
     p.add_argument(
@@ -121,7 +121,7 @@ def _parse():
     p.add_argument(
         "--max-dynamic-suppliers-per-sector",
         type=int,
-        default=2,
+        default=None,
         help="Maximum dynamically added supplier edges per buyer and required input sector",
     )
     p.add_argument("--save-agent-ensemble", action="store_true", help="When running multiple seeds, also save the combined agent panel")
@@ -148,6 +148,29 @@ def _resolve_seed_list(args) -> list[int]:
         return list(range(int(start), int(start) + int(args.n_seeds)))
 
     return [int(args.seed)]
+
+
+def _merge_market_structure_settings(args, param_data: dict) -> None:
+    """Merge replacement and supplier-search settings, preserving explicit CLI values."""
+    if args.firm_replacement is None:
+        args.firm_replacement = str(param_data.get("firm_replacement", "startup_reset"))
+
+    dynamic_supplier_config = param_data.get("dynamic_supplier_search", {})
+    if args.dynamic_supplier_search is None:
+        if isinstance(dynamic_supplier_config, dict):
+            args.dynamic_supplier_search = bool(dynamic_supplier_config.get("enabled", True))
+        else:
+            args.dynamic_supplier_search = bool(dynamic_supplier_config)
+
+    if args.max_dynamic_suppliers_per_sector is None:
+        if isinstance(dynamic_supplier_config, dict):
+            args.max_dynamic_suppliers_per_sector = int(
+                dynamic_supplier_config.get("max_suppliers_per_sector", 2)
+            )
+        else:
+            args.max_dynamic_suppliers_per_sector = int(
+                param_data.get("max_dynamic_suppliers_per_sector", 2)
+            )
 
 
 STRATEGY_DISPLAY_NAMES = {
@@ -389,9 +412,17 @@ def _run_single_simulation(
         adaptation_params=adaptation_config,
         consumption_ratios=args.consumption_ratios,
         input_recipe_ranges=getattr(args, "input_recipe_ranges", None),
-        firm_replacement=getattr(args, "firm_replacement", "startup_reset"),
-        dynamic_supplier_search=bool(getattr(args, "dynamic_supplier_search", True)),
-        max_dynamic_suppliers_per_sector=int(getattr(args, "max_dynamic_suppliers_per_sector", 2)),
+        firm_replacement=getattr(args, "firm_replacement", None) or "startup_reset",
+        dynamic_supplier_search=(
+            True
+            if getattr(args, "dynamic_supplier_search", None) is None
+            else bool(args.dynamic_supplier_search)
+        ),
+        max_dynamic_suppliers_per_sector=int(
+            getattr(args, "max_dynamic_suppliers_per_sector", None)
+            if getattr(args, "max_dynamic_suppliers_per_sector", None) is not None
+            else 2
+        ),
         grid_resolution=args.grid_resolution,
         household_relocation=args.household_relocation,
         damage_functions_path=getattr(args, "damage_functions_path", None),
@@ -567,14 +598,7 @@ def main() -> None:  # noqa: D401
         # 8. Consumption ratios by sector -----------------------------------
         args.consumption_ratios = param_data.get("consumption_ratios", None)
         args.input_recipe_ranges = param_data.get("input_recipe_ranges", None)
-        args.firm_replacement = str(param_data.get("firm_replacement", "startup_reset"))
-        dynamic_supplier_config = param_data.get("dynamic_supplier_search", {})
-        if isinstance(dynamic_supplier_config, dict):
-            args.dynamic_supplier_search = bool(dynamic_supplier_config.get("enabled", True))
-            args.max_dynamic_suppliers_per_sector = int(dynamic_supplier_config.get("max_suppliers_per_sector", 2))
-        else:
-            args.dynamic_supplier_search = bool(dynamic_supplier_config)
-            args.max_dynamic_suppliers_per_sector = int(param_data.get("max_dynamic_suppliers_per_sector", 2))
+        _merge_market_structure_settings(args, param_data)
 
         # 9. Number of households -------------------------------------------
         args.num_households = int(param_data.get("num_households", 100))
