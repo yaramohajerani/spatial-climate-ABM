@@ -1081,8 +1081,144 @@ def main() -> None:  # noqa: D401
 
     plt.close(fig)
 
+    network_evo_filename = _plot_network_evolution(model, scenario_label_ts, args)
+
     print(f"Plots saved as {timeseries_filename} and {bottleneck_filename if n_sec > 0 else 'no sector plots'}")
+    if network_evo_filename:
+        print(f"Network evolution plot saved as {network_evo_filename}")
+
+
+def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
+    """Render a multi-panel static figure showing how the supply-chain network evolved.
+
+    Each panel is a snapshot of the firm graph at an evenly-spaced step.  Nodes
+    are coloured by sector; failed/inactive nodes are shown as faded X markers.
+    Edges are light-gray for initial static links and orange for dynamically
+    formed links.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    import matplotlib.lines as mlines
+    from matplotlib.collections import LineCollection
+
+    snapshots = getattr(model, "_topology_snapshots", [])
+    if not snapshots:
+        return None
+
+    # Firm metadata keyed by unique_id
+    firm_meta: dict[int, dict] = {
+        f.unique_id: {"pos": f.pos, "sector": f.sector}
+        for f in model._firms
+    }
+    if not firm_meta:
+        return None
+
+    unique_sectors = sorted({m["sector"] for m in firm_meta.values()})
+    sec_palette = plt.cm.tab10(np.linspace(0, 1, max(len(unique_sectors), 1)))
+    sec_color = {s: sec_palette[i % len(sec_palette)] for i, s in enumerate(unique_sectors)}
+
+    # Pick up to 6 evenly-spaced snapshots (always include first and last)
+    n_panels = min(6, len(snapshots))
+    indices = np.round(np.linspace(0, len(snapshots) - 1, n_panels)).astype(int)
+    selected = [snapshots[i] for i in indices]
+
+    n_cols = min(3, n_panels)
+    n_rows = (n_panels + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 5 * n_rows),
+                             squeeze=False)
+
+    all_xs = [m["pos"][0] for m in firm_meta.values()]
+    all_ys = [m["pos"][1] for m in firm_meta.values()]
+    xmin, xmax = min(all_xs), max(all_xs)
+    ymin, ymax = min(all_ys), max(all_ys)
+    span = max(xmax - xmin, ymax - ymin, 1.0)
+    pad = span * 0.15
+
+    use_years = bool(getattr(args, "start_year", 0))
+    steps_per_year = getattr(args, "steps_per_year", 4)
+    start_year = getattr(args, "start_year", 0)
+
+    for panel_idx, snap in enumerate(selected):
+        row, col = divmod(panel_idx, n_cols)
+        ax = axes[row][col]
+        ax.set_xlim(xmin - pad, xmax + pad)
+        ax.set_ylim(ymin - pad, ymax + pad)
+        ax.set_aspect("equal")
+
+        step = snap["step"]
+        active_ids = snap["active_ids"]
+        edges = snap["edges"]
+
+        # Separate static and dynamic edge segments
+        static_segs, dynamic_segs = [], []
+        for sup_id, buy_id, is_dyn in edges:
+            if sup_id not in firm_meta or buy_id not in firm_meta:
+                continue
+            sx, sy = firm_meta[sup_id]["pos"]
+            bx, by = firm_meta[buy_id]["pos"]
+            seg = [(sx, sy), (bx, by)]
+            (dynamic_segs if is_dyn else static_segs).append(seg)
+
+        if static_segs:
+            ax.add_collection(LineCollection(static_segs, colors="lightgray",
+                                             linewidths=0.8, zorder=1))
+        if dynamic_segs:
+            ax.add_collection(LineCollection(dynamic_segs, colors="darkorange",
+                                             linewidths=1.8, zorder=2, alpha=0.9))
+
+        # Draw nodes: active = filled circle coloured by sector; inactive = gray X
+        for fid, meta in firm_meta.items():
+            px, py = meta["pos"]
+            if fid in active_ids:
+                ax.scatter(px, py, c=[sec_color[meta["sector"]]], s=90, zorder=3,
+                           edgecolors="black", linewidths=0.5)
+            else:
+                ax.scatter(px, py, c=["#cccccc"], s=90, marker="X", zorder=3,
+                           edgecolors="#888888", linewidths=0.8, alpha=0.55)
+
+        if use_years:
+            label = f"Year {start_year + step / steps_per_year:.1f}"
+        else:
+            label = f"Step {step}"
+        n_active = len(active_ids)
+        n_dyn = sum(1 for _, _, is_dyn in edges if is_dyn)
+        ax.set_title(f"{label}\n{n_active} active firms · {n_dyn} dynamic edges", fontsize=9)
+        ax.tick_params(labelsize=7)
+        ax.set_xlabel("Grid X", fontsize=8)
+        ax.set_ylabel("Grid Y", fontsize=8)
+
+    # Hide unused subplot cells
+    for panel_idx in range(n_panels, n_rows * n_cols):
+        row, col = divmod(panel_idx, n_cols)
+        axes[row][col].set_visible(False)
+
+    # Legend
+    legend_handles = [
+        mpatches.Patch(facecolor=sec_color[s], edgecolor="black", linewidth=0.5, label=s)
+        for s in unique_sectors
+    ]
+    legend_handles.append(
+        mlines.Line2D([], [], color="lightgray", linewidth=1.5, label="static edge")
+    )
+    legend_handles.append(
+        mlines.Line2D([], [], color="darkorange", linewidth=1.5, label="dynamic edge")
+    )
+    legend_handles.append(
+        mlines.Line2D([], [], marker="X", color="w", markerfacecolor="#cccccc",
+                      markeredgecolor="#888888", markersize=8, label="failed firm")
+    )
+
+    fig.legend(handles=legend_handles, loc="lower center",
+               ncol=min(len(legend_handles), 6), fontsize=8,
+               bbox_to_anchor=(0.5, 0.0))
+    fig.suptitle("Supply Chain Network Evolution", fontsize=13, fontweight="bold")
+    fig.tight_layout(rect=[0, 0.06, 1, 1])
+
+    out_path = f"simulation_{scenario_label_ts}_network_evolution.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
 
 
 if __name__ == "__main__":
-    main() 
+    main()

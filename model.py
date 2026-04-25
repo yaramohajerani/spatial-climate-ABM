@@ -142,6 +142,7 @@ class EconomyModel(Model):
         self.total_firm_exits: int = 0
         self.total_dynamic_supplier_edges: int = 0
         self._dynamic_supplier_pairs: set[tuple[int, int]] = set()
+        self._topology_snapshots: list[dict] = []
         self.adaptation_observation_radius: int = int(self.adaptation_config.get("observation_radius", 4))
         self.adaptation_updates_this_step: int = 0
         self.max_backup_suppliers: int = int(self.adaptation_config.get("max_backup_suppliers", 5))
@@ -1834,6 +1835,22 @@ class EconomyModel(Model):
         if self.steps_since_replacement >= self.replacement_frequency:
             self._apply_firm_failure_policy()
             self.steps_since_replacement = 0
+
+        self._record_topology_snapshot()
+
+    def _record_topology_snapshot(self) -> None:
+        """Capture the current supply-chain graph for later visualisation."""
+        edges: list[tuple[int, int, bool]] = []
+        for firm in self._firms:
+            for supplier in firm.connected_firms:
+                is_dynamic = (supplier.unique_id, firm.unique_id) in self._dynamic_supplier_pairs
+                edges.append((supplier.unique_id, firm.unique_id, is_dynamic))
+        self._topology_snapshots.append({
+            "step": self.current_step,
+            "edges": edges,
+            "active_ids": frozenset(f.unique_id for f in self._firms if f.active),
+            "inactive_ids": frozenset(f.unique_id for f in self._firms if not f.active),
+        })
 
     # --------------------------------------------------------------------- #
     #                         FIRM FAILURE METHODS                           #
