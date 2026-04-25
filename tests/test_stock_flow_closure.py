@@ -313,9 +313,9 @@ def test_raster_return_period_layers_are_sampled_as_nested_exceedances(monkeypat
         def sample_at_coords(self, coords, event_idx: int) -> np.ndarray:
             self.sampled_events.append(event_idx)
             # Sentinels intentionally make the common layer larger. The old
-            # independent-draw/max sampler would stack both hits for cell 0 and
-            # return 100.0; the exceedance sampler must return the selected
-            # rarer layer only.
+            # independent-draw/max sampler could stack both layers and return
+            # 100.0; the exceedance sampler must return the selected rarer
+            # layer only.
             depth = 100.0 if event_idx == 0 else 10.0
             return np.full(len(coords), depth, dtype=float)
 
@@ -335,11 +335,7 @@ def test_raster_return_period_layers_are_sampled_as_nested_exceedances(monkeypat
         geo_coords=geo_coords,
     )
 
-    assert intensities == {
-        (0, 0): 10.0,
-        (1, 0): 10.0,
-        (2, 0): 10.0,
-    }
+    assert np.allclose(intensities, [10.0, 10.0, 10.0], atol=1e-12)
     assert hazard.sampled_events == [1]
 
 

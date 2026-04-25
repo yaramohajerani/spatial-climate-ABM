@@ -277,6 +277,10 @@ class EconomyModel(Model):
         # Initialize per-cell hazard depth map (populated on-demand for agent cells only)
         # This is a sparse dict, not pre-populated for all cells
         self.hazard_map: Dict[Coords, float] = {}
+        self._hazard_sample_signature: tuple[Coords, ...] | None = None
+        self._hazard_sample_cell_coords: list[Coords] = []
+        self._hazard_sample_geo_coords: list[tuple[float, float]] = []
+        self._hazard_sample_coord_index: dict[Coords, int] = {}
 
         # Base wage used by firms when hiring labour
         self.mean_wage = 1.0
@@ -1997,16 +2001,45 @@ class EconomyModel(Model):
     #                       EVENT APPLICATION LOGIC                      #
     # ------------------------------------------------------------------ #
 
+    def _get_agent_hazard_sample_points(
+        self,
+    ) -> tuple[list[Coords], list[tuple[float, float]], dict[Coords, int]]:
+        """Return cached unique occupied cells and their raster sample points."""
+        signature = tuple(ag.pos for ag in self._firms) + tuple(ag.pos for ag in self._households)
+        if signature == self._hazard_sample_signature:
+            return (
+                self._hazard_sample_cell_coords,
+                self._hazard_sample_geo_coords,
+                self._hazard_sample_coord_index,
+            )
+
+        agent_cells: dict[Coords, tuple[float, float]] = {}
+        for coord in signature:
+            x, y = coord
+            if coord not in agent_cells:
+                agent_cells[coord] = (float(self.lon_vals[x]), float(self.lat_vals[y]))
+
+        cell_coords = list(agent_cells.keys())
+        geo_coords = [agent_cells[c] for c in cell_coords]
+        coord_index = {coord: i for i, coord in enumerate(cell_coords)}
+
+        self._hazard_sample_signature = signature
+        self._hazard_sample_cell_coords = cell_coords
+        self._hazard_sample_geo_coords = geo_coords
+        self._hazard_sample_coord_index = coord_index
+
+        return cell_coords, geo_coords, coord_index
+
     def _sample_exceedance_hazard_intensities(
         self,
         haz: LazyHazard | SyntheticHazard,
         ranges: List[Tuple[int, int]],
         cell_coords: list[Coords],
         geo_coords: list[tuple[float, float]],
-    ) -> dict[Coords, float]:
+    ) -> np.ndarray:
         """Sample one nested return-period layer for a hazard type and step."""
-        cell_intensities: dict[Coords, float] = {c: 0.0 for c in cell_coords}
         n_agent_cells = len(cell_coords)
+        cell_intensities = np.zeros(n_agent_cells, dtype=np.float64)
         if n_agent_cells == 0:
             return cell_intensities
 
@@ -2042,11 +2075,13 @@ class EconomyModel(Model):
         if selected_event_idx < 0:
             return cell_intensities
 
-        agent_depths = haz.sample_at_coords(geo_coords, selected_event_idx)
-        for i, coord in enumerate(cell_coords):
-            cell_intensities[coord] = float(agent_depths[i])
-
-        return cell_intensities
+        sampled_depths = np.asarray(haz.sample_at_coords(geo_coords, selected_event_idx), dtype=np.float64)
+        if sampled_depths.shape != (n_agent_cells,):
+            raise ValueError(
+                f"Hazard sampler returned shape {sampled_depths.shape}; "
+                f"expected ({n_agent_cells},) for event {selected_event_idx}."
+            )
+        return sampled_depths
 
     def _sample_pixelwise_hazard(self) -> None:
         """Sample hazard only at agent locations using lazy loading.
@@ -2060,32 +2095,10 @@ class EconomyModel(Model):
         without loading entire rasters into memory. This reduces memory usage
         from ~4GB to <1MB for global hazard datasets.
         """
-        # Collect unique agent cell positions and their geographic coordinates
-        agent_cells: dict[Coords, Tuple[float, float]] = {}  # grid coord -> (lon, lat)
-
-        for ag in self._firms:
-            x, y = ag.pos
-            coord = (x, y)
-            if coord not in agent_cells:
-                lon = float(self.lon_vals[x])
-                lat = float(self.lat_vals[y])
-                agent_cells[coord] = (lon, lat)
-
-        for ag in self._households:
-            x, y = ag.pos
-            coord = (x, y)
-            if coord not in agent_cells:
-                lon = float(self.lon_vals[x])
-                lat = float(self.lat_vals[y])
-                agent_cells[coord] = (lon, lat)
-
-        n_agent_cells = len(agent_cells)
+        cell_coords, geo_coords, coord_index = self._get_agent_hazard_sample_points()
+        n_agent_cells = len(cell_coords)
         if n_agent_cells == 0:
             return
-
-        # Convert to lists for sampling
-        cell_coords = list(agent_cells.keys())  # grid coordinates
-        geo_coords = [agent_cells[c] for c in cell_coords]  # (lon, lat) tuples
 
         for firm in self._firms:
             firm.pre_hazard_damage_factor = float(firm.damage_factor)
@@ -2093,13 +2106,8 @@ class EconomyModel(Model):
             firm.pre_hazard_inventory_output = float(firm.inventory_output)
             firm.pre_hazard_inventory_inputs = dict(firm.inventory_inputs)
 
-        # Reset hazard_map for agent cells only
-        for coord in cell_coords:
-            self.hazard_map[coord] = 0.0
-
-        # Store intensity per agent cell for each hazard type
-        # Dict: htype -> dict of coord -> intensity
-        hazard_intensities: dict[str, dict[Coords, float]] = {}
+        aggregate_intensities = np.zeros(n_agent_cells, dtype=np.float64)
+        hazard_intensities: dict[str, np.ndarray] = {}
 
         for htype, haz in self.hazards.items():
             ranges = self._hazard_event_ranges.get(htype, [])
@@ -2112,19 +2120,24 @@ class EconomyModel(Model):
 
             # Update the aggregate depth map. Multiple hazard types can overlap;
             # return-period layers within this hazard type are already exclusive.
-            for coord, intensity in cell_intensities.items():
-                self.hazard_map[coord] = max(self.hazard_map[coord], intensity)
-
+            aggregate_intensities = np.maximum(aggregate_intensities, cell_intensities)
             hazard_intensities[htype] = cell_intensities
 
         # If impacts disabled, zero-out intensities
         if not self.apply_hazard_impacts:
-            for coord in cell_coords:
-                self.hazard_map[coord] = 0.0
-            hazard_intensities = {htype: {c: 0.0 for c in cell_coords} for htype in hazard_intensities}
+            aggregate_intensities.fill(0.0)
+            hazard_intensities = {
+                htype: np.zeros(n_agent_cells, dtype=np.float64)
+                for htype in hazard_intensities
+            }
+
+        self.hazard_map = {
+            coord: float(aggregate_intensities[i])
+            for i, coord in enumerate(cell_coords)
+        }
 
         # Count flooded agent cells for logging
-        flooded_cells = sum(1 for c in cell_coords if self.hazard_map[c] > 0)
+        flooded_cells = int(np.count_nonzero(aggregate_intensities > 0))
 
         # Apply agent-specific damage using JRC damage functions
         # Get the global damage functions instance (loaded once, cached)
@@ -2141,6 +2154,9 @@ class EconomyModel(Model):
                                f"This likely indicates a bug in agent creation or placement.")
 
             coord = ag.pos  # (x, y) tuple
+            idx_coord = coord_index.get(coord)
+            if idx_coord is None:
+                return
             agent_sector = ag.sector if is_firm else "residential"
 
             # Get agent's geographic coordinates for region-specific damage curves
@@ -2153,8 +2169,8 @@ class EconomyModel(Model):
             # return-period layers inside each hazard type have already been
             # reduced to a single sampled severity above.
             combined_loss_agent = 0.0
-            for htype, intens_dict in hazard_intensities.items():
-                intensity = intens_dict.get(coord, 0.0)
+            for intensities in hazard_intensities.values():
+                intensity = float(intensities[idx_coord])
                 if intensity == 0:
                     continue
 
