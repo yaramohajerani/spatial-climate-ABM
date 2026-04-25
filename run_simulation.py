@@ -98,7 +98,6 @@ def _parse():
         default=None,
         help="Override adaptation_sensitivity_max from the parameter file",
     )
-    p.add_argument("--no-learning", action="store_true", help="Deprecated alias for --no-adaptation")
     p.add_argument(
         "--firm-replacement",
         choices=("startup_reset", "none"),
@@ -156,21 +155,16 @@ def _merge_market_structure_settings(args, param_data: dict) -> None:
         args.firm_replacement = str(param_data.get("firm_replacement", "startup_reset"))
 
     dynamic_supplier_config = param_data.get("dynamic_supplier_search", {})
+    if not isinstance(dynamic_supplier_config, dict):
+        raise SystemExit("dynamic_supplier_search must be an object with enabled and max_suppliers_per_sector")
+
     if args.dynamic_supplier_search is None:
-        if isinstance(dynamic_supplier_config, dict):
-            args.dynamic_supplier_search = bool(dynamic_supplier_config.get("enabled", True))
-        else:
-            args.dynamic_supplier_search = bool(dynamic_supplier_config)
+        args.dynamic_supplier_search = bool(dynamic_supplier_config.get("enabled", True))
 
     if args.max_dynamic_suppliers_per_sector is None:
-        if isinstance(dynamic_supplier_config, dict):
-            args.max_dynamic_suppliers_per_sector = int(
-                dynamic_supplier_config.get("max_suppliers_per_sector", 2)
-            )
-        else:
-            args.max_dynamic_suppliers_per_sector = int(
-                param_data.get("max_dynamic_suppliers_per_sector", 2)
-            )
+        args.max_dynamic_suppliers_per_sector = int(
+            dynamic_supplier_config.get("max_suppliers_per_sector", 2)
+        )
 
 
 STRATEGY_DISPLAY_NAMES = {
@@ -279,7 +273,7 @@ def _base_metadata(
     param_path = str(args.param_file) if args.param_file else ""
     topology_path = str(args.topology) if args.topology else ""
     param_data = param_data or {}
-    param_adaptation_config = param_data.get("adaptation", param_data.get("learning"))
+    param_adaptation_config = param_data.get("adaptation")
     effective_adaptation_config = _normalized_adaptation_config(adaptation_config)
     sensitivity_min = float(effective_adaptation_config["adaptation_sensitivity_min"])
     sensitivity_max = float(effective_adaptation_config["adaptation_sensitivity_max"])
@@ -295,7 +289,6 @@ def _base_metadata(
         f"{METADATA_PREFIX}RunCommand": " ".join(shlex.quote(arg) for arg in sys.argv),
         f"{METADATA_PREFIX}NoHazardsFlag": bool(getattr(args, "no_hazards", False)),
         f"{METADATA_PREFIX}NoAdaptationFlag": bool(getattr(args, "no_adaptation", False)),
-        f"{METADATA_PREFIX}NoLearningFlag": bool(getattr(args, "no_learning", False)),
         f"{METADATA_PREFIX}CLIAdaptationStrategy": str(getattr(args, "adaptation_strategy", "") or ""),
         f"{METADATA_PREFIX}CLIAdaptationSensitivityMin": (
             "" if getattr(args, "adaptation_sensitivity_min", None) is None else float(args.adaptation_sensitivity_min)
@@ -318,9 +311,6 @@ def _base_metadata(
         f"{METADATA_PREFIX}ParamInputRecipeRanges": _metadata_json(param_data.get("input_recipe_ranges")),
         f"{METADATA_PREFIX}ParamFirmReplacement": str(param_data.get("firm_replacement", "")),
         f"{METADATA_PREFIX}ParamDynamicSupplierSearch": _metadata_json(param_data.get("dynamic_supplier_search")),
-        f"{METADATA_PREFIX}ParamMaxDynamicSuppliersPerSector": str(
-            param_data.get("max_dynamic_suppliers_per_sector", "")
-        ),
         f"{METADATA_PREFIX}HHConsumptionPropensityIncome": float(HouseholdAgent.CONSUMPTION_PROPENSITY_INCOME),
         f"{METADATA_PREFIX}HHConsumptionPropensityWealth": float(HouseholdAgent.CONSUMPTION_PROPENSITY_WEALTH),
         f"{METADATA_PREFIX}HHTargetCashBuffer": float(HouseholdAgent.TARGET_CASH_BUFFER),
@@ -412,17 +402,9 @@ def _run_single_simulation(
         adaptation_params=adaptation_config,
         consumption_ratios=args.consumption_ratios,
         input_recipe_ranges=getattr(args, "input_recipe_ranges", None),
-        firm_replacement=getattr(args, "firm_replacement", None) or "startup_reset",
-        dynamic_supplier_search=(
-            True
-            if getattr(args, "dynamic_supplier_search", None) is None
-            else bool(args.dynamic_supplier_search)
-        ),
-        max_dynamic_suppliers_per_sector=int(
-            getattr(args, "max_dynamic_suppliers_per_sector", None)
-            if getattr(args, "max_dynamic_suppliers_per_sector", None) is not None
-            else 2
-        ),
+        firm_replacement=args.firm_replacement,
+        dynamic_supplier_search=args.dynamic_supplier_search,
+        max_dynamic_suppliers_per_sector=args.max_dynamic_suppliers_per_sector,
         grid_resolution=args.grid_resolution,
         household_relocation=args.household_relocation,
         damage_functions_path=getattr(args, "damage_functions_path", None),
@@ -593,13 +575,11 @@ def main() -> None:  # noqa: D401
             args.land_boundaries_path = str(param_data["land_boundaries_path"])
 
         # 7. Adaptation parameters ------------------------------------------
-        args.adaptation_params = param_data.get("adaptation", param_data.get("learning", {}))
+        args.adaptation_params = param_data.get("adaptation", {})
 
         # 8. Consumption ratios by sector -----------------------------------
         args.consumption_ratios = param_data.get("consumption_ratios", None)
         args.input_recipe_ranges = param_data.get("input_recipe_ranges", None)
-        _merge_market_structure_settings(args, param_data)
-
         # 9. Number of households -------------------------------------------
         args.num_households = int(param_data.get("num_households", 100))
 
@@ -612,6 +592,8 @@ def main() -> None:  # noqa: D401
             args.save_agent_ensemble = bool(param_data.get("save_agent_ensemble", False))
         if args.ensemble_plot_stat == "mean" and "ensemble_plot_stat" in param_data:
             args.ensemble_plot_stat = str(param_data.get("ensemble_plot_stat", "mean"))
+
+    _merge_market_structure_settings(args, param_data)
 
     try:
         raster_events, node_shocks, lane_shocks, route_shocks = _coerce_shock_inputs(
@@ -656,7 +638,7 @@ def main() -> None:  # noqa: D401
     # Configure scenario settings
     has_shock_inputs = bool(raster_events or node_shocks or lane_shocks or route_shocks)
     apply_hazards = bool(has_shock_inputs and not args.no_hazards)
-    disable_adaptation = bool(args.no_adaptation or args.no_learning)
+    disable_adaptation = bool(args.no_adaptation)
     if disable_adaptation:
         adaptation_config = {**args.adaptation_params, "enabled": False}
     else:

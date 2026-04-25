@@ -300,7 +300,7 @@ def test_none_hazard_entries_allow_explicit_warmup_windows() -> None:
     assert np.allclose(df["Flooded_Households"].to_numpy(), 0.0, atol=1e-12)
 
 
-def test_firm_reorganization_preserves_total_money_and_resets_startup_state() -> None:
+def test_startup_reset_preserves_total_money_and_restores_startup_state() -> None:
     """Reorganization should keep money closed and restore startup operating state."""
     model = build_closed_economy_model(adaptation_enabled=True)
 
@@ -334,7 +334,7 @@ def test_firm_reorganization_preserves_total_money_and_resets_startup_state() ->
     failed_firm.last_perceived_hazard_risk = 0.12
     initial_total_money = model.total_money()
 
-    model._apply_firm_reorganization()
+    model._apply_firm_failure_policy()
 
     assert model.total_firm_replacements >= 1
     assert np.isclose(model.total_money(), initial_total_money, atol=1e-6)
@@ -367,7 +367,7 @@ def test_no_replacement_deactivates_failed_firm_without_recapitalization() -> No
     failed_firm.target_labor = 1
     initial_total_money = model.total_money()
 
-    model._apply_firm_reorganization()
+    model._apply_firm_failure_policy()
 
     assert model.total_firm_exits == 1
     assert model.total_firm_replacements == 0

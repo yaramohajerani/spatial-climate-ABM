@@ -87,7 +87,7 @@ class HouseholdAgent(Agent):
     def _relocate_for_job(self) -> None:
         """Move closer to a random firm to improve employment prospects."""
         # Allow relocation to any firm (cross-sector employment is permitted)
-        all_firms = [firm for firm in self.model._firms if getattr(firm, "active", True)]
+        all_firms = [firm for firm in self.model._firms if firm.active]
         if not all_firms:
             return  # no firms exist
 
@@ -187,11 +187,11 @@ class HouseholdAgent(Agent):
         # prefer nearby same-sector firms first, then broaden to the full market.
         # This keeps labor tied to the local production structure while preserving
         # cross-sector fallback when the preferred market is weak.
-        all_firms = [firm for firm in self.model._firms if getattr(firm, "active", True)]
+        all_firms = [firm for firm in self.model._firms if firm.active]
         if all_firms:
             primary_firms = [
                 firm for firm in self.nearby_firms
-                if getattr(firm, "active", True)
+                if firm.active
             ] if self.nearby_firms else [
                 firm for firm in all_firms if firm.sector == self.sector
             ]
@@ -235,7 +235,7 @@ class HouseholdAgent(Agent):
                 # Group firms by sector
                 firms_by_sector: dict[str, list] = {}
                 for f in self.model._firms:
-                    if getattr(f, "active", True) and f.inventory_output > 0 and f.sector in consumption_ratios:
+                    if f.active and f.inventory_output > 0 and f.sector in consumption_ratios:
                         sector = f.sector
                         if sector not in firms_by_sector:
                             firms_by_sector[sector] = []
@@ -523,7 +523,7 @@ class FirmAgent(Agent):
         self.ever_directly_hit: bool = False
         self.ever_indirectly_disrupted_before_direct_hit: bool = False
 
-        # Survival tracking for firm reorganization
+        # Survival tracking for firm failure policy
         self.survival_time: int = 0
 
     # ---------------- Adaptation System Methods ------------------------- #
@@ -678,11 +678,11 @@ class FirmAgent(Agent):
             }
             return [
                 supplier for supplier in self.connected_firms
-                if supplier.sector in recipe_sectors and getattr(supplier, "active", True)
+                if supplier.sector in recipe_sectors and supplier.active
             ]
         return [
             supplier for supplier in self.connected_firms
-            if supplier is not self and getattr(supplier, "active", True)
+            if supplier is not self and supplier.active
         ]
 
     def _desired_input_units_by_sector(self, desired_pre_damage_output: float) -> dict[str, float]:
@@ -1451,6 +1451,25 @@ class FirmAgent(Agent):
 
     # -------------------------------------------------------------------- #
 
+    def _buy_inputs_from_suppliers(
+        self,
+        suppliers: list["FirmAgent"],
+        required_units: float,
+    ) -> float:
+        """Buy required intermediate units from the cheapest available suppliers."""
+        remaining_units = required_units
+        available_suppliers = sorted(
+            [supplier for supplier in suppliers if supplier.inventory_output > 0],
+            key=lambda supplier: supplier.price,
+        )
+        for supplier in available_suppliers:
+            if remaining_units <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
+                break
+            bought = supplier.sell_goods_to_firm(self, remaining_units)
+            if bought > 0:
+                remaining_units -= bought
+        return remaining_units
+
     # ---------------- Mesa API (production) --------------------------- #
     def step(self) -> None:  # noqa: D401, N802
         """Purchase inputs, transform them with labour into output, then sell surplus."""
@@ -1548,21 +1567,10 @@ class FirmAgent(Agent):
             for sector, remaining_inputs_needed in list(sector_remaining_inputs_needed.items()):
                 if remaining_inputs_needed <= 1e-9:
                     continue
-                suppliers = sorted(
-                    [
-                        supplier
-                        for supplier in technical_suppliers
-                        if supplier.sector == sector and supplier.inventory_output > 0
-                    ],
-                    key=lambda supplier: supplier.price,
+                sector_remaining_inputs_needed[sector] = self._buy_inputs_from_suppliers(
+                    [supplier for supplier in technical_suppliers if supplier.sector == sector],
+                    remaining_inputs_needed,
                 )
-                for supplier in suppliers:
-                    if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
-                        break
-                    bought = supplier.sell_goods_to_firm(self, remaining_inputs_needed)
-                    if bought > 0:
-                        remaining_inputs_needed -= bought
-                sector_remaining_inputs_needed[sector] = remaining_inputs_needed
 
         if self.model.dynamic_supplier_search_enabled and self.INPUT_COEFF > 0:
             for sector, remaining_inputs_needed in list(sector_remaining_inputs_needed.items()):
@@ -1571,21 +1579,10 @@ class FirmAgent(Agent):
                 new_suppliers = self.model.add_dynamic_supplier_edges(self, sector)
                 if not new_suppliers:
                     continue
-                suppliers = sorted(
-                    [
-                        supplier
-                        for supplier in new_suppliers
-                        if supplier.inventory_output > 0
-                    ],
-                    key=lambda supplier: supplier.price,
+                sector_remaining_inputs_needed[sector] = self._buy_inputs_from_suppliers(
+                    new_suppliers,
+                    remaining_inputs_needed,
                 )
-                for supplier in suppliers:
-                    if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
-                        break
-                    bought = supplier.sell_goods_to_firm(self, remaining_inputs_needed)
-                    if bought > 0:
-                        remaining_inputs_needed -= bought
-                sector_remaining_inputs_needed[sector] = remaining_inputs_needed
 
         physical_shortfall_ratio = max(
             (

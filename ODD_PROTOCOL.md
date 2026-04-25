@@ -138,7 +138,7 @@ Each firm maintains:
 - exposure-state flags,
 - survival time.
 
-Firms do not maintain explicit balance-sheet debt instruments or equity shares. Short-term finance is represented by a bounded operating overdraft tied to sales capacity, and household equity recapitalization is used only to restore replacement firms to their startup cash state during reorganization.
+Firms do not maintain explicit balance-sheet debt instruments or equity shares. Short-term finance is represented by a bounded operating overdraft tied to sales capacity. Under the startup-reset failure policy, household equity recapitalization is used only to restore failed firms to their startup cash state.
 
 #### 1.2.6 Environment and external data
 
@@ -171,7 +171,7 @@ The step sequence is:
 11. Households consume final goods after current-period production is complete.
 12. Firms close the accounting period: compute profits, install productive capital when no current direct loss blocks it, fund adaptation from residual cash, pay dividends, and update adaptive expectations and exposure diagnostics.
 13. Firms partially recover damage factors after the current period's production and accounting have closed, so recovery affects the next period rather than smoothing the current shock.
-14. The model updates the mean wage, collects model-level and agent-level observations, and then checks whether failed firms should be reorganized at the configured global replacement interval.
+14. The model updates the mean wage, collects model-level and agent-level observations, and then applies the configured firm-failure policy at the global replacement interval.
 
 Optional transport shocks are applied only around the firm execution phase by temporarily patching supplier sale functions on affected edges.
 
@@ -213,7 +213,7 @@ The model is designed to generate the following macro- and meso-level outcomes e
 - aggregate capital,
 - aggregate household consumption,
 - wage and price dynamics,
-- firm entry, failure, and reorganization patterns,
+- firm failure, exit, and startup-reset patterns,
 - direct-loss incidence,
 - supplier-disruption cascades,
 - adaptation uptake,
@@ -281,7 +281,7 @@ Every `decision_interval` steps, the firm computes:
 - continuity target = min(1, adaptation_sensitivity * annualized risk),
 - pending continuity increment = min(max_adaptation_increment, target - current continuity capital).
 
-There is no reinforcement learning, no belief updating about probability distributions, and no generic evolutionary strategy search in the current implementation. The older `learning` label is preserved only as a compatibility alias for the adaptation module.
+There is no reinforcement learning, no belief updating about probability distributions, and no generic evolutionary strategy search in the current implementation.
 
 ### 2.6 Prediction
 
@@ -339,7 +339,7 @@ Dividends, reduced-form capital-service payments, and reduced-form adaptation-se
 
 #### Equity recapitalization
 
-Reorganized firms can be recapitalized by proportionally drawing money from households.
+Under the startup-reset failure policy, reset firms can be recapitalized by proportionally drawing money from households.
 
 #### Hazard transmission
 
@@ -364,7 +364,6 @@ Several processes are stochastic:
 - within-tier firm ordering in production,
 - backup-supplier candidate ordering before price sort,
 - household relocation destination choice,
-- parent selection during reorganization,
 - optional route-shock firing when route shocks are given a return period.
 
 The simulation supports explicit seeding, and the repository workflow relies heavily on matched-seed comparisons across scenarios.
@@ -915,7 +914,7 @@ The model records whether the action is:
 - `dormant`,
 - `adjust`,
 - `hold`,
-- or `reset` during firm reorganization.
+- or `reset` under the startup-reset failure policy.
 
 #### 3.3.12 Adaptation-deployment submodels
 
@@ -1023,7 +1022,7 @@ At close of step, the firm updates:
 
 Supplier disruption borne by never-hit firms is therefore observable without reconstructing the classification from the panel afterward.
 
-#### 3.3.16 Firm reorganization submodel
+#### 3.3.16 Firm failure-policy submodel
 
 Firm failure is defined operationally by low cash:
 
@@ -1036,7 +1035,7 @@ Firms are not replaced immediately. Instead, at a global replacement interval th
 Under the default `firm_replacement = "startup_reset"`:
 
 - all failed firms are identified,
-- at most one quarter of firms are reorganized in a given sweep,
+- at most one quarter of firms are reset in a given sweep,
 - the failed firm remains in place with its shell and links intact,
 - startup expected sales, inventory, productive capital, price, wage, and cash targets are restored from the firm's initialization state,
 - stale sales, input inventory, working-capital, damage, and adaptation state are reset,
