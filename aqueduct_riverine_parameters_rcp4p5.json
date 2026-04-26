@@ -16,6 +16,10 @@
   "steps": 400,
   "seed": 42,
   "topology": "riverine_firm_topology_100.json",
+  "firm_replacement": "none",
+  "dynamic_supplier_search": {
+    "enabled": true
+  },
   "start_year": 2000,
   "steps_per_year": 4,
   "consumption_ratios": {
