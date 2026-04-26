@@ -300,6 +300,93 @@ def test_none_hazard_entries_allow_explicit_warmup_windows() -> None:
     assert np.allclose(df["Flooded_Households"].to_numpy(), 0.0, atol=1e-12)
 
 
+def test_raster_return_period_layers_are_sampled_as_nested_exceedances(monkeypatch) -> None:
+    """One severity draw should select one RP layer per hazard type and step."""
+
+    class FakeHazard:
+        frequency = np.array([0.5, 0.1], dtype=float)
+        n_events = 2
+
+        def __init__(self) -> None:
+            self.sampled_events: list[int] = []
+
+        def sample_at_coords(self, coords, event_idx: int) -> np.ndarray:
+            self.sampled_events.append(event_idx)
+            depth = 10.0 if event_idx == 0 else 100.0
+            return np.full(len(coords), depth, dtype=float)
+
+    model = build_closed_economy_model(adaptation_enabled=False)
+    model.current_step = 1
+    model.steps_per_year = 1
+    hazard = FakeHazard()
+    cell_coords = [(0, 0), (1, 0), (2, 0)]
+    geo_coords = [(0.5, 0.5), (1.5, 0.5), (2.5, 0.5)]
+
+    draw_values = iter([0.05, 0.2])
+    monkeypatch.setattr(np.random, "random", lambda: next(draw_values))
+
+    intensities = model._sample_exceedance_hazard_intensities(
+        hazard,
+        ranges=[(1, 1), (1, 1)],
+        cell_coords=cell_coords,
+        geo_coords=geo_coords,
+    )
+
+    assert np.allclose(intensities, [100.0, 100.0, 100.0], atol=1e-12)
+    assert hazard.sampled_events == [1, 0]
+
+    common_only_intensities = model._sample_exceedance_hazard_intensities(
+        hazard,
+        ranges=[(1, 1), (1, 1)],
+        cell_coords=cell_coords,
+        geo_coords=geo_coords,
+    )
+
+    assert np.allclose(common_only_intensities, [10.0, 10.0, 10.0], atol=1e-12)
+    assert hazard.sampled_events == [1, 0, 0]
+
+
+def test_raster_return_period_sampling_enforces_nested_depth_envelope(monkeypatch) -> None:
+    """Non-monotone raster inputs should not make rare events shallower."""
+
+    class NonMonotoneHazard:
+        frequency = np.array([0.5, 0.1], dtype=float)
+        n_events = 2
+
+        def sample_at_coords(self, coords, event_idx: int) -> np.ndarray:
+            depth = 100.0 if event_idx == 0 else 10.0
+            return np.full(len(coords), depth, dtype=float)
+
+    model = build_closed_economy_model(adaptation_enabled=False)
+    model.current_step = 1
+    model.steps_per_year = 1
+    monkeypatch.setattr(np.random, "random", lambda: 0.05)
+
+    intensities = model._sample_exceedance_hazard_intensities(
+        NonMonotoneHazard(),
+        ranges=[(1, 1), (1, 1)],
+        cell_coords=[(0, 0), (1, 0), (2, 0)],
+        geo_coords=[(0.5, 0.5), (1.5, 0.5), (2.5, 0.5)],
+    )
+
+    assert np.allclose(intensities, [100.0, 100.0, 100.0], atol=1e-12)
+
+
+def test_hazard_sample_points_preserve_none_position_diagnostic() -> None:
+    """The cached sample-point path should keep the existing None-position error."""
+    model = build_closed_economy_model(adaptation_enabled=False)
+    firm = model._firms[0]
+    firm.pos = None
+
+    try:
+        model._get_agent_hazard_sample_points()
+    except ValueError as exc:
+        assert "has None position" in str(exc)
+        assert "Recently replaced" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for an agent with None position")
+
+
 def test_startup_reset_preserves_total_money_and_restores_startup_state() -> None:
     """Reorganization should keep money closed and restore startup operating state."""
     model = build_closed_economy_model(adaptation_enabled=True)
