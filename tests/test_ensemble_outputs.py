@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from ensemble_utils import apply_metadata, build_ensemble_summary, ensemble_seed_metadata
 from plot_from_csv import summarize_members_for_plot
@@ -107,6 +108,37 @@ def test_network_evolution_replay_does_not_overwrite_input_json(tmp_path, monkey
     assert out_path == str(tmp_path / "foo_network_evolution.png")
     assert (tmp_path / "foo_network_evolution.png").exists()
     assert json_path.read_text() == original
+
+
+def test_network_evolution_replay_rejects_json_output_path(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MPLCONFIGDIR", str(tmp_path / "mpl"))
+    payload = {
+        "firm_meta": {
+            "1": {"sector": "commodity", "pos": [0, 0]},
+            "2": {"sector": "manufacturing", "pos": [1, 1]},
+        },
+        "snapshots": [
+            {
+                "step": 0,
+                "edges": [[1, 2]],
+                "active_ids": [1, 2],
+                "inactive_ids": [],
+            }
+        ],
+    }
+    json_path = tmp_path / "foo_network_evolution.json"
+    original = json.dumps(payload, indent=2)
+    json_path.write_text(original)
+
+    with pytest.raises(ValueError, match="must not use a .json extension"):
+        _plot_network_evolution_from_json(
+            json_path,
+            tmp_path / "bad_output.json",
+            SimpleNamespace(start_year=0, steps_per_year=4),
+        )
+
+    assert json_path.read_text() == original
+    assert not (tmp_path / "bad_output.json").exists()
 
 
 def test_member_summary_helpers_match_and_track_ensemble_size() -> None:

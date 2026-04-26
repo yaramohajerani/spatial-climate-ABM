@@ -140,7 +140,7 @@ class EconomyModel(Model):
         self.dynamic_supplier_search_enabled: bool = bool(dynamic_supplier_search)
         self.max_dynamic_suppliers_per_sector: int = max(0, int(max_dynamic_suppliers_per_sector))
         self.total_firm_exits: int = 0
-        self.total_supplier_link_changes: int = 0
+        self.total_supplier_link_additions: int = 0
         self._topology_snapshots: list[dict] = []
         self.adaptation_observation_radius: int = int(self.adaptation_config.get("observation_radius", 4))
         self.adaptation_updates_this_step: int = 0
@@ -352,7 +352,7 @@ class EconomyModel(Model):
                 "Firm_Replacements": lambda m: getattr(m, 'total_firm_replacements', 0),
                 "Firm_Exits": lambda m: getattr(m, 'total_firm_exits', 0),
                 "Active_Firms": lambda m: sum(1 for f in m._firms if f.active),
-                "Supplier_Link_Changes": lambda m: getattr(m, 'total_supplier_link_changes', 0),
+                "Supplier_Link_Additions": lambda m: getattr(m, 'total_supplier_link_additions', 0),
                 "Total_Sales": lambda m: sum(f.sales_last_step for f in m._firms),
                 "Total_Firms": lambda m: len(m._firms),
                 "Flooded_Firms": lambda m: sum(1 for f in m._firms if m.hazard_map.get(f.pos, 0) > 0),
@@ -778,28 +778,25 @@ class EconomyModel(Model):
         )
         slots = max_count - len(sector_suppliers)
         if slots <= 0:
-            replaceable_suppliers = [
+            best_candidate = candidates[0]
+            unavailable_suppliers = [
                 supplier for supplier in sector_suppliers
-                if (not supplier.active)
-                or (supplier.inventory_output <= 1e-9 and supplier.production <= 1e-9)
+                if (not supplier.active) or supplier.inventory_output <= 1e-9
             ]
-            if not replaceable_suppliers:
-                return []
-            replaceable_suppliers.sort(
-                key=lambda supplier: (
-                    supplier.active,
-                    supplier.inventory_output > 1e-9 or supplier.production > 1e-9,
-                    -supplier.price,
-                )
-            )
-            remove_supplier = replaceable_suppliers[0]
+            if unavailable_suppliers:
+                unavailable_suppliers.sort(key=lambda supplier: (supplier.active, -supplier.price))
+                remove_supplier = unavailable_suppliers[0]
+            else:
+                remove_supplier = max(sector_suppliers, key=lambda supplier: supplier.price)
+                if best_candidate.price >= remove_supplier.price:
+                    return []
             buyer.connected_firms.remove(remove_supplier)
             slots = 1
 
         new_suppliers: List[FirmAgent] = []
         for supplier in candidates[:slots]:
             buyer.connected_firms.append(supplier)
-            self.total_supplier_link_changes += 1
+            self.total_supplier_link_additions += 1
             new_suppliers.append(supplier)
         return new_suppliers
 

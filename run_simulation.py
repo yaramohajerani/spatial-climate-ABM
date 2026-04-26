@@ -1321,6 +1321,8 @@ def _plot_network_evolution(
     fig.tight_layout(rect=[0, 0.13, 1, 1])
 
     out_path = Path(out_path) if out_path else Path(f"simulation_{scenario_label_ts}_network_evolution.png")
+    if out_path.suffix.lower() == ".json":
+        raise ValueError("Network evolution plot output path must not use a .json extension")
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     if save_data:

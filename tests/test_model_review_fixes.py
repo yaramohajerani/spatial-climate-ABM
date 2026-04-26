@@ -337,7 +337,7 @@ def test_dynamic_supplier_search_adds_active_same_recipe_sector_edges() -> None:
     assert active_candidate in buyer.connected_firms
     assert inactive_candidate not in buyer.connected_firms
     assert second_attempt == []
-    assert model.total_supplier_link_changes == 1
+    assert model.total_supplier_link_additions == 1
 
 
 def test_dynamic_supplier_search_can_replace_topology_supplier_edges() -> None:
@@ -364,7 +364,36 @@ def test_dynamic_supplier_search_can_replace_topology_supplier_edges() -> None:
     assert new_suppliers == [new_supplier]
     assert old_supplier not in buyer.connected_firms
     assert new_supplier in buyer.connected_firms
-    assert model.total_supplier_link_changes == 1
+    assert model.total_supplier_link_additions == 1
+
+
+def test_dynamic_supplier_search_at_cap_replaces_highest_price_supplier() -> None:
+    model = _build_model()
+    buyer = next(f for f in model._firms if f.sector == "services")
+    sector = "manufacturing"
+    model.dynamic_supplier_search_enabled = True
+    model.max_dynamic_suppliers_per_sector = 2
+
+    sector_firms = [firm for firm in model._firms_by_sector[sector] if firm is not buyer]
+    low_price_supplier, high_price_supplier, new_supplier = sector_firms[:3]
+    buyer.connected_firms = [low_price_supplier, high_price_supplier]
+    for firm in sector_firms:
+        firm.inventory_output = 0.0
+        firm.production = 0.0
+        firm.price = 10.0
+    low_price_supplier.inventory_output = 5.0
+    low_price_supplier.price = 0.5
+    high_price_supplier.inventory_output = 5.0
+    high_price_supplier.price = 0.9
+    new_supplier.inventory_output = 5.0
+    new_supplier.price = 0.2
+
+    new_suppliers = model.add_dynamic_supplier_edges(buyer, sector)
+
+    assert new_suppliers == [new_supplier]
+    assert low_price_supplier in buyer.connected_firms
+    assert high_price_supplier not in buyer.connected_firms
+    assert new_supplier in buyer.connected_firms
 
 
 def test_topology_missing_recipe_supplier_warns_without_rewriting(tmp_path) -> None:
