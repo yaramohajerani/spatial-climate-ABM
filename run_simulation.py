@@ -1100,8 +1100,8 @@ def _plot_network_evolution(
 ) -> str | None:
     """Render a multi-panel figure showing how firm-level supplier links evolved.
 
-    Firms are plotted at their geographic grid positions. Gray lines are
-    original-topology links still present; orange lines are rewired links.
+    Firms are plotted at their geographic grid positions. Gray solid lines are
+    original-topology links still present; gray dashed lines are rewired links.
     Red crosses mark failed firms. Only produced when dynamic supplier search
     is enabled, since the topology is otherwise static.
     """
@@ -1109,7 +1109,7 @@ def _plot_network_evolution(
     import matplotlib.patches as mpatches
     import matplotlib.lines as mlines
 
-    if not getattr(model, "dynamic_supplier_search_enabled", True):
+    if not getattr(model, "dynamic_supplier_search_enabled", False):
         return None
 
     snapshots = getattr(model, "_topology_snapshots", [])
@@ -1173,28 +1173,21 @@ def _plot_network_evolution(
             (int(s), int(b)) for s, b in snap["edges"]
         )
 
-        # Original-topology links still present (gray, faint background)
-        for sup_id, buy_id in current_edges & initial_edges:
+        n_rewired = len(current_edges - initial_edges)
+        for sup_id, buy_id in current_edges:
             if sup_id not in firm_npos or buy_id not in firm_npos:
                 continue
             sx, sy = firm_npos[sup_id]
             ex, ey = firm_npos[buy_id]
-            ax.plot([sx, ex], [sy, ey], color="#aaaaaa", alpha=0.2,
-                    linewidth=0.5, zorder=1)
-
-        # Rewired links (gray dashed)
-        for sup_id, buy_id in current_edges - initial_edges:
-            if sup_id not in firm_npos or buy_id not in firm_npos:
-                continue
-            sx, sy = firm_npos[sup_id]
-            ex, ey = firm_npos[buy_id]
-            ax.plot([sx, ex], [sy, ey], color="#aaaaaa", alpha=0.5,
-                    linewidth=0.5, linestyle="--", zorder=2)
+            if (sup_id, buy_id) in initial_edges:
+                ax.plot([sx, ex], [sy, ey], color="#aaaaaa", alpha=0.2,
+                        linewidth=0.5, zorder=1)
+            else:
+                ax.plot([sx, ex], [sy, ey], color="#aaaaaa", alpha=0.5,
+                        linewidth=0.5, linestyle="--", zorder=2)
 
         # Firm nodes
         for fid, meta in firm_meta.items():
-            if fid not in firm_npos:
-                continue
             nx, ny = firm_npos[fid]
             if fid in active_ids:
                 ax.scatter(nx, ny, s=25, c=[sec_color[meta["sector"]]],
@@ -1204,7 +1197,6 @@ def _plot_network_evolution(
                 ax.scatter(nx, ny, s=40, c=["#cc0000"], marker="X",
                            edgecolors="none", alpha=0.8, zorder=3)
 
-        n_rewired = len(current_edges - initial_edges)
         title_time = (
             f"Year {start_year + step / steps_per_year:.1f}" if use_years
             else f"Step {step}"
@@ -1309,6 +1301,7 @@ def _plot_network_evolution_from_json(
     replay_model = type("ReplayModel", (), {})()
     replay_model._firms = firms
     replay_model._topology_snapshots = snapshots
+    replay_model.dynamic_supplier_search_enabled = True
 
     if not getattr(args, "start_year", 0):
         args.start_year = int(payload.get("start_year", 0))
