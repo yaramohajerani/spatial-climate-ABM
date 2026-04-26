@@ -108,7 +108,6 @@ class EconomyModel(Model):
         input_recipe_ranges: dict | None = None,
         firm_replacement: str = "startup_reset",
         dynamic_supplier_search: bool = True,
-        max_dynamic_suppliers_per_sector: int = 2,
         grid_resolution: float = 1.0,
         household_relocation: bool = False,
         damage_functions_path: str | None = None,
@@ -138,9 +137,8 @@ class EconomyModel(Model):
         if self.firm_replacement not in {"startup_reset", "none"}:
             raise ValueError("firm_replacement must be 'startup_reset' or 'none'")
         self.dynamic_supplier_search_enabled: bool = bool(dynamic_supplier_search)
-        self.max_dynamic_suppliers_per_sector: int = max(0, int(max_dynamic_suppliers_per_sector))
         self.total_firm_exits: int = 0
-        self.total_supplier_link_additions: int = 0
+        self.total_supplier_link_rewirings: int = 0
         self._topology_snapshots: list[dict] = []
         self.adaptation_observation_radius: int = int(self.adaptation_config.get("observation_radius", 4))
         self.adaptation_updates_this_step: int = 0
@@ -352,7 +350,7 @@ class EconomyModel(Model):
                 "Firm_Replacements": lambda m: getattr(m, 'total_firm_replacements', 0),
                 "Firm_Exits": lambda m: getattr(m, 'total_firm_exits', 0),
                 "Active_Firms": lambda m: sum(1 for f in m._firms if f.active),
-                "Supplier_Link_Additions": lambda m: getattr(m, 'total_supplier_link_additions', 0),
+                "Supplier_Link_Rewirings": lambda m: getattr(m, 'total_supplier_link_rewirings', 0),
                 "Total_Sales": lambda m: sum(f.sales_last_step for f in m._firms),
                 "Total_Firms": lambda m: len(m._firms),
                 "Flooded_Firms": lambda m: sum(1 for f in m._firms if m.hazard_map.get(f.pos, 0) > 0),
@@ -584,7 +582,6 @@ class EconomyModel(Model):
             ),
             "FirmReplacement": self.firm_replacement,
             "DynamicSupplierSearch": bool(self.dynamic_supplier_search_enabled),
-            "MaxDynamicSuppliersPerSector": int(self.max_dynamic_suppliers_per_sector),
             "StartupCapitalFloorCount": int(len(self._startup_capital_floor_overrides)),
             "StartupCapitalFloorTotal": float(startup_added_capital),
             "StartupCapitalFloorFirms": json.dumps(
@@ -741,18 +738,19 @@ class EconomyModel(Model):
         candidates.sort(key=lambda f: f.price)
         return candidates[:max_count]
 
-    def add_dynamic_supplier_edges(self, buyer: FirmAgent, sector: str) -> List[FirmAgent]:
-        """Add bounded new supplier links in a required recipe sector."""
+    def rewire_dynamic_supplier_edge(self, buyer: FirmAgent, sector: str) -> List[FirmAgent]:
+        """Replace one existing supplier link in a required recipe sector."""
         if not self.dynamic_supplier_search_enabled:
             return []
-        max_count = self.max_dynamic_suppliers_per_sector
-        if max_count <= 0 or not buyer.active:
+        if not buyer.active:
             return []
 
         sector_suppliers = [
             supplier for supplier in buyer.connected_firms
             if supplier.sector == sector
         ]
+        if not sector_suppliers:
+            return []
 
         existing_ids = {supplier.unique_id for supplier in buyer.connected_firms}
         candidates: List[FirmAgent] = []
@@ -776,29 +774,23 @@ class EconomyModel(Model):
                 abs(supplier.pos[0] - bx) + abs(supplier.pos[1] - by),
             )
         )
-        slots = max_count - len(sector_suppliers)
-        if slots <= 0:
-            best_candidate = candidates[0]
-            unavailable_suppliers = [
-                supplier for supplier in sector_suppliers
-                if (not supplier.active) or supplier.inventory_output <= 1e-9
-            ]
-            if unavailable_suppliers:
-                unavailable_suppliers.sort(key=lambda supplier: (supplier.active, -supplier.price))
-                remove_supplier = unavailable_suppliers[0]
-            else:
-                remove_supplier = max(sector_suppliers, key=lambda supplier: supplier.price)
-                if best_candidate.price >= remove_supplier.price:
-                    return []
-            buyer.connected_firms.remove(remove_supplier)
-            slots = 1
+        best_candidate = candidates[0]
+        unavailable_suppliers = [
+            supplier for supplier in sector_suppliers
+            if (not supplier.active) or supplier.inventory_output <= 1e-9
+        ]
+        if unavailable_suppliers:
+            unavailable_suppliers.sort(key=lambda supplier: (supplier.active, -supplier.price))
+            remove_supplier = unavailable_suppliers[0]
+        else:
+            remove_supplier = max(sector_suppliers, key=lambda supplier: supplier.price)
+            if best_candidate.price >= remove_supplier.price:
+                return []
 
-        new_suppliers: List[FirmAgent] = []
-        for supplier in candidates[:slots]:
-            buyer.connected_firms.append(supplier)
-            self.total_supplier_link_additions += 1
-            new_suppliers.append(supplier)
-        return new_suppliers
+        buyer.connected_firms.remove(remove_supplier)
+        buyer.connected_firms.append(best_candidate)
+        self.total_supplier_link_rewirings += 1
+        return [best_candidate]
 
     def _reset_reserved_capacity_contracts(self) -> None:
         self._reserved_capacity_contracts = {}

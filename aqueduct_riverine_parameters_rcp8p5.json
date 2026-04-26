@@ -27,8 +27,7 @@
   "topology": "riverine_firm_topology_100.json",
   "firm_replacement": "none",
   "dynamic_supplier_search": {
-    "enabled": true,
-    "max_suppliers_per_sector": 5
+    "enabled": true
   },
   "start_year": 2000,
   "steps_per_year": 4,

@@ -1576,7 +1576,7 @@ class FirmAgent(Agent):
             for sector, remaining_inputs_needed in list(sector_remaining_inputs_needed.items()):
                 if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
                     continue
-                new_suppliers = self.model.add_dynamic_supplier_edges(self, sector)
+                new_suppliers = self.model.rewire_dynamic_supplier_edge(self, sector)
                 if not new_suppliers:
                     continue
                 sector_remaining_inputs_needed[sector] = self._buy_inputs_from_suppliers(

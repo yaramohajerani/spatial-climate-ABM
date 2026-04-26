@@ -35,7 +35,6 @@ def test_market_structure_cli_settings_override_parameter_file() -> None:
     args = SimpleNamespace(
         firm_replacement="none",
         dynamic_supplier_search=True,
-        max_dynamic_suppliers_per_sector=4,
     )
 
     _merge_market_structure_settings(
@@ -44,21 +43,18 @@ def test_market_structure_cli_settings_override_parameter_file() -> None:
             "firm_replacement": "startup_reset",
             "dynamic_supplier_search": {
                 "enabled": False,
-                "max_suppliers_per_sector": 1,
             },
         },
     )
 
     assert args.firm_replacement == "none"
     assert args.dynamic_supplier_search is True
-    assert args.max_dynamic_suppliers_per_sector == 4
 
 
 def test_market_structure_settings_fall_back_to_parameter_file() -> None:
     args = SimpleNamespace(
         firm_replacement=None,
         dynamic_supplier_search=None,
-        max_dynamic_suppliers_per_sector=None,
     )
 
     _merge_market_structure_settings(
@@ -67,14 +63,12 @@ def test_market_structure_settings_fall_back_to_parameter_file() -> None:
             "firm_replacement": "none",
             "dynamic_supplier_search": {
                 "enabled": False,
-                "max_suppliers_per_sector": 1,
             },
         },
     )
 
     assert args.firm_replacement == "none"
     assert args.dynamic_supplier_search is False
-    assert args.max_dynamic_suppliers_per_sector == 1
 
 
 def test_network_evolution_replay_does_not_overwrite_input_json(tmp_path, monkeypatch) -> None:

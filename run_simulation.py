@@ -109,19 +109,13 @@ def _parse():
         dest="dynamic_supplier_search",
         action="store_true",
         default=None,
-        help="Allow firms to form bounded new supplier edges when required inputs are unavailable",
+        help="Allow firms to rewire existing supplier edges when required inputs are unavailable",
     )
     p.add_argument(
         "--no-dynamic-supplier-search",
         dest="dynamic_supplier_search",
         action="store_false",
-        help="Disable bounded new supplier edge formation",
-    )
-    p.add_argument(
-        "--max-dynamic-suppliers-per-sector",
-        type=int,
-        default=None,
-        help="Maximum dynamically added supplier edges per buyer and required input sector",
+        help="Disable supplier-edge rewiring",
     )
     p.add_argument("--save-agent-ensemble", action="store_true", help="When running multiple seeds, also save the combined agent panel")
     p.add_argument("--ensemble-plot-stat", choices=("mean", "median"), default="mean", help="Statistic to highlight in ensemble plots and summaries")
@@ -162,15 +156,10 @@ def _merge_market_structure_settings(args, param_data: dict) -> None:
 
     dynamic_supplier_config = param_data.get("dynamic_supplier_search", {})
     if not isinstance(dynamic_supplier_config, dict):
-        raise SystemExit("dynamic_supplier_search must be an object with enabled and max_suppliers_per_sector")
+        raise SystemExit("dynamic_supplier_search must be an object with enabled")
 
     if args.dynamic_supplier_search is None:
         args.dynamic_supplier_search = bool(dynamic_supplier_config.get("enabled", True))
-
-    if args.max_dynamic_suppliers_per_sector is None:
-        args.max_dynamic_suppliers_per_sector = int(
-            dynamic_supplier_config.get("max_suppliers_per_sector", 2)
-        )
 
 
 STRATEGY_DISPLAY_NAMES = {
@@ -410,7 +399,6 @@ def _run_single_simulation(
         input_recipe_ranges=getattr(args, "input_recipe_ranges", None),
         firm_replacement=args.firm_replacement,
         dynamic_supplier_search=args.dynamic_supplier_search,
-        max_dynamic_suppliers_per_sector=args.max_dynamic_suppliers_per_sector,
         grid_resolution=args.grid_resolution,
         household_relocation=args.household_relocation,
         damage_functions_path=getattr(args, "damage_functions_path", None),
