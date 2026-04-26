@@ -1156,6 +1156,15 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
 
     link_color = "#808080"
 
+    def edge_width(link_count: int) -> float:
+        return 0.8 + 5.5 * (link_count / max_link_count)
+
+    def node_area(active_count: int) -> float:
+        return 200 + 1000 * (active_count / max_sector_total)
+
+    def node_legend_marker_size(active_count: int) -> float:
+        return float(np.sqrt(node_area(active_count)) * 0.48)
+
     for panel_idx, snap in enumerate(selected):
         row, col = divmod(panel_idx, n_cols)
         ax = axes[row][col]
@@ -1197,7 +1206,7 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
                 continue
             sx, sy = sector_pos[src_s]
             ex, ey = sector_pos[dst_s]
-            lw = 0.8 + 5.5 * (total / max_link_count)
+            lw = edge_width(total)
             # Alternate curve direction so bidirectional pairs don't overlap
             rad = 0.25 if src_s < dst_s else -0.25
             annot = ax.annotate(
@@ -1212,6 +1221,18 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
                 zorder=2,
             )
             annot.arrow_patch.set_alpha(0.8)
+            mx, my = (sx + ex) / 2, (sy + ey) / 2
+            dx, dy = ex - sx, ey - sy
+            norm = float(np.hypot(dx, dy)) or 1.0
+            label_x = mx - (dy / norm) * rad * 0.55
+            label_y = my + (dx / norm) * rad * 0.55
+            ax.text(
+                label_x, label_y, str(total),
+                fontsize=6.5, ha="center", va="center",
+                color="#444444",
+                bbox=dict(facecolor="white", edgecolor="none", alpha=0.72, pad=0.8),
+                zorder=7,
+            )
 
         # Draw sector nodes
         for s in unique_sectors:
@@ -1227,7 +1248,7 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
                 ax.scatter(cx, cy, s=halo_s, c=["#cc0000"], alpha=0.22,
                            edgecolors="none", zorder=3)
 
-            node_s = 200 + 1000 * (n_active / max_sector_total)
+            node_s = node_area(n_active)
             ax.scatter(cx, cy, s=node_s, c=[sec_color[s]], zorder=4,
                        edgecolors="black", linewidths=1.5)
 
@@ -1264,21 +1285,87 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
                                         label="supplier links"))
     legend_handles.append(mpatches.Patch(facecolor="#cc0000", alpha=0.22, edgecolor="none",
                                          label="failed firm halo"))
+    link_scale_counts = [10, 100]
+    legend_handles.extend(
+        mlines.Line2D([], [], color=link_color, linewidth=edge_width(count),
+                      label=f"{count} links")
+        for count in link_scale_counts
+    )
+    node_scale_counts = [10]
+    if max_sector_total != 10:
+        node_scale_counts.append(max_sector_total)
+    legend_handles.extend(
+        mlines.Line2D(
+            [], [], linestyle="none", marker="o",
+            markersize=node_legend_marker_size(count),
+            markerfacecolor="white", markeredgecolor="black",
+            label=f"{count} active firms",
+        )
+        for count in node_scale_counts
+    )
 
     fig.legend(handles=legend_handles, loc="lower center",
                ncol=min(len(legend_handles), 6), fontsize=8,
                bbox_to_anchor=(0.5, 0.01))
-    fig.text(0.5, 0.045,
+    fig.text(0.5, 0.075,
              "Node size proportional to active firms · Arrow width proportional to link count",
              ha="center", fontsize=7, color="#555555")
     fig.suptitle("Supply Chain Network Evolution (Sector Level)", fontsize=13,
                  fontweight="bold")
-    fig.tight_layout(rect=[0, 0.09, 1, 1])
+    fig.tight_layout(rect=[0, 0.13, 1, 1])
 
     out_path = f"simulation_{scenario_label_ts}_network_evolution.png"
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
+    _save_network_evolution_data(
+        out_path=Path(out_path).with_suffix(".json"),
+        snapshots=snapshots,
+        selected_indices=indices,
+        firm_meta=firm_meta,
+        sector_positions=sector_pos,
+        max_link_count=max_link_count,
+        max_sector_total=max_sector_total,
+    )
     return out_path
+
+
+def _save_network_evolution_data(
+    *,
+    out_path: Path,
+    snapshots: list[dict],
+    selected_indices: np.ndarray,
+    firm_meta: dict[int, dict],
+    sector_positions: dict[str, tuple[float, float]],
+    max_link_count: int,
+    max_sector_total: int,
+) -> None:
+    """Persist topology snapshots used by the network-evolution figure."""
+    payload = {
+        "firm_meta": {
+            str(fid): {
+                "sector": meta["sector"],
+                "pos": list(meta["pos"]),
+            }
+            for fid, meta in firm_meta.items()
+        },
+        "sector_positions": {
+            sector: list(pos)
+            for sector, pos in sector_positions.items()
+        },
+        "selected_indices": [int(i) for i in selected_indices],
+        "max_link_count": int(max_link_count),
+        "max_sector_total": int(max_sector_total),
+        "snapshots": [
+            {
+                "step": int(snap["step"]),
+                "edges": [[int(src), int(dst)] for src, dst in snap["edges"]],
+                "active_ids": sorted(int(fid) for fid in snap["active_ids"]),
+                "inactive_ids": sorted(int(fid) for fid in snap["inactive_ids"]),
+            }
+            for snap in snapshots
+        ],
+    }
+    out_path.write_text(json.dumps(payload, indent=2))
 
 
 if __name__ == "__main__":
