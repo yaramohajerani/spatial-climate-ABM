@@ -125,6 +125,12 @@ def _parse():
     )
     p.add_argument("--save-agent-ensemble", action="store_true", help="When running multiple seeds, also save the combined agent panel")
     p.add_argument("--ensemble-plot-stat", choices=("mean", "median"), default="mean", help="Statistic to highlight in ensemble plots and summaries")
+    p.add_argument(
+        "--network-evolution-json",
+        type=str,
+        help="Recreate a network evolution PNG from a saved *_network_evolution.json without running a simulation",
+    )
+    p.add_argument("--out", type=str, help="Output path for --network-evolution-json")
     return p.parse_args()
 
 
@@ -498,6 +504,15 @@ def _save_ensemble_plot(summary_df: pd.DataFrame, member_df: pd.DataFrame, outpu
 
 def main() -> None:  # noqa: D401
     args = _parse()
+    if args.network_evolution_json:
+        out_path = _plot_network_evolution_from_json(
+            Path(args.network_evolution_json),
+            Path(args.out) if args.out else None,
+            args,
+        )
+        print(f"Saved network evolution plot to {out_path}")
+        return
+
     param_data: dict = {}
     args.raster_hazard_events = None
     args.node_shocks = None
@@ -1088,7 +1103,12 @@ def main() -> None:  # noqa: D401
         print(f"Network evolution plot saved as {network_evo_filename}")
 
 
-def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
+def _plot_network_evolution(
+    model,
+    scenario_label_ts: str,
+    args,
+    out_path: str | Path | None = None,
+) -> str | None:
     """Render a multi-panel static figure showing how the supply-chain network evolved.
 
     Firms are aggregated to sector-level nodes arranged in a fixed circle.
@@ -1299,7 +1319,7 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
                  fontweight="bold")
     fig.tight_layout(rect=[0, 0.13, 1, 1])
 
-    out_path = f"simulation_{scenario_label_ts}_network_evolution.png"
+    out_path = Path(out_path) if out_path else Path(f"simulation_{scenario_label_ts}_network_evolution.png")
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     _save_network_evolution_data(
@@ -1310,8 +1330,10 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
         sector_positions=sector_pos,
         max_link_count=max_link_count,
         max_sector_total=max_sector_total,
+        start_year=start_year,
+        steps_per_year=steps_per_year,
     )
-    return out_path
+    return str(out_path)
 
 
 def _save_network_evolution_data(
@@ -1323,6 +1345,8 @@ def _save_network_evolution_data(
     sector_positions: dict[str, tuple[float, float]],
     max_link_count: int,
     max_sector_total: int,
+    start_year: int,
+    steps_per_year: int,
 ) -> None:
     """Persist topology snapshots used by the network-evolution figure."""
     payload = {
@@ -1340,6 +1364,8 @@ def _save_network_evolution_data(
         "selected_indices": [int(i) for i in selected_indices],
         "max_link_count": int(max_link_count),
         "max_sector_total": int(max_sector_total),
+        "start_year": int(start_year),
+        "steps_per_year": int(steps_per_year),
         "snapshots": [
             {
                 "step": int(snap["step"]),
@@ -1351,6 +1377,49 @@ def _save_network_evolution_data(
         ],
     }
     out_path.write_text(json.dumps(payload, indent=2))
+
+
+def _plot_network_evolution_from_json(
+    json_path: Path,
+    out_path: Path | None,
+    args,
+) -> str:
+    """Recreate a network-evolution figure from saved topology snapshots."""
+    payload = json.loads(json_path.read_text())
+
+    firm_meta = payload.get("firm_meta", {})
+    firms = []
+    for fid, meta in firm_meta.items():
+        firm = type("ReplayFirm", (), {})()
+        firm.unique_id = int(fid)
+        firm.pos = tuple(meta["pos"])
+        firm.sector = meta["sector"]
+        firms.append(firm)
+
+    snapshots = []
+    for snap in payload.get("snapshots", []):
+        snapshots.append({
+            "step": int(snap["step"]),
+            "edges": [(int(src), int(dst)) for src, dst in snap["edges"]],
+            "active_ids": frozenset(int(fid) for fid in snap["active_ids"]),
+            "inactive_ids": frozenset(int(fid) for fid in snap["inactive_ids"]),
+        })
+
+    replay_model = type("ReplayModel", (), {})()
+    replay_model._firms = firms
+    replay_model._topology_snapshots = snapshots
+
+    if not getattr(args, "start_year", 0):
+        args.start_year = int(payload.get("start_year", 0))
+    args.steps_per_year = int(payload.get("steps_per_year", getattr(args, "steps_per_year", 4)))
+
+    if out_path is None:
+        out_path = json_path.with_suffix(".png")
+    scenario_label = json_path.stem.removesuffix("_network_evolution")
+    plotted_path = _plot_network_evolution(replay_model, scenario_label, args, out_path=out_path)
+    if plotted_path is None:
+        raise SystemExit(f"No topology snapshots found in {json_path}")
+    return plotted_path
 
 
 if __name__ == "__main__":
