@@ -1182,14 +1182,14 @@ def _plot_network_evolution(
             ax.plot([sx, ex], [sy, ey], color="#aaaaaa", alpha=0.2,
                     linewidth=0.5, zorder=1)
 
-        # Rewired links (orange, prominent)
+        # Rewired links (gray dashed)
         for sup_id, buy_id in current_edges - initial_edges:
             if sup_id not in firm_npos or buy_id not in firm_npos:
                 continue
             sx, sy = firm_npos[sup_id]
             ex, ey = firm_npos[buy_id]
-            ax.plot([sx, ex], [sy, ey], color="#e07020", alpha=0.7,
-                    linewidth=1.2, zorder=2)
+            ax.plot([sx, ex], [sy, ey], color="#aaaaaa", alpha=0.5,
+                    linewidth=0.5, linestyle="--", zorder=2)
 
         # Firm nodes
         for fid, meta in firm_meta.items():
@@ -1209,7 +1209,7 @@ def _plot_network_evolution(
             f"Year {start_year + step / steps_per_year:.1f}" if use_years
             else f"Step {step}"
         )
-        ax.set_title(f"{title_time}\n{n_rewired} rewired links", fontsize=9)
+        ax.set_title(f"{title_time}\n{n_rewired}/{len(current_edges)} links rewired", fontsize=9)
 
     # Hide unused subplot cells
     for panel_idx in range(n_panels, n_rows * n_cols):
@@ -1222,7 +1222,7 @@ def _plot_network_evolution(
     ]
     legend_handles += [
         mlines.Line2D([], [], color="#aaaaaa", linewidth=1.5, label="original link"),
-        mlines.Line2D([], [], color="#e07020", linewidth=1.5, label="rewired link"),
+        mlines.Line2D([], [], color="#aaaaaa", linewidth=1.5, linestyle="--", label="rewired link"),
         mlines.Line2D([], [], color="#cc0000", marker="X", markersize=6,
                       linestyle="None", label="failed firm"),
     ]
