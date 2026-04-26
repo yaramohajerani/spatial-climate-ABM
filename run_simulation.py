@@ -1160,10 +1160,7 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
         return 0.8 + 5.5 * (link_count / max_link_count)
 
     def node_area(active_count: int) -> float:
-        return 200 + 1000 * (active_count / max_sector_total)
-
-    def node_legend_marker_size(active_count: int) -> float:
-        return float(np.sqrt(node_area(active_count)) * 0.48)
+        return max(40.0, 40.0 * active_count)
 
     for panel_idx, snap in enumerate(selected):
         row, col = divmod(panel_idx, n_cols)
@@ -1291,24 +1288,12 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
                       label=f"{count} links")
         for count in link_scale_counts
     )
-    node_scale_counts = [10]
-    if max_sector_total != 10:
-        node_scale_counts.append(max_sector_total)
-    legend_handles.extend(
-        mlines.Line2D(
-            [], [], linestyle="none", marker="o",
-            markersize=node_legend_marker_size(count),
-            markerfacecolor="white", markeredgecolor="black",
-            label=f"{count} active firms",
-        )
-        for count in node_scale_counts
-    )
 
     fig.legend(handles=legend_handles, loc="lower center",
                ncol=min(len(legend_handles), 6), fontsize=8,
                bbox_to_anchor=(0.5, 0.01))
     fig.text(0.5, 0.075,
-             "Node size proportional to active firms · Arrow width proportional to link count",
+             "Arrow width proportional to link count",
              ha="center", fontsize=7, color="#555555")
     fig.suptitle("Supply Chain Network Evolution (Sector Level)", fontsize=13,
                  fontweight="bold")
