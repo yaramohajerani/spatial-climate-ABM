@@ -109,22 +109,22 @@ def _parse():
         dest="dynamic_supplier_search",
         action="store_true",
         default=None,
-        help="Allow firms to form bounded new supplier edges when required inputs are unavailable",
+        help="Allow firms to rewire existing supplier edges when required inputs are unavailable",
     )
     p.add_argument(
         "--no-dynamic-supplier-search",
         dest="dynamic_supplier_search",
         action="store_false",
-        help="Disable bounded new supplier edge formation",
-    )
-    p.add_argument(
-        "--max-dynamic-suppliers-per-sector",
-        type=int,
-        default=None,
-        help="Maximum dynamically added supplier edges per buyer and required input sector",
+        help="Disable supplier-edge rewiring",
     )
     p.add_argument("--save-agent-ensemble", action="store_true", help="When running multiple seeds, also save the combined agent panel")
     p.add_argument("--ensemble-plot-stat", choices=("mean", "median"), default="mean", help="Statistic to highlight in ensemble plots and summaries")
+    p.add_argument(
+        "--network-evolution-json",
+        type=str,
+        help="Recreate a network evolution PNG from a saved *_network_evolution.json without running a simulation",
+    )
+    p.add_argument("--out", type=str, help="Output path for --network-evolution-json")
     return p.parse_args()
 
 
@@ -156,15 +156,10 @@ def _merge_market_structure_settings(args, param_data: dict) -> None:
 
     dynamic_supplier_config = param_data.get("dynamic_supplier_search", {})
     if not isinstance(dynamic_supplier_config, dict):
-        raise SystemExit("dynamic_supplier_search must be an object with enabled and max_suppliers_per_sector")
+        raise SystemExit("dynamic_supplier_search must be an object with enabled")
 
     if args.dynamic_supplier_search is None:
         args.dynamic_supplier_search = bool(dynamic_supplier_config.get("enabled", True))
-
-    if args.max_dynamic_suppliers_per_sector is None:
-        args.max_dynamic_suppliers_per_sector = int(
-            dynamic_supplier_config.get("max_suppliers_per_sector", 2)
-        )
 
 
 STRATEGY_DISPLAY_NAMES = {
@@ -404,7 +399,6 @@ def _run_single_simulation(
         input_recipe_ranges=getattr(args, "input_recipe_ranges", None),
         firm_replacement=args.firm_replacement,
         dynamic_supplier_search=args.dynamic_supplier_search,
-        max_dynamic_suppliers_per_sector=args.max_dynamic_suppliers_per_sector,
         grid_resolution=args.grid_resolution,
         household_relocation=args.household_relocation,
         damage_functions_path=getattr(args, "damage_functions_path", None),
@@ -498,6 +492,15 @@ def _save_ensemble_plot(summary_df: pd.DataFrame, member_df: pd.DataFrame, outpu
 
 def main() -> None:  # noqa: D401
     args = _parse()
+    if args.network_evolution_json:
+        out_path = _plot_network_evolution_from_json(
+            Path(args.network_evolution_json),
+            Path(args.out) if args.out else None,
+            args,
+        )
+        print(f"Saved network evolution plot to {out_path}")
+        return
+
     param_data: dict = {}
     args.raster_hazard_events = None
     args.node_shocks = None
@@ -1088,15 +1091,20 @@ def main() -> None:  # noqa: D401
         print(f"Network evolution plot saved as {network_evo_filename}")
 
 
-def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
+def _plot_network_evolution(
+    model,
+    scenario_label_ts: str,
+    args,
+    out_path: str | Path | None = None,
+    save_data: bool = True,
+) -> str | None:
     """Render a multi-panel static figure showing how the supply-chain network evolved.
 
     Firms are aggregated to sector-level nodes arranged in a fixed circle.
     Arrow width encodes the number of firm-to-firm connections between each
-    sector pair; arrow color interpolates from gray (all static links) to orange
-    (all dynamic links).  Node size encodes active firm count; a red halo marks
-    firms that have failed.  This keeps the diagram readable even when hundreds
-    of firm-to-firm edges exist.
+    sector pair. Node size encodes active firm count; a red halo marks firms
+    that have failed. This keeps the diagram readable even when hundreds of
+    firm-to-firm edges exist.
     """
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
@@ -1147,7 +1155,7 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
     max_link_count = 1
     for snap in selected:
         counts: dict[tuple, int] = {}
-        for sup_id, buy_id, _ in snap["edges"]:
+        for sup_id, buy_id in snap["edges"]:
             if sup_id not in firm_meta or buy_id not in firm_meta:
                 continue
             key = (firm_meta[sup_id]["sector"], firm_meta[buy_id]["sector"])
@@ -1155,8 +1163,13 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
         if counts:
             max_link_count = max(max_link_count, max(counts.values()))
 
-    static_rgb = np.array([0.65, 0.65, 0.65])
-    dynamic_rgb = np.array([1.0, 0.50, 0.0])
+    link_color = "#808080"
+
+    def edge_width(link_count: int) -> float:
+        return 0.8 + 5.5 * (link_count / max_link_count)
+
+    def node_area(active_count: int) -> float:
+        return max(40.0, 40.0 * active_count)
 
     for panel_idx, snap in enumerate(selected):
         row, col = divmod(panel_idx, n_cols)
@@ -1182,8 +1195,8 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
                 sector_failed[s] += 1
 
         # Aggregate edges into sector pairs
-        sector_edges: dict[tuple[str, str], dict[str, int]] = {}
-        for sup_id, buy_id, is_dyn in edges:
+        sector_edges: dict[tuple[str, str], int] = {}
+        for sup_id, buy_id in edges:
             if sup_id not in firm_meta or buy_id not in firm_meta:
                 continue
             src_s = firm_meta[sup_id]["sector"]
@@ -1191,30 +1204,22 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
             if src_s == dst_s:
                 continue  # skip intra-sector self-loops for clarity
             key = (src_s, dst_s)
-            if key not in sector_edges:
-                sector_edges[key] = {"static": 0, "dynamic": 0}
-            if is_dyn:
-                sector_edges[key]["dynamic"] += 1
-            else:
-                sector_edges[key]["static"] += 1
+            sector_edges[key] = sector_edges.get(key, 0) + 1
 
         # Draw arrows between sector nodes
-        for (src_s, dst_s), counts in sector_edges.items():
+        for (src_s, dst_s), total in sector_edges.items():
             if src_s not in sector_pos or dst_s not in sector_pos:
                 continue
             sx, sy = sector_pos[src_s]
             ex, ey = sector_pos[dst_s]
-            total = counts["static"] + counts["dynamic"]
-            dyn_frac = counts["dynamic"] / total if total > 0 else 0.0
-            color = tuple((1 - dyn_frac) * static_rgb + dyn_frac * dynamic_rgb)
-            lw = 0.8 + 5.5 * (total / max_link_count)
+            lw = edge_width(total)
             # Alternate curve direction so bidirectional pairs don't overlap
             rad = 0.25 if src_s < dst_s else -0.25
             annot = ax.annotate(
                 "", xy=(ex, ey), xytext=(sx, sy),
                 arrowprops=dict(
                     arrowstyle="-|>",
-                    color=color,
+                    color=link_color,
                     lw=lw,
                     connectionstyle=f"arc3,rad={rad}",
                     shrinkA=20, shrinkB=20,
@@ -1222,6 +1227,18 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
                 zorder=2,
             )
             annot.arrow_patch.set_alpha(0.8)
+            mx, my = (sx + ex) / 2, (sy + ey) / 2
+            dx, dy = ex - sx, ey - sy
+            norm = float(np.hypot(dx, dy)) or 1.0
+            label_x = mx - (dy / norm) * rad * 0.55
+            label_y = my + (dx / norm) * rad * 0.55
+            ax.text(
+                label_x, label_y, str(total),
+                fontsize=6.5, ha="center", va="center",
+                color="#444444",
+                bbox=dict(facecolor="white", edgecolor="none", alpha=0.72, pad=0.8),
+                zorder=7,
+            )
 
         # Draw sector nodes
         for s in unique_sectors:
@@ -1237,7 +1254,7 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
                 ax.scatter(cx, cy, s=halo_s, c=["#cc0000"], alpha=0.22,
                            edgecolors="none", zorder=3)
 
-            node_s = 200 + 1000 * (n_active / max_sector_total)
+            node_s = node_area(n_active)
             ax.scatter(cx, cy, s=node_s, c=[sec_color[s]], zorder=4,
                        edgecolors="black", linewidths=1.5)
 
@@ -1257,10 +1274,8 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
         else:
             title_time = f"Step {step}"
 
-        n_dyn_total = sum(e["dynamic"] for e in sector_edges.values())
-        n_static_total = sum(e["static"] for e in sector_edges.values())
-        ax.set_title(f"{title_time}\n{n_static_total} static · {n_dyn_total} dynamic links",
-                     fontsize=9)
+        n_links_total = sum(sector_edges.values())
+        ax.set_title(f"{title_time}\n{n_links_total} supplier links", fontsize=9)
 
     # Hide unused subplot cells
     for panel_idx in range(n_panels, n_rows * n_cols):
@@ -1272,28 +1287,137 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
         mpatches.Patch(facecolor=sec_color[s], edgecolor="black", linewidth=0.5, label=s)
         for s in unique_sectors
     ]
-    legend_handles.append(mlines.Line2D([], [], color=tuple(static_rgb), linewidth=2.5,
-                                        label="static links"))
-    legend_handles.append(mlines.Line2D([], [], color=tuple(dynamic_rgb), linewidth=2.5,
-                                        label="dynamic links"))
+    legend_handles.append(mlines.Line2D([], [], color=link_color, linewidth=2.5,
+                                        label="supplier links"))
     legend_handles.append(mpatches.Patch(facecolor="#cc0000", alpha=0.22, edgecolor="none",
                                          label="failed firm halo"))
+    link_scale_counts = [10, 100]
+    legend_handles.extend(
+        mlines.Line2D([], [], color=link_color, linewidth=edge_width(count),
+                      label=f"{count} links")
+        for count in link_scale_counts
+    )
 
     fig.legend(handles=legend_handles, loc="lower center",
                ncol=min(len(legend_handles), 6), fontsize=8,
                bbox_to_anchor=(0.5, 0.01))
-    fig.text(0.5, 0.045,
-             "Node size ∝ active firms · Arrow width ∝ link count · "
-             "Arrow color: gray = static, orange = dynamic",
+    fig.text(0.5, 0.075,
+             "Arrow width proportional to link count",
              ha="center", fontsize=7, color="#555555")
     fig.suptitle("Supply Chain Network Evolution (Sector Level)", fontsize=13,
                  fontweight="bold")
-    fig.tight_layout(rect=[0, 0.09, 1, 1])
+    fig.tight_layout(rect=[0, 0.13, 1, 1])
 
-    out_path = f"simulation_{scenario_label_ts}_network_evolution.png"
+    out_path = Path(out_path) if out_path else Path(f"simulation_{scenario_label_ts}_network_evolution.png")
+    if out_path.suffix.lower() == ".json":
+        raise ValueError("Network evolution plot output path must not use a .json extension")
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    return out_path
+    if save_data:
+        _save_network_evolution_data(
+            out_path=Path(out_path).with_suffix(".json"),
+            snapshots=snapshots,
+            selected_indices=indices,
+            firm_meta=firm_meta,
+            sector_positions=sector_pos,
+            max_link_count=max_link_count,
+            max_sector_total=max_sector_total,
+            start_year=start_year,
+            steps_per_year=steps_per_year,
+        )
+    return str(out_path)
+
+
+def _save_network_evolution_data(
+    *,
+    out_path: Path,
+    snapshots: list[dict],
+    selected_indices: np.ndarray,
+    firm_meta: dict[int, dict],
+    sector_positions: dict[str, tuple[float, float]],
+    max_link_count: int,
+    max_sector_total: int,
+    start_year: int,
+    steps_per_year: int,
+) -> None:
+    """Persist topology snapshots used by the network-evolution figure."""
+    payload = {
+        "firm_meta": {
+            str(fid): {
+                "sector": meta["sector"],
+                "pos": list(meta["pos"]),
+            }
+            for fid, meta in firm_meta.items()
+        },
+        "sector_positions": {
+            sector: list(pos)
+            for sector, pos in sector_positions.items()
+        },
+        "selected_indices": [int(i) for i in selected_indices],
+        "max_link_count": int(max_link_count),
+        "max_sector_total": int(max_sector_total),
+        "start_year": int(start_year),
+        "steps_per_year": int(steps_per_year),
+        "snapshots": [
+            {
+                "step": int(snap["step"]),
+                "edges": [[int(src), int(dst)] for src, dst in snap["edges"]],
+                "active_ids": sorted(int(fid) for fid in snap["active_ids"]),
+                "inactive_ids": sorted(int(fid) for fid in snap["inactive_ids"]),
+            }
+            for snap in snapshots
+        ],
+    }
+    out_path.write_text(json.dumps(payload, indent=2))
+
+
+def _plot_network_evolution_from_json(
+    json_path: Path,
+    out_path: Path | None,
+    args,
+) -> str:
+    """Recreate a network-evolution figure from saved topology snapshots."""
+    payload = json.loads(json_path.read_text())
+
+    firm_meta = payload.get("firm_meta", {})
+    firms = []
+    for fid, meta in firm_meta.items():
+        firm = type("ReplayFirm", (), {})()
+        firm.unique_id = int(fid)
+        firm.pos = tuple(meta["pos"])
+        firm.sector = meta["sector"]
+        firms.append(firm)
+
+    snapshots = []
+    for snap in payload.get("snapshots", []):
+        snapshots.append({
+            "step": int(snap["step"]),
+            "edges": [(int(src), int(dst)) for src, dst in snap["edges"]],
+            "active_ids": frozenset(int(fid) for fid in snap["active_ids"]),
+            "inactive_ids": frozenset(int(fid) for fid in snap["inactive_ids"]),
+        })
+
+    replay_model = type("ReplayModel", (), {})()
+    replay_model._firms = firms
+    replay_model._topology_snapshots = snapshots
+
+    if not getattr(args, "start_year", 0):
+        args.start_year = int(payload.get("start_year", 0))
+    args.steps_per_year = int(payload.get("steps_per_year", getattr(args, "steps_per_year", 4)))
+
+    if out_path is None:
+        out_path = json_path.with_suffix(".png")
+    scenario_label = json_path.stem.removesuffix("_network_evolution")
+    plotted_path = _plot_network_evolution(
+        replay_model,
+        scenario_label,
+        args,
+        out_path=out_path,
+        save_data=False,
+    )
+    if plotted_path is None:
+        raise SystemExit(f"No topology snapshots found in {json_path}")
+    return plotted_path
 
 
 if __name__ == "__main__":

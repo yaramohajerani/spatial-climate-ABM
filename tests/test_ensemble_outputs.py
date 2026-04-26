@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from ensemble_utils import apply_metadata, build_ensemble_summary, ensemble_seed_metadata
 from plot_from_csv import summarize_members_for_plot
@@ -9,6 +10,7 @@ from run_simulation import (
     _base_metadata,
     _coerce_shock_inputs,
     _merge_market_structure_settings,
+    _plot_network_evolution_from_json,
     _resolve_seed_list,
 )
 from shock_inputs import (
@@ -33,7 +35,6 @@ def test_market_structure_cli_settings_override_parameter_file() -> None:
     args = SimpleNamespace(
         firm_replacement="none",
         dynamic_supplier_search=True,
-        max_dynamic_suppliers_per_sector=4,
     )
 
     _merge_market_structure_settings(
@@ -42,21 +43,18 @@ def test_market_structure_cli_settings_override_parameter_file() -> None:
             "firm_replacement": "startup_reset",
             "dynamic_supplier_search": {
                 "enabled": False,
-                "max_suppliers_per_sector": 1,
             },
         },
     )
 
     assert args.firm_replacement == "none"
     assert args.dynamic_supplier_search is True
-    assert args.max_dynamic_suppliers_per_sector == 4
 
 
 def test_market_structure_settings_fall_back_to_parameter_file() -> None:
     args = SimpleNamespace(
         firm_replacement=None,
         dynamic_supplier_search=None,
-        max_dynamic_suppliers_per_sector=None,
     )
 
     _merge_market_structure_settings(
@@ -65,14 +63,76 @@ def test_market_structure_settings_fall_back_to_parameter_file() -> None:
             "firm_replacement": "none",
             "dynamic_supplier_search": {
                 "enabled": False,
-                "max_suppliers_per_sector": 1,
             },
         },
     )
 
     assert args.firm_replacement == "none"
     assert args.dynamic_supplier_search is False
-    assert args.max_dynamic_suppliers_per_sector == 1
+
+
+def test_network_evolution_replay_does_not_overwrite_input_json(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MPLCONFIGDIR", str(tmp_path / "mpl"))
+    payload = {
+        "firm_meta": {
+            "1": {"sector": "commodity", "pos": [0, 0]},
+            "2": {"sector": "manufacturing", "pos": [1, 1]},
+        },
+        "start_year": 2000,
+        "steps_per_year": 4,
+        "snapshots": [
+            {
+                "step": 0,
+                "edges": [[1, 2]],
+                "active_ids": [1, 2],
+                "inactive_ids": [],
+            }
+        ],
+    }
+    json_path = tmp_path / "foo_network_evolution.json"
+    original = json.dumps(payload, indent=2)
+    json_path.write_text(original)
+
+    out_path = _plot_network_evolution_from_json(
+        json_path,
+        None,
+        SimpleNamespace(start_year=0, steps_per_year=4),
+    )
+
+    assert out_path == str(tmp_path / "foo_network_evolution.png")
+    assert (tmp_path / "foo_network_evolution.png").exists()
+    assert json_path.read_text() == original
+
+
+def test_network_evolution_replay_rejects_json_output_path(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MPLCONFIGDIR", str(tmp_path / "mpl"))
+    payload = {
+        "firm_meta": {
+            "1": {"sector": "commodity", "pos": [0, 0]},
+            "2": {"sector": "manufacturing", "pos": [1, 1]},
+        },
+        "snapshots": [
+            {
+                "step": 0,
+                "edges": [[1, 2]],
+                "active_ids": [1, 2],
+                "inactive_ids": [],
+            }
+        ],
+    }
+    json_path = tmp_path / "foo_network_evolution.json"
+    original = json.dumps(payload, indent=2)
+    json_path.write_text(original)
+
+    with pytest.raises(ValueError, match="must not use a .json extension"):
+        _plot_network_evolution_from_json(
+            json_path,
+            tmp_path / "bad_output.json",
+            SimpleNamespace(start_year=0, steps_per_year=4),
+        )
+
+    assert json_path.read_text() == original
+    assert not (tmp_path / "bad_output.json").exists()
 
 
 def test_member_summary_helpers_match_and_track_ensemble_size() -> None:
