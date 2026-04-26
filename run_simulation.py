@@ -1093,10 +1093,9 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
 
     Firms are aggregated to sector-level nodes arranged in a fixed circle.
     Arrow width encodes the number of firm-to-firm connections between each
-    sector pair; arrow color interpolates from gray (all static links) to orange
-    (all dynamic links).  Node size encodes active firm count; a red halo marks
-    firms that have failed.  This keeps the diagram readable even when hundreds
-    of firm-to-firm edges exist.
+    sector pair. Node size encodes active firm count; a red halo marks firms
+    that have failed. This keeps the diagram readable even when hundreds of
+    firm-to-firm edges exist.
     """
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
@@ -1147,7 +1146,7 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
     max_link_count = 1
     for snap in selected:
         counts: dict[tuple, int] = {}
-        for sup_id, buy_id, _ in snap["edges"]:
+        for sup_id, buy_id in snap["edges"]:
             if sup_id not in firm_meta or buy_id not in firm_meta:
                 continue
             key = (firm_meta[sup_id]["sector"], firm_meta[buy_id]["sector"])
@@ -1155,8 +1154,7 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
         if counts:
             max_link_count = max(max_link_count, max(counts.values()))
 
-    static_rgb = np.array([0.65, 0.65, 0.65])
-    dynamic_rgb = np.array([1.0, 0.50, 0.0])
+    link_color = "#808080"
 
     for panel_idx, snap in enumerate(selected):
         row, col = divmod(panel_idx, n_cols)
@@ -1182,8 +1180,8 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
                 sector_failed[s] += 1
 
         # Aggregate edges into sector pairs
-        sector_edges: dict[tuple[str, str], dict[str, int]] = {}
-        for sup_id, buy_id, is_dyn in edges:
+        sector_edges: dict[tuple[str, str], int] = {}
+        for sup_id, buy_id in edges:
             if sup_id not in firm_meta or buy_id not in firm_meta:
                 continue
             src_s = firm_meta[sup_id]["sector"]
@@ -1191,22 +1189,14 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
             if src_s == dst_s:
                 continue  # skip intra-sector self-loops for clarity
             key = (src_s, dst_s)
-            if key not in sector_edges:
-                sector_edges[key] = {"static": 0, "dynamic": 0}
-            if is_dyn:
-                sector_edges[key]["dynamic"] += 1
-            else:
-                sector_edges[key]["static"] += 1
+            sector_edges[key] = sector_edges.get(key, 0) + 1
 
         # Draw arrows between sector nodes
-        for (src_s, dst_s), counts in sector_edges.items():
+        for (src_s, dst_s), total in sector_edges.items():
             if src_s not in sector_pos or dst_s not in sector_pos:
                 continue
             sx, sy = sector_pos[src_s]
             ex, ey = sector_pos[dst_s]
-            total = counts["static"] + counts["dynamic"]
-            dyn_frac = counts["dynamic"] / total if total > 0 else 0.0
-            color = tuple((1 - dyn_frac) * static_rgb + dyn_frac * dynamic_rgb)
             lw = 0.8 + 5.5 * (total / max_link_count)
             # Alternate curve direction so bidirectional pairs don't overlap
             rad = 0.25 if src_s < dst_s else -0.25
@@ -1214,7 +1204,7 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
                 "", xy=(ex, ey), xytext=(sx, sy),
                 arrowprops=dict(
                     arrowstyle="-|>",
-                    color=color,
+                    color=link_color,
                     lw=lw,
                     connectionstyle=f"arc3,rad={rad}",
                     shrinkA=20, shrinkB=20,
@@ -1257,10 +1247,8 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
         else:
             title_time = f"Step {step}"
 
-        n_dyn_total = sum(e["dynamic"] for e in sector_edges.values())
-        n_static_total = sum(e["static"] for e in sector_edges.values())
-        ax.set_title(f"{title_time}\n{n_static_total} static · {n_dyn_total} dynamic links",
-                     fontsize=9)
+        n_links_total = sum(sector_edges.values())
+        ax.set_title(f"{title_time}\n{n_links_total} supplier links", fontsize=9)
 
     # Hide unused subplot cells
     for panel_idx in range(n_panels, n_rows * n_cols):
@@ -1272,10 +1260,8 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
         mpatches.Patch(facecolor=sec_color[s], edgecolor="black", linewidth=0.5, label=s)
         for s in unique_sectors
     ]
-    legend_handles.append(mlines.Line2D([], [], color=tuple(static_rgb), linewidth=2.5,
-                                        label="static links"))
-    legend_handles.append(mlines.Line2D([], [], color=tuple(dynamic_rgb), linewidth=2.5,
-                                        label="dynamic links"))
+    legend_handles.append(mlines.Line2D([], [], color=link_color, linewidth=2.5,
+                                        label="supplier links"))
     legend_handles.append(mpatches.Patch(facecolor="#cc0000", alpha=0.22, edgecolor="none",
                                          label="failed firm halo"))
 
@@ -1283,8 +1269,7 @@ def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
                ncol=min(len(legend_handles), 6), fontsize=8,
                bbox_to_anchor=(0.5, 0.01))
     fig.text(0.5, 0.045,
-             "Node size ∝ active firms · Arrow width ∝ link count · "
-             "Arrow color: gray = static, orange = dynamic",
+             "Node size proportional to active firms · Arrow width proportional to link count",
              ha="center", fontsize=7, color="#555555")
     fig.suptitle("Supply Chain Network Evolution (Sector Level)", fontsize=13,
                  fontweight="bold")

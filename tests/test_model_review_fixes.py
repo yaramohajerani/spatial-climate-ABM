@@ -309,9 +309,11 @@ def test_dynamic_supplier_search_adds_active_same_recipe_sector_edges() -> None:
     buyer = next(f for f in model._firms if f.sector == "services")
     sector = "manufacturing"
     model.dynamic_supplier_search_enabled = True
-    model.max_dynamic_suppliers_per_sector = 1
 
     primary_ids = {supplier.unique_id for supplier in buyer.connected_firms}
+    model.max_dynamic_suppliers_per_sector = (
+        sum(1 for supplier in buyer.connected_firms if supplier.sector == sector) + 1
+    )
     active_candidate = next(
         firm
         for firm in model._firms_by_sector[sector]
@@ -335,7 +337,34 @@ def test_dynamic_supplier_search_adds_active_same_recipe_sector_edges() -> None:
     assert active_candidate in buyer.connected_firms
     assert inactive_candidate not in buyer.connected_firms
     assert second_attempt == []
-    assert model.total_dynamic_supplier_edges == 1
+    assert model.total_supplier_link_changes == 1
+
+
+def test_dynamic_supplier_search_can_replace_topology_supplier_edges() -> None:
+    model = _build_model()
+    buyer = next(f for f in model._firms if f.sector == "services")
+    sector = "manufacturing"
+    model.dynamic_supplier_search_enabled = True
+    model.max_dynamic_suppliers_per_sector = 1
+
+    old_supplier = next(supplier for supplier in buyer.connected_firms if supplier.sector == sector)
+    new_supplier = next(
+        firm
+        for firm in model._firms_by_sector[sector]
+        if firm is not old_supplier and firm not in buyer.connected_firms
+    )
+    old_supplier.inventory_output = 0.0
+    old_supplier.production = 0.0
+    new_supplier.inventory_output = 5.0
+    new_supplier.production = 0.0
+    new_supplier.price = 0.2
+
+    new_suppliers = model.add_dynamic_supplier_edges(buyer, sector)
+
+    assert new_suppliers == [new_supplier]
+    assert old_supplier not in buyer.connected_firms
+    assert new_supplier in buyer.connected_firms
+    assert model.total_supplier_link_changes == 1
 
 
 def test_topology_missing_recipe_supplier_warns_without_rewriting(tmp_path) -> None:

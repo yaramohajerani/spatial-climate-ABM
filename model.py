@@ -140,8 +140,7 @@ class EconomyModel(Model):
         self.dynamic_supplier_search_enabled: bool = bool(dynamic_supplier_search)
         self.max_dynamic_suppliers_per_sector: int = max(0, int(max_dynamic_suppliers_per_sector))
         self.total_firm_exits: int = 0
-        self.total_dynamic_supplier_edges: int = 0
-        self._dynamic_supplier_pairs: set[tuple[int, int]] = set()
+        self.total_supplier_link_changes: int = 0
         self._topology_snapshots: list[dict] = []
         self.adaptation_observation_radius: int = int(self.adaptation_config.get("observation_radius", 4))
         self.adaptation_updates_this_step: int = 0
@@ -353,7 +352,7 @@ class EconomyModel(Model):
                 "Firm_Replacements": lambda m: getattr(m, 'total_firm_replacements', 0),
                 "Firm_Exits": lambda m: getattr(m, 'total_firm_exits', 0),
                 "Active_Firms": lambda m: sum(1 for f in m._firms if f.active),
-                "Dynamic_Supplier_Edges": lambda m: getattr(m, 'total_dynamic_supplier_edges', 0),
+                "Supplier_Link_Changes": lambda m: getattr(m, 'total_supplier_link_changes', 0),
                 "Total_Sales": lambda m: sum(f.sales_last_step for f in m._firms),
                 "Total_Firms": lambda m: len(m._firms),
                 "Flooded_Firms": lambda m: sum(1 for f in m._firms if m.hazard_map.get(f.pos, 0) > 0),
@@ -750,13 +749,10 @@ class EconomyModel(Model):
         if max_count <= 0 or not buyer.active:
             return []
 
-        dynamic_sector_suppliers = [
+        sector_suppliers = [
             supplier for supplier in buyer.connected_firms
             if supplier.sector == sector
-            and (supplier.unique_id, buyer.unique_id) in self._dynamic_supplier_pairs
         ]
-        if len(dynamic_sector_suppliers) >= max_count:
-            return []
 
         existing_ids = {supplier.unique_id for supplier in buyer.connected_firms}
         candidates: List[FirmAgent] = []
@@ -780,14 +776,30 @@ class EconomyModel(Model):
                 abs(supplier.pos[0] - bx) + abs(supplier.pos[1] - by),
             )
         )
-        slots = max_count - len(dynamic_sector_suppliers)
+        slots = max_count - len(sector_suppliers)
+        if slots <= 0:
+            replaceable_suppliers = [
+                supplier for supplier in sector_suppliers
+                if (not supplier.active)
+                or (supplier.inventory_output <= 1e-9 and supplier.production <= 1e-9)
+            ]
+            if not replaceable_suppliers:
+                return []
+            replaceable_suppliers.sort(
+                key=lambda supplier: (
+                    supplier.active,
+                    supplier.inventory_output > 1e-9 or supplier.production > 1e-9,
+                    -supplier.price,
+                )
+            )
+            remove_supplier = replaceable_suppliers[0]
+            buyer.connected_firms.remove(remove_supplier)
+            slots = 1
+
         new_suppliers: List[FirmAgent] = []
         for supplier in candidates[:slots]:
             buyer.connected_firms.append(supplier)
-            pair = (supplier.unique_id, buyer.unique_id)
-            if pair not in self._dynamic_supplier_pairs:
-                self._dynamic_supplier_pairs.add(pair)
-                self.total_dynamic_supplier_edges += 1
+            self.total_supplier_link_changes += 1
             new_suppliers.append(supplier)
         return new_suppliers
 
@@ -1844,11 +1856,10 @@ class EconomyModel(Model):
 
     def _record_topology_snapshot(self) -> None:
         """Capture the current supply-chain graph for later visualisation."""
-        edges: list[tuple[int, int, bool]] = []
+        edges: list[tuple[int, int]] = []
         for firm in self._firms:
             for supplier in firm.connected_firms:
-                is_dynamic = (supplier.unique_id, firm.unique_id) in self._dynamic_supplier_pairs
-                edges.append((supplier.unique_id, firm.unique_id, is_dynamic))
+                edges.append((supplier.unique_id, firm.unique_id))
         self._topology_snapshots.append({
             "step": self.current_step,
             "edges": edges,
