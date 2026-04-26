@@ -2005,7 +2005,18 @@ class EconomyModel(Model):
         self,
     ) -> tuple[list[Coords], list[tuple[float, float]], dict[Coords, int]]:
         """Return cached unique occupied cells and their raster sample points."""
-        signature = tuple(ag.pos for ag in self._firms) + tuple(ag.pos for ag in self._households)
+        agents = tuple(self._firms) + tuple(self._households)
+        for ag in agents:
+            if ag.pos is None:
+                agent_info = f"Agent {ag.unique_id} (type: {type(ag).__name__})"
+                recent_replacements = getattr(self, '_debug_recent_replacements', [])
+                was_replaced = ag.unique_id in recent_replacements
+                raise ValueError(f"{agent_info} has None position. "
+                               f"Recently replaced: {was_replaced}. "
+                               f"Recent replacements: {recent_replacements[-5:]}. "
+                               f"This likely indicates a bug in agent creation or placement.")
+
+        signature = tuple(ag.pos for ag in agents)
         if signature == self._hazard_sample_signature:
             return (
                 self._hazard_sample_cell_coords,
@@ -2061,27 +2072,35 @@ class EconomyModel(Model):
         if not active_events:
             return cell_intensities
 
-        # Nested exceedance layers: common events have larger p_hit, rarer and
-        # usually more severe layers have smaller p_hit. A single uniform draw
-        # per hazard type and step chooses the rarest threshold exceeded.
-        active_events.sort(key=lambda item: item[1], reverse=True)
+        # A single uniform draw per hazard type and step chooses the rarest
+        # exceeded threshold. Sort rare-to-common so the first match is the
+        # selected severity rather than relying on overwrite order.
+        active_events.sort(key=lambda item: item[1])
         severity_draw = float(np.random.random())
-        selected_event_idx = -1
+        selected_event: tuple[int, float] | None = None
 
         for idx_ev, p_hit in active_events:
             if severity_draw < p_hit:
-                selected_event_idx = idx_ev
+                selected_event = (idx_ev, p_hit)
+                break
 
-        if selected_event_idx < 0:
+        if selected_event is None:
             return cell_intensities
 
-        sampled_depths = np.asarray(haz.sample_at_coords(geo_coords, selected_event_idx), dtype=np.float64)
-        if sampled_depths.shape != (n_agent_cells,):
-            raise ValueError(
-                f"Hazard sampler returned shape {sampled_depths.shape}; "
-                f"expected ({n_agent_cells},) for event {selected_event_idx}."
-            )
-        return sampled_depths
+        _selected_idx, selected_p_hit = selected_event
+        nested_depths = np.zeros(n_agent_cells, dtype=np.float64)
+        for idx_ev, p_hit in active_events:
+            if p_hit < selected_p_hit:
+                continue
+            sampled_depths = np.asarray(haz.sample_at_coords(geo_coords, idx_ev), dtype=np.float64)
+            if sampled_depths.shape != (n_agent_cells,):
+                raise ValueError(
+                    f"Hazard sampler returned shape {sampled_depths.shape}; "
+                    f"expected ({n_agent_cells},) for event {idx_ev}."
+                )
+            nested_depths = np.maximum(nested_depths, sampled_depths)
+
+        return nested_depths
 
     def _sample_pixelwise_hazard(self) -> None:
         """Sample hazard only at agent locations using lazy loading.
