@@ -17,8 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--param-file", type=str, required=True, help="JSON parameter file")
     parser.add_argument("--steps", type=int, default=None, help="Override step count from parameter file")
     parser.add_argument("--no-hazards", action="store_true", help="Disable hazard impacts")
-    parser.add_argument("--no-adaptation", action="store_true", help="Disable hazard-conditional adaptation/reorganization")
-    parser.add_argument("--no-learning", action="store_true", help="Deprecated alias for --no-adaptation")
+    parser.add_argument("--no-adaptation", action="store_true", help="Disable hazard-conditional adaptation")
     parser.add_argument("--tail-window", type=int, default=20, help="Window for tail activity summaries")
     parser.add_argument(
         "--money-tolerance",
@@ -52,8 +51,8 @@ def parse_args() -> argparse.Namespace:
 
 def build_model(args: argparse.Namespace) -> tuple[EconomyModel, int]:
     params = json.loads(Path(args.param_file).read_text())
-    adaptation_config = dict(params.get("adaptation", params.get("learning", {})))
-    if args.no_adaptation or args.no_learning:
+    adaptation_config = dict(params.get("adaptation", {}))
+    if args.no_adaptation:
         adaptation_config["enabled"] = False
 
     steps = int(args.steps if args.steps is not None else params.get("steps", 50))

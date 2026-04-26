@@ -9,6 +9,13 @@ from model import EconomyModel
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+SAMPLE_INPUT_RECIPE_RANGES = {
+    "agriculture": {},
+    "manufacturing": {"agriculture": [1.0, 1.0]},
+    "services": {"manufacturing": [1.0, 1.0]},
+    "retail": {"services": [1.0, 1.0]},
+}
+
 
 def _build_model(
     *,
@@ -27,6 +34,7 @@ def _build_model(
             apply_hazard_impacts=False,
             adaptation_params=adaptation_params or {"enabled": False},
             consumption_ratios=consumption_ratios or {"services": 0.7, "retail": 0.3},
+            input_recipe_ranges=SAMPLE_INPUT_RECIPE_RANGES,
             household_relocation=household_relocation,
         )
 
@@ -39,7 +47,7 @@ def test_zero_household_payout_paths_do_not_leak_money() -> None:
     initial_total_money = model.total_money()
 
     capital_spending = firm._install_capital(25.0)
-    firm._pay_dividends(positive_profit=40.0, operating_cash_reserve=0.0)
+    firm._pay_dividends(distributable_earnings=40.0, operating_cash_reserve=0.0)
     firm.continuity_capital = 0.5
     firm.pending_adaptation_increment = 0.2
     maintenance_spending, investment_spending = firm._fund_adaptation_after_operations(
@@ -78,6 +86,7 @@ def test_effective_configuration_metadata_tracks_filtered_demand_and_capital_flo
             apply_hazard_impacts=False,
             adaptation_params={"enabled": False},
             consumption_ratios={"manufacturing": 0.4, "services": 0.6},
+            input_recipe_ranges=SAMPLE_INPUT_RECIPE_RANGES,
             household_relocation=False,
         )
         filtered_metadata = filtered_model.effective_configuration_metadata()
@@ -89,6 +98,7 @@ def test_effective_configuration_metadata_tracks_filtered_demand_and_capital_flo
             apply_hazard_impacts=False,
             adaptation_params={"enabled": False},
             consumption_ratios={"services": 0.7, "retail": 0.3},
+            input_recipe_ranges=SAMPLE_INPUT_RECIPE_RANGES,
             household_relocation=False,
         )
         default_metadata = default_model.effective_configuration_metadata()
@@ -155,7 +165,7 @@ def test_finance_constraints_get_their_own_limiting_factor() -> None:
     assert firm.limiting_factor == "finance"
 
 
-def test_recovery_is_applied_before_planning_and_not_after_close_step() -> None:
+def test_recovery_is_applied_after_close_step_and_not_before_planning() -> None:
     model = _build_model()
     firm = model._firms[0]
     observed_damage_during_planning: list[float] = []
@@ -173,8 +183,200 @@ def test_recovery_is_applied_before_planning_and_not_after_close_step() -> None:
     model.step()
 
     assert observed_damage_during_planning
-    assert observed_damage_during_planning[0] > 0.5
-    assert np.isclose(firm.damage_factor, observed_damage_during_planning[0], atol=1e-9)
+    assert np.isclose(observed_damage_during_planning[0], 0.5, atol=1e-9)
+    assert firm.damage_factor > observed_damage_during_planning[0]
+
+
+def test_inputs_from_different_supplier_sectors_do_not_substitute() -> None:
+    model = _build_model()
+    model.dynamic_supplier_search_enabled = False
+    buyer = next(f for f in model._firms if f.sector == "services")
+    agriculture_supplier = next(f for f in model._firms if f.sector == "agriculture")
+    manufacturing_supplier = next(
+        f for f in model._firms if f.sector == "manufacturing" and f is not buyer
+    )
+
+    buyer.connected_firms = [agriculture_supplier, manufacturing_supplier]
+    buyer.inventory_inputs.clear()
+    buyer.inventory_inputs[agriculture_supplier.unique_id] = 10.0
+    buyer.inventory_inputs[manufacturing_supplier.unique_id] = 0.0
+    buyer.target_output = 10.0
+    buyer.demand_driven_output = 10.0
+    buyer.capital_stock = 1_000.0
+    buyer.capital_coeff = 1.0
+    buyer.LABOR_COEFF = 0.0
+    buyer.INPUT_COEFF = 1.0
+    buyer.damage_factor = 1.0
+    buyer.counterfactual_damage_factor = 1.0
+    buyer.price = 1.0
+    buyer.wage_offer = 1.0
+    agriculture_supplier.inventory_output = 0.0
+    manufacturing_supplier.inventory_output = 0.0
+    manufacturing_supplier.raw_direct_loss_fraction_this_step = 0.3
+
+    buyer.step()
+
+    assert np.isclose(buyer.production, 0.0, atol=1e-9)
+    assert buyer.raw_supplier_disruption_this_step > 0.0
+
+
+def test_inputs_within_same_supplier_sector_remain_substitutable() -> None:
+    model = _build_model()
+    buyer = next(f for f in model._firms if f.sector == "services")
+    manufacturing_suppliers = [f for f in model._firms if f.sector == "manufacturing" and f is not buyer]
+    supplier_a, supplier_b = manufacturing_suppliers[:2]
+
+    buyer.connected_firms = [supplier_a, supplier_b]
+    buyer.inventory_inputs.clear()
+    buyer.inventory_inputs[supplier_a.unique_id] = 10.0
+    buyer.inventory_inputs[supplier_b.unique_id] = 0.0
+    buyer.target_output = 10.0
+    buyer.demand_driven_output = 10.0
+    buyer.capital_stock = 1_000.0
+    buyer.capital_coeff = 1.0
+    buyer.LABOR_COEFF = 0.0
+    buyer.INPUT_COEFF = 1.0
+    buyer.damage_factor = 1.0
+    buyer.counterfactual_damage_factor = 1.0
+    buyer.price = 1.0
+    buyer.wage_offer = 1.0
+    supplier_a.inventory_output = 0.0
+    supplier_b.inventory_output = 0.0
+
+    buyer.step()
+
+    assert np.isclose(buyer.production, 10.0, atol=1e-9)
+    assert np.isclose(buyer.raw_supplier_disruption_this_step, 0.0, atol=1e-9)
+
+
+def test_same_sector_lateral_links_do_not_create_required_input_categories() -> None:
+    model = _build_model()
+    buyer = next(f for f in model._firms if f.sector == "manufacturing")
+    agriculture_supplier = next(f for f in model._firms if f.sector == "agriculture")
+    lateral_supplier = next(
+        f for f in model._firms
+        if f.sector == "manufacturing" and f is not buyer
+    )
+
+    buyer.connected_firms = [agriculture_supplier, lateral_supplier]
+    buyer.input_recipe_shares = {"agriculture": 1.0}
+    buyer.inventory_inputs.clear()
+    buyer.inventory_inputs[agriculture_supplier.unique_id] = 10.0
+    buyer.inventory_inputs[lateral_supplier.unique_id] = 0.0
+    buyer.target_output = 10.0
+    buyer.demand_driven_output = 10.0
+    buyer.capital_stock = 1_000.0
+    buyer.capital_coeff = 1.0
+    buyer.LABOR_COEFF = 0.0
+    buyer.INPUT_COEFF = 1.0
+    buyer.damage_factor = 1.0
+    buyer.counterfactual_damage_factor = 1.0
+    buyer.price = 1.0
+    buyer.wage_offer = 1.0
+
+    buyer.step()
+
+    assert np.isclose(buyer.production, 10.0, atol=1e-9)
+    assert np.isclose(buyer.raw_supplier_disruption_this_step, 0.0, atol=1e-9)
+
+
+def test_input_using_firms_without_suppliers_are_input_limited() -> None:
+    model = _build_model()
+    model.dynamic_supplier_search_enabled = False
+    firm = next(f for f in model._firms if f.sector == "services")
+
+    firm.connected_firms = []
+    firm.inventory_inputs.clear()
+    firm.target_output = 10.0
+    firm.demand_driven_output = 10.0
+    firm.capital_stock = 1_000.0
+    firm.capital_coeff = 1.0
+    firm.LABOR_COEFF = 0.0
+    firm.INPUT_COEFF = 1.0
+    firm.damage_factor = 1.0
+    firm.counterfactual_damage_factor = 1.0
+    firm.price = 1.0
+    firm.wage_offer = 1.0
+
+    firm.step()
+
+    assert np.isclose(firm.production, 0.0, atol=1e-9)
+    assert firm.limiting_factor == "input"
+
+
+def test_dynamic_supplier_search_adds_active_same_recipe_sector_edges() -> None:
+    model = _build_model()
+    buyer = next(f for f in model._firms if f.sector == "services")
+    sector = "manufacturing"
+    model.dynamic_supplier_search_enabled = True
+    model.max_dynamic_suppliers_per_sector = 1
+
+    primary_ids = {supplier.unique_id for supplier in buyer.connected_firms}
+    active_candidate = next(
+        firm
+        for firm in model._firms_by_sector[sector]
+        if firm.unique_id not in primary_ids
+    )
+    inactive_candidate = next(
+        firm
+        for firm in model._firms_by_sector[sector]
+        if firm.unique_id not in primary_ids and firm is not active_candidate
+    )
+    active_candidate.inventory_output = 5.0
+    active_candidate.price = 0.2
+    inactive_candidate.active = False
+    inactive_candidate.inventory_output = 100.0
+    inactive_candidate.price = 0.1
+
+    new_suppliers = model.add_dynamic_supplier_edges(buyer, sector)
+    second_attempt = model.add_dynamic_supplier_edges(buyer, sector)
+
+    assert new_suppliers == [active_candidate]
+    assert active_candidate in buyer.connected_firms
+    assert inactive_candidate not in buyer.connected_firms
+    assert second_attempt == []
+    assert model.total_dynamic_supplier_edges == 1
+
+
+def test_topology_missing_recipe_supplier_warns_without_rewriting(tmp_path) -> None:
+    topology = {
+        "firms": [
+            {"id": 1, "sector": "agriculture", "lon": 90.4, "lat": 23.7, "capital": 5.0},
+            {"id": 2, "sector": "manufacturing", "lon": -90.0, "lat": 29.9, "capital": 3.0},
+            {"id": 3, "sector": "manufacturing", "lon": -91.3, "lat": 30.4, "capital": 3.0},
+        ],
+        "edges": [
+            {"src": 3, "dst": 2},
+        ],
+    }
+    topology_path = tmp_path / "same_sector_only_topology.json"
+    topology_path.write_text(json.dumps(topology))
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", RuntimeWarning)
+        model = EconomyModel(
+            num_households=20,
+            hazard_events=[],
+            seed=42,
+            firm_topology_path=str(topology_path),
+            apply_hazard_impacts=False,
+            adaptation_params={"enabled": False},
+            consumption_ratios={"manufacturing": 1.0},
+            input_recipe_ranges={
+                "agriculture": {},
+                "manufacturing": {
+                    "agriculture": [0.5, 0.5],
+                    "manufacturing": [0.5, 0.5],
+                },
+            },
+            household_relocation=False,
+        )
+    buyer = next(firm for firm in model._firms if getattr(firm, "topology_id", None) == 2)
+
+    assert not any(supplier.sector == "agriculture" for supplier in buyer.connected_firms)
+    assert any(supplier.sector == "manufacturing" for supplier in buyer.connected_firms)
+    assert set(buyer._input_coefficients_by_sector()) == {"agriculture", "manufacturing"}
+    assert any("requires input sector 'agriculture'" in str(item.message) for item in caught)
 
 
 def test_reserved_capacity_contracts_only_reserve_on_hand_inventory() -> None:

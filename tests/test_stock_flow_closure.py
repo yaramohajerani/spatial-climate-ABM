@@ -8,6 +8,13 @@ from model import EconomyModel
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+SAMPLE_INPUT_RECIPE_RANGES = {
+    "agriculture": {},
+    "manufacturing": {"agriculture": [1.0, 1.0]},
+    "services": {"manufacturing": [1.0, 1.0]},
+    "retail": {"services": [1.0, 1.0]},
+}
+
 
 def build_closed_economy_model(*, adaptation_enabled: bool, adaptation_strategy: str = "backup_suppliers") -> EconomyModel:
     """Return a small no-hazard economy for accounting and adaptation tests."""
@@ -33,6 +40,7 @@ def build_closed_economy_model(*, adaptation_enabled: bool, adaptation_strategy:
             "replacement_frequency": 10,
         },
         consumption_ratios={"services": 0.7, "retail": 0.3},
+        input_recipe_ranges=SAMPLE_INPUT_RECIPE_RANGES,
         household_relocation=False,
     )
 
@@ -102,7 +110,9 @@ def test_adaptation_spending_is_deferred_and_returned_to_households() -> None:
     assert np.isclose(firm.resilience_capital, decayed_resilience, atol=1e-9)
 
     firm._fund_adaptation_after_operations(available_cash=50.0, investable_profit=50.0)
-    household_adaptation_income = sum(h.adaptation_income_this_step for h in model._households)
+    household_adaptation_income = sum(
+        h.adaptation_income_received_this_step for h in model._households
+    )
 
     assert firm.adaptation_spending_this_step > 0.0
     assert firm.money < 200.0
@@ -118,7 +128,7 @@ def test_firms_replace_base_capital_before_paying_dividends() -> None:
 
     firm.money = 200.0
     firm.base_capital_target = 100.0
-    firm.target_capital_stock = 120.0
+    firm.target_capital_stock = 100.0
     firm.capital_stock = 90.0
     firm.revenue_this_step = 20.0
     firm.wage_bill_this_step = 0.0
@@ -129,9 +139,68 @@ def test_firms_replace_base_capital_before_paying_dividends() -> None:
     initial_total_money = model.total_money()
     firm.close_step()
 
-    assert np.isclose(firm.investment_spending_this_step, 15.0, atol=1e-9)
-    assert np.isclose(firm.capital_stock, 105.0, atol=1e-9)
-    assert np.isclose(firm.dividends_paid_this_step, 5.0, atol=1e-9)
+    assert np.isclose(firm.investment_spending_this_step, 10.0, atol=1e-9)
+    assert np.isclose(firm.capital_stock, 100.0, atol=1e-9)
+    assert np.isclose(firm.dividends_paid_this_step, 10.0, atol=1e-9)
+    assert np.isclose(model.total_money(), initial_total_money, atol=1e-9)
+
+
+def test_direct_losses_defer_repair_and_block_same_step_discretionary_payouts() -> None:
+    """Disaster losses should block same-step repair, adaptation, and dividends."""
+    model = build_closed_economy_model(adaptation_enabled=True)
+    firm = model._firms[0]
+
+    firm.money = 200.0
+    firm.base_capital_target = 100.0
+    firm.target_capital_stock = 120.0
+    firm.capital_stock = 90.0
+    firm.continuity_capital = 0.5
+    firm.pending_adaptation_increment = 0.10
+    firm.revenue_this_step = 40.0
+    firm.wage_bill_this_step = 0.0
+    firm.input_spend_this_step = 0.0
+    firm.depreciation_this_step = 0.0
+    firm.direct_loss_expense_this_step = 25.0
+    firm._liquidity_buffer = 0.0
+
+    firm.close_step()
+
+    assert np.isclose(firm.operating_surplus_this_step, 40.0, atol=1e-9)
+    assert np.isclose(firm.net_profit_this_step, 15.0, atol=1e-9)
+    assert firm.deferred_capital_repair is True
+    assert np.isclose(firm.investment_spending_this_step, 0.0, atol=1e-9)
+    assert np.isclose(firm.adaptation_spending_this_step, 0.0, atol=1e-9)
+    assert np.isclose(firm.dividends_paid_this_step, 0.0, atol=1e-9)
+    assert np.isclose(firm.capital_stock, 90.0, atol=1e-9)
+    assert np.isclose(firm.money, 200.0, atol=1e-9)
+
+
+def test_deferred_capital_repair_spends_cash_at_start_of_next_step() -> None:
+    """Deferred repair should use cash next step and recycle spending to households."""
+    model = build_closed_economy_model(adaptation_enabled=False)
+    firm = model._firms[0]
+
+    for household in model._households:
+        household.begin_step_income_accounting()
+    firm.begin_step_financial_accounting()
+
+    firm.money = 200.0
+    firm.base_capital_target = 100.0
+    firm.capital_stock = 90.0
+    firm.deferred_capital_repair = True
+
+    initial_total_money = model.total_money()
+    repair_spending = firm._fund_deferred_capital_repair_before_planning()
+    household_capital_income = sum(
+        h.capital_income_received_this_step for h in model._households
+    )
+
+    assert np.isclose(repair_spending, 10.0, atol=1e-9)
+    assert np.isclose(firm.investment_spending_this_step, 10.0, atol=1e-9)
+    assert np.isclose(firm.capital_stock, 100.0, atol=1e-9)
+    assert np.isclose(firm.money, 190.0, atol=1e-9)
+    assert firm.deferred_capital_repair is False
+    assert np.isclose(household_capital_income, repair_spending, atol=1e-9)
     assert np.isclose(model.total_money(), initial_total_money, atol=1e-9)
 
 
@@ -217,6 +286,7 @@ def test_none_hazard_entries_allow_explicit_warmup_windows() -> None:
         apply_hazard_impacts=True,
         adaptation_params={"enabled": False},
         consumption_ratios={"services": 0.7, "retail": 0.3},
+        input_recipe_ranges=SAMPLE_INPUT_RECIPE_RANGES,
         household_relocation=False,
     )
 
@@ -230,8 +300,8 @@ def test_none_hazard_entries_allow_explicit_warmup_windows() -> None:
     assert np.allclose(df["Flooded_Households"].to_numpy(), 0.0, atol=1e-12)
 
 
-def test_firm_reorganization_preserves_total_money_and_inherits_adaptation_state() -> None:
-    """Reorganization should keep money closed and copy parent adaptation state."""
+def test_startup_reset_preserves_total_money_and_restores_startup_state() -> None:
+    """Reorganization should keep money closed and restore startup operating state."""
     model = build_closed_economy_model(adaptation_enabled=True)
 
     for _ in range(6):
@@ -241,30 +311,72 @@ def test_firm_reorganization_preserves_total_money_and_inherits_adaptation_state
     failed_firm, parent = retail_firms[:2]
     for candidate in retail_firms[2:]:
         candidate.money = 0.0
-    parent.resilience_capital = 0.4
-    parent.expected_direct_loss_ewma = 0.2
-    parent.realized_direct_loss_ewma = 0.15
-    parent.local_observed_loss_ewma = 0.1
-    parent.supplier_disruption_ewma = 0.1
-    parent.adaptation_sensitivity = 3.5
-    parent.last_adaptation_target = 0.45
-    parent.last_perceived_hazard_risk = 0.12
 
+    startup_money = failed_firm.startup_money
+    startup_capital = failed_firm.startup_capital_stock
+    startup_inventory = failed_firm.startup_inventory_target
+    startup_price = failed_firm.startup_price
+    startup_wage = failed_firm.startup_wage_offer
     failed_firm.money = 0.0
+    failed_firm.capital_stock = 0.1
+    failed_firm.inventory_output = 0.0
+    failed_firm.inventory_inputs[parent.unique_id] = 5.0
+    failed_firm.price = 1_000.0
+    failed_firm.wage_offer = 50.0
+    for supplier in failed_firm.connected_firms:
+        supplier.price = 1_000_000.0
+    failed_firm.resilience_capital = 0.4
+    failed_firm.expected_direct_loss_ewma = 0.2
+    failed_firm.realized_direct_loss_ewma = 0.15
+    failed_firm.local_observed_loss_ewma = 0.1
+    failed_firm.supplier_disruption_ewma = 0.1
+    failed_firm.last_adaptation_target = 0.45
+    failed_firm.last_perceived_hazard_risk = 0.12
     initial_total_money = model.total_money()
 
-    model._apply_firm_reorganization()
+    model._apply_firm_failure_policy()
 
     assert model.total_firm_replacements >= 1
     assert np.isclose(model.total_money(), initial_total_money, atol=1e-6)
-    assert np.isclose(failed_firm.resilience_capital, parent.resilience_capital, atol=1e-9)
-    assert failed_firm.expected_direct_loss_ewma == parent.expected_direct_loss_ewma
-    assert failed_firm.realized_direct_loss_ewma == parent.realized_direct_loss_ewma
-    assert failed_firm.local_observed_loss_ewma == parent.local_observed_loss_ewma
-    assert failed_firm.supplier_disruption_ewma == parent.supplier_disruption_ewma
-    assert np.isclose(failed_firm.adaptation_sensitivity, parent.adaptation_sensitivity, atol=1e-9)
-    assert np.isclose(failed_firm.last_adaptation_target, parent.last_adaptation_target, atol=1e-9)
-    assert np.isclose(failed_firm.last_perceived_hazard_risk, parent.last_perceived_hazard_risk, atol=1e-9)
+    assert np.isclose(failed_firm.money, startup_money, atol=1e-6)
+    assert np.isclose(failed_firm.capital_stock, startup_capital, atol=1e-9)
+    assert np.isclose(failed_firm.inventory_output, startup_inventory, atol=1e-9)
+    assert np.isclose(failed_firm.price, startup_price, atol=1e-9)
+    assert np.isclose(failed_firm.wage_offer, startup_wage, atol=1e-9)
+    assert not failed_firm.inventory_inputs
+    assert np.isclose(failed_firm.resilience_capital, 0.0, atol=1e-9)
+    assert failed_firm.expected_direct_loss_ewma == 0.0
+    assert failed_firm.realized_direct_loss_ewma == 0.0
+    assert failed_firm.local_observed_loss_ewma == 0.0
+    assert failed_firm.supplier_disruption_ewma == 0.0
+    assert failed_firm.last_adaptation_target == 0.0
+    assert failed_firm.last_perceived_hazard_risk == 0.0
+
+
+def test_no_replacement_deactivates_failed_firm_without_recapitalization() -> None:
+    """No-replacement mode should remove failed firms from active markets."""
+    model = build_closed_economy_model(adaptation_enabled=False)
+    model.firm_replacement = "none"
+    model.current_step = 5
+    failed_firm = model._firms[0]
+
+    for firm in model._firms:
+        firm.money = 100.0
+    failed_firm.money = 0.0
+    failed_firm.inventory_output = 10.0
+    failed_firm.target_labor = 1
+    initial_total_money = model.total_money()
+
+    model._apply_firm_failure_policy()
+
+    assert model.total_firm_exits == 1
+    assert model.total_firm_replacements == 0
+    assert np.isclose(model.total_money(), initial_total_money, atol=1e-9)
+    assert not failed_firm.active
+    assert failed_firm.inventory_output == 0.0
+    assert failed_firm.limiting_factor == "inactive"
+    assert failed_firm.sell_goods_to_household(model._households[0], 1.0) == 0.0
+    assert not failed_firm.hire_labor(model._households[0], failed_firm.wage_offer)
 
 
 def test_adapted_loss_fraction_strategy_dependent() -> None:
@@ -646,7 +758,10 @@ def test_reserved_capacity_contracts_reserve_inventory_and_cap_price() -> None:
     assert model.available_inventory_for_spot_sales(backup) < backup.inventory_output
 
     initial_total_money = model.total_money()
-    remaining_needed, reserved_purchases, reserved_savings = buyer._purchase_from_reserved_capacity(5.0)
+    remaining_needed, reserved_purchases, reserved_savings = buyer._purchase_from_reserved_capacity(
+        primary_supplier.sector,
+        5.0,
+    )
 
     assert remaining_needed < 5.0
     assert reserved_purchases > 0.0

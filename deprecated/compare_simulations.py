@@ -120,8 +120,8 @@ def _merge_param_file(args):  # noqa: ANN001
     if not args.topology and data.get("topology"):
         args.topology = str(data["topology"])
     
-    # learning parameters ---------------------------------------------
-    args.learning_params = data.get("learning", {})
+    # adaptation parameters -------------------------------------------
+    args.adaptation_params = data.get("adaptation", {})
 
 
 def run_simulation(model: EconomyModel, n_steps: int):
@@ -136,9 +136,8 @@ def main():
     # Merge optional config file
     _merge_param_file(args)
     
-    # Ensure learning_params exists even if no param file
-    if not hasattr(args, "learning_params"):
-        args.learning_params = {}
+    if not hasattr(args, "adaptation_params"):
+        args.adaptation_params = {}
 
     if not args.simulation_output and not args.rp_file:
         raise SystemExit("Either --rp-file or --simulation_output must be provided.")
@@ -233,9 +232,9 @@ def main():
             
             # Configure learning parameters based on scenario
             if scenario['learning']:
-                learning_config = args.learning_params
+                adaptation_config = args.adaptation_params
             else:
-                learning_config = {**args.learning_params, "enabled": False}
+                adaptation_config = {**args.adaptation_params, "enabled": False}
             
             # Create and run model
             model = EconomyModel(
@@ -247,7 +246,7 @@ def main():
                 firm_topology_path=args.topology,
                 start_year=args.start_year,
                 steps_per_year=getattr(args, 'steps_per_year', 4),
-                learning_params=learning_config,
+                adaptation_params=adaptation_config,
             )
             
             df_scenario, model_ref = run_simulation(model, args.steps)
@@ -769,4 +768,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()

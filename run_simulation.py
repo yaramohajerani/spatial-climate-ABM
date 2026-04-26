@@ -98,7 +98,31 @@ def _parse():
         default=None,
         help="Override adaptation_sensitivity_max from the parameter file",
     )
-    p.add_argument("--no-learning", action="store_true", help="Deprecated alias for --no-adaptation")
+    p.add_argument(
+        "--firm-replacement",
+        choices=("startup_reset", "none"),
+        default=None,
+        help="How failed firms are handled at replacement sweeps: reset in place or exit permanently",
+    )
+    p.add_argument(
+        "--dynamic-supplier-search",
+        dest="dynamic_supplier_search",
+        action="store_true",
+        default=None,
+        help="Allow firms to form bounded new supplier edges when required inputs are unavailable",
+    )
+    p.add_argument(
+        "--no-dynamic-supplier-search",
+        dest="dynamic_supplier_search",
+        action="store_false",
+        help="Disable bounded new supplier edge formation",
+    )
+    p.add_argument(
+        "--max-dynamic-suppliers-per-sector",
+        type=int,
+        default=None,
+        help="Maximum dynamically added supplier edges per buyer and required input sector",
+    )
     p.add_argument("--save-agent-ensemble", action="store_true", help="When running multiple seeds, also save the combined agent panel")
     p.add_argument("--ensemble-plot-stat", choices=("mean", "median"), default="mean", help="Statistic to highlight in ensemble plots and summaries")
     return p.parse_args()
@@ -123,6 +147,24 @@ def _resolve_seed_list(args) -> list[int]:
         return list(range(int(start), int(start) + int(args.n_seeds)))
 
     return [int(args.seed)]
+
+
+def _merge_market_structure_settings(args, param_data: dict) -> None:
+    """Merge replacement and supplier-search settings, preserving explicit CLI values."""
+    if args.firm_replacement is None:
+        args.firm_replacement = str(param_data.get("firm_replacement", "startup_reset"))
+
+    dynamic_supplier_config = param_data.get("dynamic_supplier_search", {})
+    if not isinstance(dynamic_supplier_config, dict):
+        raise SystemExit("dynamic_supplier_search must be an object with enabled and max_suppliers_per_sector")
+
+    if args.dynamic_supplier_search is None:
+        args.dynamic_supplier_search = bool(dynamic_supplier_config.get("enabled", True))
+
+    if args.max_dynamic_suppliers_per_sector is None:
+        args.max_dynamic_suppliers_per_sector = int(
+            dynamic_supplier_config.get("max_suppliers_per_sector", 2)
+        )
 
 
 STRATEGY_DISPLAY_NAMES = {
@@ -195,7 +237,6 @@ def _normalized_adaptation_config(adaptation_config: dict | None) -> dict[str, o
         "reserved_capacity_markup_cap": float(config.get("reserved_capacity_markup_cap", 0.10)),
         "min_money_survival": float(config.get("min_money_survival", 1.0)),
         "replacement_frequency": int(config.get("replacement_frequency", 10)),
-        "reorganization_inheritance": str(config.get("reorganization_inheritance", "inherit_parent")),
     }
 
 
@@ -232,7 +273,7 @@ def _base_metadata(
     param_path = str(args.param_file) if args.param_file else ""
     topology_path = str(args.topology) if args.topology else ""
     param_data = param_data or {}
-    param_adaptation_config = param_data.get("adaptation", param_data.get("learning"))
+    param_adaptation_config = param_data.get("adaptation")
     effective_adaptation_config = _normalized_adaptation_config(adaptation_config)
     sensitivity_min = float(effective_adaptation_config["adaptation_sensitivity_min"])
     sensitivity_max = float(effective_adaptation_config["adaptation_sensitivity_max"])
@@ -248,7 +289,6 @@ def _base_metadata(
         f"{METADATA_PREFIX}RunCommand": " ".join(shlex.quote(arg) for arg in sys.argv),
         f"{METADATA_PREFIX}NoHazardsFlag": bool(getattr(args, "no_hazards", False)),
         f"{METADATA_PREFIX}NoAdaptationFlag": bool(getattr(args, "no_adaptation", False)),
-        f"{METADATA_PREFIX}NoLearningFlag": bool(getattr(args, "no_learning", False)),
         f"{METADATA_PREFIX}CLIAdaptationStrategy": str(getattr(args, "adaptation_strategy", "") or ""),
         f"{METADATA_PREFIX}CLIAdaptationSensitivityMin": (
             "" if getattr(args, "adaptation_sensitivity_min", None) is None else float(args.adaptation_sensitivity_min)
@@ -268,6 +308,9 @@ def _base_metadata(
         f"{METADATA_PREFIX}LandBoundariesPath": str(getattr(args, "land_boundaries_path", "") or ""),
         f"{METADATA_PREFIX}ConsumptionRatios": _metadata_json(getattr(args, "consumption_ratios", None)),
         f"{METADATA_PREFIX}ParamConsumptionRatios": _metadata_json(param_data.get("consumption_ratios")),
+        f"{METADATA_PREFIX}ParamInputRecipeRanges": _metadata_json(param_data.get("input_recipe_ranges")),
+        f"{METADATA_PREFIX}ParamFirmReplacement": str(param_data.get("firm_replacement", "")),
+        f"{METADATA_PREFIX}ParamDynamicSupplierSearch": _metadata_json(param_data.get("dynamic_supplier_search")),
         f"{METADATA_PREFIX}HHConsumptionPropensityIncome": float(HouseholdAgent.CONSUMPTION_PROPENSITY_INCOME),
         f"{METADATA_PREFIX}HHConsumptionPropensityWealth": float(HouseholdAgent.CONSUMPTION_PROPENSITY_WEALTH),
         f"{METADATA_PREFIX}HHTargetCashBuffer": float(HouseholdAgent.TARGET_CASH_BUFFER),
@@ -294,7 +337,6 @@ def _base_metadata(
         f"{METADATA_PREFIX}ReservedCapacityMarkupCap": float(effective_adaptation_config["reserved_capacity_markup_cap"]),
         f"{METADATA_PREFIX}MinMoneySurvival": float(effective_adaptation_config["min_money_survival"]),
         f"{METADATA_PREFIX}ReplacementFrequency": int(effective_adaptation_config["replacement_frequency"]),
-        f"{METADATA_PREFIX}ReorganizationInheritance": str(effective_adaptation_config["reorganization_inheritance"]),
         f"{METADATA_PREFIX}EffectiveAdaptationConfig": _metadata_json(effective_adaptation_config),
         f"{METADATA_PREFIX}ParamAdaptationConfig": _metadata_json(param_adaptation_config),
         f"{METADATA_PREFIX}EnsemblePlotStat": str(getattr(args, "ensemble_plot_stat", "mean")),
@@ -359,6 +401,10 @@ def _run_single_simulation(
         steps_per_year=args.steps_per_year,
         adaptation_params=adaptation_config,
         consumption_ratios=args.consumption_ratios,
+        input_recipe_ranges=getattr(args, "input_recipe_ranges", None),
+        firm_replacement=args.firm_replacement,
+        dynamic_supplier_search=args.dynamic_supplier_search,
+        max_dynamic_suppliers_per_sector=args.max_dynamic_suppliers_per_sector,
         grid_resolution=args.grid_resolution,
         household_relocation=args.household_relocation,
         damage_functions_path=getattr(args, "damage_functions_path", None),
@@ -529,11 +575,11 @@ def main() -> None:  # noqa: D401
             args.land_boundaries_path = str(param_data["land_boundaries_path"])
 
         # 7. Adaptation parameters ------------------------------------------
-        args.adaptation_params = param_data.get("adaptation", param_data.get("learning", {}))
+        args.adaptation_params = param_data.get("adaptation", {})
 
         # 8. Consumption ratios by sector -----------------------------------
         args.consumption_ratios = param_data.get("consumption_ratios", None)
-
+        args.input_recipe_ranges = param_data.get("input_recipe_ranges", None)
         # 9. Number of households -------------------------------------------
         args.num_households = int(param_data.get("num_households", 100))
 
@@ -546,6 +592,8 @@ def main() -> None:  # noqa: D401
             args.save_agent_ensemble = bool(param_data.get("save_agent_ensemble", False))
         if args.ensemble_plot_stat == "mean" and "ensemble_plot_stat" in param_data:
             args.ensemble_plot_stat = str(param_data.get("ensemble_plot_stat", "mean"))
+
+    _merge_market_structure_settings(args, param_data)
 
     try:
         raster_events, node_shocks, lane_shocks, route_shocks = _coerce_shock_inputs(
@@ -590,7 +638,7 @@ def main() -> None:  # noqa: D401
     # Configure scenario settings
     has_shock_inputs = bool(raster_events or node_shocks or lane_shocks or route_shocks)
     apply_hazards = bool(has_shock_inputs and not args.no_hazards)
-    disable_adaptation = bool(args.no_adaptation or args.no_learning)
+    disable_adaptation = bool(args.no_adaptation)
     if disable_adaptation:
         adaptation_config = {**args.adaptation_params, "enabled": False}
     else:
@@ -1033,8 +1081,220 @@ def main() -> None:  # noqa: D401
 
     plt.close(fig)
 
+    network_evo_filename = _plot_network_evolution(model, scenario_label_ts, args)
+
     print(f"Plots saved as {timeseries_filename} and {bottleneck_filename if n_sec > 0 else 'no sector plots'}")
+    if network_evo_filename:
+        print(f"Network evolution plot saved as {network_evo_filename}")
+
+
+def _plot_network_evolution(model, scenario_label_ts: str, args) -> str | None:
+    """Render a multi-panel static figure showing how the supply-chain network evolved.
+
+    Firms are aggregated to sector-level nodes arranged in a fixed circle.
+    Arrow width encodes the number of firm-to-firm connections between each
+    sector pair; arrow color interpolates from gray (all static links) to orange
+    (all dynamic links).  Node size encodes active firm count; a red halo marks
+    firms that have failed.  This keeps the diagram readable even when hundreds
+    of firm-to-firm edges exist.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    import matplotlib.lines as mlines
+
+    snapshots = getattr(model, "_topology_snapshots", [])
+    if not snapshots:
+        return None
+
+    firm_meta: dict[int, dict] = {
+        f.unique_id: {"pos": f.pos, "sector": f.sector}
+        for f in model._firms
+    }
+    if not firm_meta:
+        return None
+
+    unique_sectors = sorted({m["sector"] for m in firm_meta.values()})
+    n_sectors = len(unique_sectors)
+    sec_palette = plt.cm.tab10(np.linspace(0, 1, max(n_sectors, 1)))
+    sec_color = {s: sec_palette[i % len(sec_palette)] for i, s in enumerate(unique_sectors)}
+
+    # Fixed circular layout — consistent across all panels
+    sector_pos: dict[str, tuple[float, float]] = {}
+    for i, s in enumerate(unique_sectors):
+        angle = 2 * np.pi * i / max(n_sectors, 1) - np.pi / 2
+        sector_pos[s] = (float(np.cos(angle)), float(np.sin(angle)))
+
+    # Pick up to 6 evenly-spaced snapshots (always include first and last)
+    n_panels = min(6, len(snapshots))
+    indices = np.round(np.linspace(0, len(snapshots) - 1, n_panels)).astype(int)
+    selected = [snapshots[i] for i in indices]
+
+    n_cols = min(3, n_panels)
+    n_rows = (n_panels + n_cols - 1) // n_cols
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 5 * n_rows),
+                             squeeze=False)
+
+    use_years = bool(getattr(args, "start_year", 0))
+    steps_per_year = getattr(args, "steps_per_year", 4)
+    start_year = getattr(args, "start_year", 0)
+
+    # Max firms per sector across the whole run (for consistent node sizing)
+    total_per_sector = {s: sum(1 for m in firm_meta.values() if m["sector"] == s)
+                        for s in unique_sectors}
+    max_sector_total = max(total_per_sector.values(), default=1)
+
+    # Max sector-pair link count across all selected snapshots (for consistent edge width)
+    max_link_count = 1
+    for snap in selected:
+        counts: dict[tuple, int] = {}
+        for sup_id, buy_id, _ in snap["edges"]:
+            if sup_id not in firm_meta or buy_id not in firm_meta:
+                continue
+            key = (firm_meta[sup_id]["sector"], firm_meta[buy_id]["sector"])
+            counts[key] = counts.get(key, 0) + 1
+        if counts:
+            max_link_count = max(max_link_count, max(counts.values()))
+
+    static_rgb = np.array([0.65, 0.65, 0.65])
+    dynamic_rgb = np.array([1.0, 0.50, 0.0])
+
+    for panel_idx, snap in enumerate(selected):
+        row, col = divmod(panel_idx, n_cols)
+        ax = axes[row][col]
+        ax.set_xlim(-1.65, 1.65)
+        ax.set_ylim(-1.65, 1.65)
+        ax.set_aspect("equal")
+        ax.axis("off")
+
+        step = snap["step"]
+        active_ids = snap["active_ids"]
+        inactive_ids = snap["inactive_ids"]
+        edges = snap["edges"]
+
+        # Sector-level counts
+        sector_active = {s: 0 for s in unique_sectors}
+        sector_failed = {s: 0 for s in unique_sectors}
+        for fid, meta in firm_meta.items():
+            s = meta["sector"]
+            if fid in active_ids:
+                sector_active[s] += 1
+            elif fid in inactive_ids:
+                sector_failed[s] += 1
+
+        # Aggregate edges into sector pairs
+        sector_edges: dict[tuple[str, str], dict[str, int]] = {}
+        for sup_id, buy_id, is_dyn in edges:
+            if sup_id not in firm_meta or buy_id not in firm_meta:
+                continue
+            src_s = firm_meta[sup_id]["sector"]
+            dst_s = firm_meta[buy_id]["sector"]
+            if src_s == dst_s:
+                continue  # skip intra-sector self-loops for clarity
+            key = (src_s, dst_s)
+            if key not in sector_edges:
+                sector_edges[key] = {"static": 0, "dynamic": 0}
+            if is_dyn:
+                sector_edges[key]["dynamic"] += 1
+            else:
+                sector_edges[key]["static"] += 1
+
+        # Draw arrows between sector nodes
+        for (src_s, dst_s), counts in sector_edges.items():
+            if src_s not in sector_pos or dst_s not in sector_pos:
+                continue
+            sx, sy = sector_pos[src_s]
+            ex, ey = sector_pos[dst_s]
+            total = counts["static"] + counts["dynamic"]
+            dyn_frac = counts["dynamic"] / total if total > 0 else 0.0
+            color = tuple((1 - dyn_frac) * static_rgb + dyn_frac * dynamic_rgb)
+            lw = 0.8 + 5.5 * (total / max_link_count)
+            # Alternate curve direction so bidirectional pairs don't overlap
+            rad = 0.25 if src_s < dst_s else -0.25
+            annot = ax.annotate(
+                "", xy=(ex, ey), xytext=(sx, sy),
+                arrowprops=dict(
+                    arrowstyle="-|>",
+                    color=color,
+                    lw=lw,
+                    connectionstyle=f"arc3,rad={rad}",
+                    shrinkA=20, shrinkB=20,
+                ),
+                zorder=2,
+            )
+            annot.arrow_patch.set_alpha(0.8)
+
+        # Draw sector nodes
+        for s in unique_sectors:
+            if s not in sector_pos:
+                continue
+            cx, cy = sector_pos[s]
+            n_active = sector_active[s]
+            n_failed = sector_failed[s]
+
+            # Red halo proportional to failed count
+            if n_failed > 0:
+                halo_s = 350 + 1200 * (n_failed / max_sector_total)
+                ax.scatter(cx, cy, s=halo_s, c=["#cc0000"], alpha=0.22,
+                           edgecolors="none", zorder=3)
+
+            node_s = 200 + 1000 * (n_active / max_sector_total)
+            ax.scatter(cx, cy, s=node_s, c=[sec_color[s]], zorder=4,
+                       edgecolors="black", linewidths=1.5)
+
+            # Sector name below node
+            ax.text(cx, cy - 0.25, s, fontsize=7, ha="center", va="top",
+                    fontweight="bold", zorder=5)
+            # Active count inside node
+            ax.text(cx, cy, str(n_active), fontsize=6.5, ha="center", va="center",
+                    color="white", fontweight="bold", zorder=6)
+            # Failed count in red above node
+            if n_failed > 0:
+                ax.text(cx, cy + 0.25, f"−{n_failed}", fontsize=6.5, ha="center",
+                        va="bottom", color="#cc0000", fontweight="bold", zorder=6)
+
+        if use_years:
+            title_time = f"Year {start_year + step / steps_per_year:.1f}"
+        else:
+            title_time = f"Step {step}"
+
+        n_dyn_total = sum(e["dynamic"] for e in sector_edges.values())
+        n_static_total = sum(e["static"] for e in sector_edges.values())
+        ax.set_title(f"{title_time}\n{n_static_total} static · {n_dyn_total} dynamic links",
+                     fontsize=9)
+
+    # Hide unused subplot cells
+    for panel_idx in range(n_panels, n_rows * n_cols):
+        row, col = divmod(panel_idx, n_cols)
+        axes[row][col].set_visible(False)
+
+    # Legend
+    legend_handles = [
+        mpatches.Patch(facecolor=sec_color[s], edgecolor="black", linewidth=0.5, label=s)
+        for s in unique_sectors
+    ]
+    legend_handles.append(mlines.Line2D([], [], color=tuple(static_rgb), linewidth=2.5,
+                                        label="static links"))
+    legend_handles.append(mlines.Line2D([], [], color=tuple(dynamic_rgb), linewidth=2.5,
+                                        label="dynamic links"))
+    legend_handles.append(mpatches.Patch(facecolor="#cc0000", alpha=0.22, edgecolor="none",
+                                         label="failed firm halo"))
+
+    fig.legend(handles=legend_handles, loc="lower center",
+               ncol=min(len(legend_handles), 6), fontsize=8,
+               bbox_to_anchor=(0.5, 0.01))
+    fig.text(0.5, 0.045,
+             "Node size ∝ active firms · Arrow width ∝ link count · "
+             "Arrow color: gray = static, orange = dynamic",
+             ha="center", fontsize=7, color="#555555")
+    fig.suptitle("Supply Chain Network Evolution (Sector Level)", fontsize=13,
+                 fontweight="bold")
+    fig.tight_layout(rect=[0, 0.09, 1, 1])
+
+    out_path = f"simulation_{scenario_label_ts}_network_evolution.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
 
 
 if __name__ == "__main__":
-    main() 
+    main()
