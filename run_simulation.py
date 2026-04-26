@@ -1108,6 +1108,7 @@ def _plot_network_evolution(
     scenario_label_ts: str,
     args,
     out_path: str | Path | None = None,
+    save_data: bool = True,
 ) -> str | None:
     """Render a multi-panel static figure showing how the supply-chain network evolved.
 
@@ -1322,17 +1323,18 @@ def _plot_network_evolution(
     out_path = Path(out_path) if out_path else Path(f"simulation_{scenario_label_ts}_network_evolution.png")
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    _save_network_evolution_data(
-        out_path=Path(out_path).with_suffix(".json"),
-        snapshots=snapshots,
-        selected_indices=indices,
-        firm_meta=firm_meta,
-        sector_positions=sector_pos,
-        max_link_count=max_link_count,
-        max_sector_total=max_sector_total,
-        start_year=start_year,
-        steps_per_year=steps_per_year,
-    )
+    if save_data:
+        _save_network_evolution_data(
+            out_path=Path(out_path).with_suffix(".json"),
+            snapshots=snapshots,
+            selected_indices=indices,
+            firm_meta=firm_meta,
+            sector_positions=sector_pos,
+            max_link_count=max_link_count,
+            max_sector_total=max_sector_total,
+            start_year=start_year,
+            steps_per_year=steps_per_year,
+        )
     return str(out_path)
 
 
@@ -1416,7 +1418,13 @@ def _plot_network_evolution_from_json(
     if out_path is None:
         out_path = json_path.with_suffix(".png")
     scenario_label = json_path.stem.removesuffix("_network_evolution")
-    plotted_path = _plot_network_evolution(replay_model, scenario_label, args, out_path=out_path)
+    plotted_path = _plot_network_evolution(
+        replay_model,
+        scenario_label,
+        args,
+        out_path=out_path,
+        save_data=False,
+    )
     if plotted_path is None:
         raise SystemExit(f"No topology snapshots found in {json_path}")
     return plotted_path
