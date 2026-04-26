@@ -1098,17 +1098,19 @@ def _plot_network_evolution(
     out_path: str | Path | None = None,
     save_data: bool = True,
 ) -> str | None:
-    """Render a multi-panel static figure showing how the supply-chain network evolved.
+    """Render a multi-panel figure showing how firm-level supplier links evolved.
 
-    Firms are aggregated to sector-level nodes arranged in a fixed circle.
-    Arrow width encodes the number of firm-to-firm connections between each
-    sector pair. Node size encodes active firm count; a red halo marks firms
-    that have failed. This keeps the diagram readable even when hundreds of
-    firm-to-firm edges exist.
+    Firms are plotted at their geographic grid positions. Gray lines are
+    original-topology links still present; orange lines are rewired links.
+    Red crosses mark failed firms. Only produced when dynamic supplier search
+    is enabled, since the topology is otherwise static.
     """
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
     import matplotlib.lines as mlines
+
+    if not getattr(model, "dynamic_supplier_search_enabled", True):
+        return None
 
     snapshots = getattr(model, "_topology_snapshots", [])
     if not snapshots:
@@ -1122,15 +1124,25 @@ def _plot_network_evolution(
         return None
 
     unique_sectors = sorted({m["sector"] for m in firm_meta.values()})
-    n_sectors = len(unique_sectors)
-    sec_palette = plt.cm.tab10(np.linspace(0, 1, max(n_sectors, 1)))
+    sec_palette = plt.cm.tab10(np.linspace(0, 1, max(len(unique_sectors), 1)))
     sec_color = {s: sec_palette[i % len(sec_palette)] for i, s in enumerate(unique_sectors)}
 
-    # Fixed circular layout — consistent across all panels
-    sector_pos: dict[str, tuple[float, float]] = {}
-    for i, s in enumerate(unique_sectors):
-        angle = 2 * np.pi * i / max(n_sectors, 1) - np.pi / 2
-        sector_pos[s] = (float(np.cos(angle)), float(np.sin(angle)))
+    # First snapshot defines the baseline topology for comparison
+    initial_edges: frozenset[tuple[int, int]] = frozenset(
+        (int(s), int(b)) for s, b in snapshots[0]["edges"]
+    )
+
+    # Normalise firm grid positions to [0, 1]
+    all_x = [m["pos"][0] for m in firm_meta.values()]
+    all_y = [m["pos"][1] for m in firm_meta.values()]
+    x_min, x_max = min(all_x), max(all_x)
+    y_min, y_max = min(all_y), max(all_y)
+    x_range = max(float(x_max - x_min), 1.0)
+    y_range = max(float(y_max - y_min), 1.0)
+    firm_npos: dict[int, tuple[float, float]] = {
+        fid: ((m["pos"][0] - x_min) / x_range, (m["pos"][1] - y_min) / y_range)
+        for fid, m in firm_meta.items()
+    }
 
     # Pick up to 6 evenly-spaced snapshots (always include first and last)
     n_panels = min(6, len(snapshots))
@@ -1146,167 +1158,79 @@ def _plot_network_evolution(
     steps_per_year = getattr(args, "steps_per_year", 4)
     start_year = getattr(args, "start_year", 0)
 
-    # Max firms per sector across the whole run (for consistent node sizing)
-    total_per_sector = {s: sum(1 for m in firm_meta.values() if m["sector"] == s)
-                        for s in unique_sectors}
-    max_sector_total = max(total_per_sector.values(), default=1)
-
-    # Max sector-pair link count across all selected snapshots (for consistent edge width)
-    max_link_count = 1
-    for snap in selected:
-        counts: dict[tuple, int] = {}
-        for sup_id, buy_id in snap["edges"]:
-            if sup_id not in firm_meta or buy_id not in firm_meta:
-                continue
-            key = (firm_meta[sup_id]["sector"], firm_meta[buy_id]["sector"])
-            counts[key] = counts.get(key, 0) + 1
-        if counts:
-            max_link_count = max(max_link_count, max(counts.values()))
-
-    link_color = "#808080"
-
-    def edge_width(link_count: int) -> float:
-        return 0.8 + 5.5 * (link_count / max_link_count)
-
-    def node_area(active_count: int) -> float:
-        return max(40.0, 40.0 * active_count)
-
     for panel_idx, snap in enumerate(selected):
         row, col = divmod(panel_idx, n_cols)
         ax = axes[row][col]
-        ax.set_xlim(-1.65, 1.65)
-        ax.set_ylim(-1.65, 1.65)
+        ax.set_xlim(-0.05, 1.05)
+        ax.set_ylim(-0.05, 1.05)
         ax.set_aspect("equal")
         ax.axis("off")
 
         step = snap["step"]
-        active_ids = snap["active_ids"]
-        inactive_ids = snap["inactive_ids"]
-        edges = snap["edges"]
+        active_ids: frozenset[int] = frozenset(snap["active_ids"])
+        inactive_ids: frozenset[int] = frozenset(snap["inactive_ids"])
+        current_edges: frozenset[tuple[int, int]] = frozenset(
+            (int(s), int(b)) for s, b in snap["edges"]
+        )
 
-        # Sector-level counts
-        sector_active = {s: 0 for s in unique_sectors}
-        sector_failed = {s: 0 for s in unique_sectors}
+        # Original-topology links still present (gray, faint background)
+        for sup_id, buy_id in current_edges & initial_edges:
+            if sup_id not in firm_npos or buy_id not in firm_npos:
+                continue
+            sx, sy = firm_npos[sup_id]
+            ex, ey = firm_npos[buy_id]
+            ax.plot([sx, ex], [sy, ey], color="#aaaaaa", alpha=0.2,
+                    linewidth=0.5, zorder=1)
+
+        # Rewired links (orange, prominent)
+        for sup_id, buy_id in current_edges - initial_edges:
+            if sup_id not in firm_npos or buy_id not in firm_npos:
+                continue
+            sx, sy = firm_npos[sup_id]
+            ex, ey = firm_npos[buy_id]
+            ax.plot([sx, ex], [sy, ey], color="#e07020", alpha=0.7,
+                    linewidth=1.2, zorder=2)
+
+        # Firm nodes
         for fid, meta in firm_meta.items():
-            s = meta["sector"]
+            if fid not in firm_npos:
+                continue
+            nx, ny = firm_npos[fid]
             if fid in active_ids:
-                sector_active[s] += 1
+                ax.scatter(nx, ny, s=25, c=[sec_color[meta["sector"]]],
+                           marker="o", edgecolors="black", linewidths=0.5,
+                           alpha=0.9, zorder=3)
             elif fid in inactive_ids:
-                sector_failed[s] += 1
+                ax.scatter(nx, ny, s=40, c=["#cc0000"], marker="X",
+                           edgecolors="none", alpha=0.8, zorder=3)
 
-        # Aggregate edges into sector pairs
-        sector_edges: dict[tuple[str, str], int] = {}
-        for sup_id, buy_id in edges:
-            if sup_id not in firm_meta or buy_id not in firm_meta:
-                continue
-            src_s = firm_meta[sup_id]["sector"]
-            dst_s = firm_meta[buy_id]["sector"]
-            if src_s == dst_s:
-                continue  # skip intra-sector self-loops for clarity
-            key = (src_s, dst_s)
-            sector_edges[key] = sector_edges.get(key, 0) + 1
-
-        # Draw arrows between sector nodes
-        for (src_s, dst_s), total in sector_edges.items():
-            if src_s not in sector_pos or dst_s not in sector_pos:
-                continue
-            sx, sy = sector_pos[src_s]
-            ex, ey = sector_pos[dst_s]
-            lw = edge_width(total)
-            # Alternate curve direction so bidirectional pairs don't overlap
-            rad = 0.25 if src_s < dst_s else -0.25
-            annot = ax.annotate(
-                "", xy=(ex, ey), xytext=(sx, sy),
-                arrowprops=dict(
-                    arrowstyle="-|>",
-                    color=link_color,
-                    lw=lw,
-                    connectionstyle=f"arc3,rad={rad}",
-                    shrinkA=20, shrinkB=20,
-                ),
-                zorder=2,
-            )
-            annot.arrow_patch.set_alpha(0.8)
-            mx, my = (sx + ex) / 2, (sy + ey) / 2
-            dx, dy = ex - sx, ey - sy
-            norm = float(np.hypot(dx, dy)) or 1.0
-            label_x = mx - (dy / norm) * rad * 0.55
-            label_y = my + (dx / norm) * rad * 0.55
-            ax.text(
-                label_x, label_y, str(total),
-                fontsize=6.5, ha="center", va="center",
-                color="#444444",
-                bbox=dict(facecolor="white", edgecolor="none", alpha=0.72, pad=0.8),
-                zorder=7,
-            )
-
-        # Draw sector nodes
-        for s in unique_sectors:
-            if s not in sector_pos:
-                continue
-            cx, cy = sector_pos[s]
-            n_active = sector_active[s]
-            n_failed = sector_failed[s]
-
-            # Red halo proportional to failed count
-            if n_failed > 0:
-                halo_s = 350 + 1200 * (n_failed / max_sector_total)
-                ax.scatter(cx, cy, s=halo_s, c=["#cc0000"], alpha=0.22,
-                           edgecolors="none", zorder=3)
-
-            node_s = node_area(n_active)
-            ax.scatter(cx, cy, s=node_s, c=[sec_color[s]], zorder=4,
-                       edgecolors="black", linewidths=1.5)
-
-            # Sector name below node
-            ax.text(cx, cy - 0.25, s, fontsize=7, ha="center", va="top",
-                    fontweight="bold", zorder=5)
-            # Active count inside node
-            ax.text(cx, cy, str(n_active), fontsize=6.5, ha="center", va="center",
-                    color="white", fontweight="bold", zorder=6)
-            # Failed count in red above node
-            if n_failed > 0:
-                ax.text(cx, cy + 0.25, f"−{n_failed}", fontsize=6.5, ha="center",
-                        va="bottom", color="#cc0000", fontweight="bold", zorder=6)
-
-        if use_years:
-            title_time = f"Year {start_year + step / steps_per_year:.1f}"
-        else:
-            title_time = f"Step {step}"
-
-        n_links_total = sum(sector_edges.values())
-        ax.set_title(f"{title_time}\n{n_links_total} supplier links", fontsize=9)
+        n_rewired = len(current_edges - initial_edges)
+        title_time = (
+            f"Year {start_year + step / steps_per_year:.1f}" if use_years
+            else f"Step {step}"
+        )
+        ax.set_title(f"{title_time}\n{n_rewired} rewired links", fontsize=9)
 
     # Hide unused subplot cells
     for panel_idx in range(n_panels, n_rows * n_cols):
         row, col = divmod(panel_idx, n_cols)
         axes[row][col].set_visible(False)
 
-    # Legend
     legend_handles = [
         mpatches.Patch(facecolor=sec_color[s], edgecolor="black", linewidth=0.5, label=s)
         for s in unique_sectors
     ]
-    legend_handles.append(mlines.Line2D([], [], color=link_color, linewidth=2.5,
-                                        label="supplier links"))
-    legend_handles.append(mpatches.Patch(facecolor="#cc0000", alpha=0.22, edgecolor="none",
-                                         label="failed firm halo"))
-    link_scale_counts = [10, 100]
-    legend_handles.extend(
-        mlines.Line2D([], [], color=link_color, linewidth=edge_width(count),
-                      label=f"{count} links")
-        for count in link_scale_counts
-    )
-
+    legend_handles += [
+        mlines.Line2D([], [], color="#aaaaaa", linewidth=1.5, label="original link"),
+        mlines.Line2D([], [], color="#e07020", linewidth=1.5, label="rewired link"),
+        mlines.Line2D([], [], color="#cc0000", marker="X", markersize=6,
+                      linestyle="None", label="failed firm"),
+    ]
     fig.legend(handles=legend_handles, loc="lower center",
                ncol=min(len(legend_handles), 6), fontsize=8,
                bbox_to_anchor=(0.5, 0.01))
-    fig.text(0.5, 0.075,
-             "Arrow width proportional to link count",
-             ha="center", fontsize=7, color="#555555")
-    fig.suptitle("Supply Chain Network Evolution (Sector Level)", fontsize=13,
-                 fontweight="bold")
-    fig.tight_layout(rect=[0, 0.13, 1, 1])
+    fig.suptitle("Supply Chain Network Evolution", fontsize=13, fontweight="bold")
+    fig.tight_layout(rect=[0, 0.1, 1, 1])
 
     out_path = Path(out_path) if out_path else Path(f"simulation_{scenario_label_ts}_network_evolution.png")
     if out_path.suffix.lower() == ".json":
@@ -1317,11 +1241,7 @@ def _plot_network_evolution(
         _save_network_evolution_data(
             out_path=Path(out_path).with_suffix(".json"),
             snapshots=snapshots,
-            selected_indices=indices,
             firm_meta=firm_meta,
-            sector_positions=sector_pos,
-            max_link_count=max_link_count,
-            max_sector_total=max_sector_total,
             start_year=start_year,
             steps_per_year=steps_per_year,
         )
@@ -1332,15 +1252,11 @@ def _save_network_evolution_data(
     *,
     out_path: Path,
     snapshots: list[dict],
-    selected_indices: np.ndarray,
     firm_meta: dict[int, dict],
-    sector_positions: dict[str, tuple[float, float]],
-    max_link_count: int,
-    max_sector_total: int,
     start_year: int,
     steps_per_year: int,
 ) -> None:
-    """Persist topology snapshots used by the network-evolution figure."""
+    """Persist topology snapshots for network-evolution figure replay."""
     payload = {
         "firm_meta": {
             str(fid): {
@@ -1349,13 +1265,6 @@ def _save_network_evolution_data(
             }
             for fid, meta in firm_meta.items()
         },
-        "sector_positions": {
-            sector: list(pos)
-            for sector, pos in sector_positions.items()
-        },
-        "selected_indices": [int(i) for i in selected_indices],
-        "max_link_count": int(max_link_count),
-        "max_sector_total": int(max_sector_total),
         "start_year": int(start_year),
         "steps_per_year": int(steps_per_year),
         "snapshots": [
