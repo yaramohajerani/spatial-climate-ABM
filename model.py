@@ -1309,15 +1309,17 @@ class EconomyModel(Model):
         """Return firms in topological supply-chain order (suppliers before buyers).
 
         Kahn's algorithm over the live connected_firms graph. When the ready
-        queue empties before all firms are placed (a cycle exists), the
-        lowest-priority unvisited firm is force-scheduled to break the deadlock
-        and Kahn's continues. This correctly orders acyclic firms downstream of
-        a cycle, which a simple sorted-remainder fallback cannot guarantee.
-        Sector priority breaks ties within the ready set.
+        queue empties before all firms are placed (a cycle exists), Tarjan's SCC
+        is run on the remaining induced subgraph to identify a source SCC — one
+        with no incoming edges from other SCCs in the condensation. The best
+        member of that source SCC is force-scheduled to break the deadlock, then
+        Kahn's continues normally. This guarantees supplier-before-buyer ordering
+        for all acyclic firms downstream of cycles. Sector priority breaks ties.
         """
         import heapq
 
         firm_ids = {f.unique_id for f in self._firms}
+        firm_by_id: dict[int, FirmAgent] = {f.unique_id: f for f in self._firms}
         in_degree: dict[int, int] = {f.unique_id: 0 for f in self._firms}
         dependents: dict[int, list[FirmAgent]] = {f.unique_id: [] for f in self._firms}
 
@@ -1332,6 +1334,68 @@ class EconomyModel(Model):
         def _entry(f: FirmAgent) -> tuple:
             return (self.SECTOR_ORDER.get(f.sector, 1), f.unique_id, f)
 
+        def _best_source_scc_member(remaining_ids: set[int]) -> FirmAgent:
+            """Return the best firm from a source SCC of the remaining subgraph.
+
+            Runs Tarjan's SCC on the supplier→buyer adjacency restricted to
+            remaining_ids, computes the condensation in-degrees, then returns
+            the lowest-(sector,id) firm in any source SCC (condensation
+            in-degree == 0). Source SCCs have no unprocessed upstream
+            dependencies, so scheduling one cannot violate supplier-before-buyer
+            ordering for any acyclic node in the remaining graph.
+            """
+            adj: dict[int, list[int]] = {fid: [] for fid in remaining_ids}
+            for fid in remaining_ids:
+                for dep in dependents[fid]:
+                    if dep.unique_id in remaining_ids:
+                        adj[fid].append(dep.unique_id)
+
+            # Tarjan's iterative-friendly recursive SCC (graph ≤ |firms| deep).
+            idx_cnt = [0]
+            stk: list[int] = []
+            on_stk: set[int] = set()
+            idx_map: dict[int, int] = {}
+            low_map: dict[int, int] = {}
+            sccs: list[list[int]] = []
+
+            def _visit(v: int) -> None:
+                idx_map[v] = low_map[v] = idx_cnt[0]
+                idx_cnt[0] += 1
+                stk.append(v)
+                on_stk.add(v)
+                for w in adj[v]:
+                    if w not in idx_map:
+                        _visit(w)
+                        low_map[v] = min(low_map[v], low_map[w])
+                    elif w in on_stk:
+                        low_map[v] = min(low_map[v], idx_map[w])
+                if low_map[v] == idx_map[v]:
+                    scc: list[int] = []
+                    while True:
+                        w = stk.pop()
+                        on_stk.discard(w)
+                        scc.append(w)
+                        if w == v:
+                            break
+                    sccs.append(scc)
+
+            for fid in remaining_ids:
+                if fid not in idx_map:
+                    _visit(fid)
+
+            scc_of = {node: i for i, scc in enumerate(sccs) for node in scc}
+            scc_in_degree = [0] * len(sccs)
+            for fid in remaining_ids:
+                for nbr in adj[fid]:
+                    if scc_of[fid] != scc_of[nbr]:
+                        scc_in_degree[scc_of[nbr]] += 1
+
+            source_ids = {i for i, d in enumerate(scc_in_degree) if d == 0}
+            return min(
+                (firm_by_id[fid] for fid in remaining_ids if scc_of[fid] in source_ids),
+                key=lambda f: (self.SECTOR_ORDER.get(f.sector, 1), f.unique_id),
+            )
+
         ready: list[tuple] = []
         for f in self._firms:
             if in_degree[f.unique_id] == 0:
@@ -1341,15 +1405,11 @@ class EconomyModel(Model):
         visited: set[int] = set()
         while len(order) < len(self._firms):
             if not ready:
-                # Cycle detected: force-schedule the best unvisited firm to
-                # break the deadlock, then let Kahn's drain its dependents
-                # normally so downstream-of-cycle firms stay correctly ordered.
-                for f in sorted(
-                    (f for f in self._firms if f.unique_id not in visited),
-                    key=lambda f: (self.SECTOR_ORDER.get(f.sector, 1), f.unique_id),
-                ):
-                    heapq.heappush(ready, _entry(f))
-                    break
+                # Cycle detected: find a source SCC in the remaining induced
+                # subgraph and force-schedule its best member to break the
+                # deadlock without misordering downstream acyclic firms.
+                remaining_ids = {fid for fid in firm_ids if fid not in visited}
+                heapq.heappush(ready, _entry(_best_source_scc_member(remaining_ids)))
             _, _, firm = heapq.heappop(ready)
             if firm.unique_id in visited:
                 continue  # duplicate push from cycle-breaking
