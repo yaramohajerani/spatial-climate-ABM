@@ -1297,6 +1297,53 @@ class EconomyModel(Model):
 
         return (self.SECTOR_ORDER.get(firm.sector, 1), self.random.random())
 
+    def _topological_firm_order(self) -> list[FirmAgent]:
+        """Return firms in topological supply-chain order (suppliers before buyers).
+
+        Kahn's algorithm over the live connected_firms graph. Sector priority
+        breaks ties within the ready set and handles any cycles as a fallback.
+        """
+        import heapq
+
+        firm_ids = {f.unique_id for f in self._firms}
+        in_degree: dict[int, int] = {f.unique_id: 0 for f in self._firms}
+        dependents: dict[int, list[FirmAgent]] = {f.unique_id: [] for f in self._firms}
+
+        for firm in self._firms:
+            for supplier in firm.connected_firms:
+                if supplier.unique_id in firm_ids:
+                    in_degree[firm.unique_id] += 1
+                    dependents[supplier.unique_id].append(firm)
+
+        # Heap entry: (sector_order, unique_id, firm) — unique_id ensures firm
+        # objects are never compared directly (FirmAgent has no __lt__).
+        def _entry(f: FirmAgent) -> tuple:
+            return (self.SECTOR_ORDER.get(f.sector, 1), f.unique_id, f)
+
+        ready: list[tuple] = []
+        for f in self._firms:
+            if in_degree[f.unique_id] == 0:
+                heapq.heappush(ready, _entry(f))
+
+        order: list[FirmAgent] = []
+        visited: set[int] = set()
+        while ready:
+            _, _, firm = heapq.heappop(ready)
+            order.append(firm)
+            visited.add(firm.unique_id)
+            for dep in dependents[firm.unique_id]:
+                in_degree[dep.unique_id] -= 1
+                if in_degree[dep.unique_id] == 0:
+                    heapq.heappush(ready, _entry(dep))
+
+        # Firms in supply-chain cycles: append sorted by sector priority
+        remaining = sorted(
+            [f for f in self._firms if f.unique_id not in visited],
+            key=lambda f: (self.SECTOR_ORDER.get(f.sector, 1), f.unique_id),
+        )
+        order.extend(remaining)
+        return order
+
     def _solve_initial_expected_sales(self) -> Dict[int, float]:
         """Bootstrap firm demand from final-demand shares scaled to labour supply."""
 
@@ -1774,9 +1821,9 @@ class EconomyModel(Model):
 
         # 2. Firms – hire labour accumulated in phase 1, purchase inputs,
         #    produce goods, and adjust prices/wages.
-        firms = self._firms.copy()
-        # Sort by broad supply-chain tier so upstream sectors replenish before downstream buyers.
-        firms.sort(key=self._sector_priority)
+        # Topological sort so every firm's suppliers step before it, both across
+        # and within sectors. Falls back to sector priority for any cycles.
+        firms = self._topological_firm_order()
         self._build_active_link_blocks()
         try:
             for firm in firms:
