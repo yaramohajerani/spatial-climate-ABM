@@ -772,6 +772,8 @@ class EconomyModel(Model):
             remove_supplier = unavailable_suppliers[0]
         else:
             remove_supplier = max(sector_suppliers, key=lambda supplier: supplier.price)
+            if remove_supplier.production > 1e-9:
+                return []
             if best_candidate.price >= remove_supplier.price:
                 return []
 
