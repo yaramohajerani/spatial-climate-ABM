@@ -765,7 +765,7 @@ class EconomyModel(Model):
         best_candidate = candidates[0]
         unavailable_suppliers = [
             supplier for supplier in sector_suppliers
-            if (not supplier.active) or supplier.inventory_output <= 1e-9
+            if (not supplier.active) or (supplier.inventory_output <= 1e-9 and supplier.production <= 1e-9)
         ]
         if unavailable_suppliers:
             unavailable_suppliers.sort(key=lambda supplier: (supplier.active, -supplier.price))
