@@ -454,6 +454,16 @@ class FirmAgent(Agent):
         self.reserved_capacity_purchases_this_step: float = 0.0
         self.reserved_capacity_price_savings_this_step: float = 0.0
 
+        # Transport route metrics (reset each step by the model)
+        self.route_sales_attempted_this_step: float = 0.0
+        self.route_sales_blocked_this_step: float = 0.0
+        self.route_revenue_attempted_this_step: float = 0.0
+        self.route_revenue_blocked_this_step: float = 0.0
+        self.inbound_route_sales_attempted_this_step: float = 0.0
+        self.inbound_route_sales_blocked_this_step: float = 0.0
+        self.inbound_route_revenue_attempted_this_step: float = 0.0
+        self.inbound_route_revenue_blocked_this_step: float = 0.0
+
         # Capital coefficient parameters
         self.original_capital_coeff: float = self.CAPITAL_COEFF
         self.capital_coeff: float = self.CAPITAL_COEFF
@@ -569,6 +579,18 @@ class FirmAgent(Agent):
         self.net_profit_this_step = 0.0
         self.dividends_paid_this_step = 0.0
         self.investment_spending_this_step = 0.0
+
+    @property
+    def route_exposure_ratio(self) -> float:
+        attempted = max(0.0, self.route_revenue_attempted_this_step)
+        blocked = max(0.0, self.route_revenue_blocked_this_step)
+        return 0.0 if attempted <= 1e-9 else min(1.0, blocked / attempted)
+
+    @property
+    def inbound_route_exposure_ratio(self) -> float:
+        attempted = max(0.0, self.inbound_route_revenue_attempted_this_step)
+        blocked = max(0.0, self.inbound_route_revenue_blocked_this_step)
+        return 0.0 if attempted <= 1e-9 else min(1.0, blocked / attempted)
 
     @property
     def resilience_capital(self) -> float:
@@ -1283,8 +1305,31 @@ class FirmAgent(Agent):
         reservation_buyer_id: int | None = None,
     ) -> float:
         """Sell intermediate goods to another firm."""
+        sup_tid = int(getattr(self, "topology_id", self.unique_id))
+        buy_tid = int(getattr(buyer, "topology_id", buyer.unique_id))
+        link_key = (sup_tid, buy_tid)
+        active_blocks: dict = getattr(self.model, "_active_link_blocks", {})
+        if link_key in active_blocks:
+            price = self.price if unit_price is None else max(0.0, float(unit_price))
+            attempted_qty = max(0.0, float(quantity))
+            attempted_rev = attempted_qty * price
+            self.route_sales_attempted_this_step += attempted_qty
+            self.route_revenue_attempted_this_step += attempted_rev
+            buyer.inbound_route_sales_attempted_this_step += attempted_qty
+            buyer.inbound_route_revenue_attempted_this_step += attempted_rev
+            blocked_fraction = max(0.0, min(1.0, float(active_blocks[link_key])))
+            if blocked_fraction > 0.0:
+                blocked_qty = attempted_qty * blocked_fraction
+                blocked_rev = blocked_qty * price
+                self.route_sales_blocked_this_step += blocked_qty
+                self.route_revenue_blocked_this_step += blocked_rev
+                buyer.inbound_route_sales_blocked_this_step += blocked_qty
+                buyer.inbound_route_revenue_blocked_this_step += blocked_rev
+                quantity = attempted_qty * (1.0 - blocked_fraction)
+
         if not self.active:
             return 0.0
+
         if reservation_buyer_id is None:
             available_inventory = self.model.available_inventory_for_spot_sales(self)
         else:

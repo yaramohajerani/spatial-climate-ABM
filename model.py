@@ -31,12 +31,6 @@ try:  # pragma: no cover - package import path
         normalize_raster_hazard_events,
         normalize_route_shocks,
     )
-    from .transport_runtime import (
-        dedupe_pairs,
-        inbound_route_exposure_ratio,
-        make_transport_patch,
-        route_exposure_ratio,
-    )
 except ImportError:  # pragma: no cover - flat script import path
     from agents import FirmAgent, HouseholdAgent
     from hazard_utils import lazy_hazard_from_geotiffs, LazyHazard, SyntheticHazard
@@ -50,12 +44,6 @@ except ImportError:  # pragma: no cover - flat script import path
         normalize_node_shocks,
         normalize_raster_hazard_events,
         normalize_route_shocks,
-    )
-    from transport_runtime import (
-        dedupe_pairs,
-        inbound_route_exposure_ratio,
-        make_transport_patch,
-        route_exposure_ratio,
     )
 
 Coords = Tuple[int, int]
@@ -460,7 +448,6 @@ class EconomyModel(Model):
             for supplier in getattr(buyer, "connected_firms", [])
             if supplier is not None
         }
-        self._initialize_transport_route_metrics()
         self._register_node_shocks()
         self._precomputed_route_transport_edges: List[Tuple[RouteShock, List[Tuple[FirmAgent, FirmAgent]]]] = []
         self._precomputed_lane_transport_edges: List[Tuple[LaneShock, List[Tuple[FirmAgent, FirmAgent]]]] = []
@@ -468,6 +455,7 @@ class EconomyModel(Model):
         self._build_lane_transport_maps()
         self._precomputed_transport_edges = self._precomputed_route_transport_edges
         self._precomputed_link_edges = self._precomputed_lane_transport_edges
+        self._active_link_blocks: dict[tuple[int, int], float] = {}
 
         # NOTE: With LazyHazard, we no longer need CLIMADA exposures/centroids.
         # Hazard sampling is done directly from GeoTIFF files at agent locations.
@@ -1035,7 +1023,7 @@ class EconomyModel(Model):
                     UserWarning,
                     stacklevel=2,
                 )
-            return dedupe_pairs(pairs)
+            return self._dedupe_pairs(pairs)
 
         if topology_edges:
             for edge in topology_edges:
@@ -1048,7 +1036,7 @@ class EconomyModel(Model):
                 if supplier_agent is not None and buyer_agent is not None:
                     pairs.append((supplier_agent, buyer_agent))
             if pairs:
-                return dedupe_pairs(pairs)
+                return self._dedupe_pairs(pairs)
 
         for exposed_id in exposed_ids:
             buyer_agent = self._topology_id_to_agent.get(exposed_id)
@@ -1058,7 +1046,7 @@ class EconomyModel(Model):
                 if supplier_agent is not None:
                     pairs.append((supplier_agent, buyer_agent))
 
-        return dedupe_pairs(pairs)
+        return self._dedupe_pairs(pairs)
 
     def _resolve_lane_shock_edges(self, shock: LaneShock) -> TransportPairs:
         supplier_agent = self._topology_id_to_agent.get(int(shock.supplier_id))
@@ -1082,17 +1070,6 @@ class EconomyModel(Model):
             return []
         return [(supplier_agent, buyer_agent)]
 
-    def _initialize_transport_route_metrics(self) -> None:
-        for firm in self._firms:
-            firm.route_sales_attempted_this_step = 0.0
-            firm.route_sales_blocked_this_step = 0.0
-            firm.route_revenue_attempted_this_step = 0.0
-            firm.route_revenue_blocked_this_step = 0.0
-            firm.inbound_route_sales_attempted_this_step = 0.0
-            firm.inbound_route_sales_blocked_this_step = 0.0
-            firm.inbound_route_revenue_attempted_this_step = 0.0
-            firm.inbound_route_revenue_blocked_this_step = 0.0
-
     def _reset_transport_route_metrics(self) -> None:
         for firm in self._firms:
             firm.route_sales_attempted_this_step = 0.0
@@ -1107,7 +1084,7 @@ class EconomyModel(Model):
     def _install_transport_reporters(self) -> None:
         self.datacollector._new_model_reporter(
             "Average_Direct_Route_Exposure",
-            lambda m: float(np.mean([route_exposure_ratio(f) for f in m._firms])) if m._firms else 0.0,
+            lambda m: float(np.mean([f.route_exposure_ratio for f in m._firms])) if m._firms else 0.0,
         )
         self.datacollector._new_model_reporter(
             "Total_Route_Sales_Attempted",
@@ -1127,7 +1104,7 @@ class EconomyModel(Model):
         )
         self.datacollector._new_model_reporter(
             "Average_Inbound_Route_Exposure",
-            lambda m: float(np.mean([inbound_route_exposure_ratio(f) for f in m._firms])) if m._firms else 0.0,
+            lambda m: float(np.mean([f.inbound_route_exposure_ratio for f in m._firms])) if m._firms else 0.0,
         )
         self.datacollector._new_model_reporter(
             "Total_Inbound_Route_Revenue_Attempted",
@@ -1139,11 +1116,11 @@ class EconomyModel(Model):
         )
         self.datacollector._new_agent_reporter(
             "direct_route_exposure",
-            lambda a: route_exposure_ratio(a),
+            lambda a: getattr(a, "route_exposure_ratio", np.nan),
         )
         self.datacollector._new_agent_reporter(
             "inbound_route_exposure",
-            lambda a: inbound_route_exposure_ratio(a),
+            lambda a: getattr(a, "inbound_route_exposure_ratio", np.nan),
         )
         self.datacollector._new_agent_reporter(
             "inbound_route_revenue_attempted",
@@ -1189,33 +1166,17 @@ class EconomyModel(Model):
             active.append((float(shock.blocked_fraction), pairs))
         return active
 
-    def _apply_transport_patches(
-        self,
-        active: List[ActiveTransportBlock],
-    ) -> Dict[int, Tuple[FirmAgent, object]]:
-        if not active:
-            return {}
-
-        supplier_blocks: Dict[int, Tuple[FirmAgent, Dict[int, float]]] = {
-            int(supplier.unique_id): (supplier, {}) for supplier in self._firms
-        }
-        for blocked_fraction, pairs in active:
-            for supplier_agent, buyer_agent in pairs:
-                supplier_id = int(supplier_agent.unique_id)
-                buyer_id = int(buyer_agent.unique_id)
-                current = supplier_blocks[supplier_id][1].get(buyer_id, 0.0)
-                supplier_blocks[supplier_id][1][buyer_id] = max(current, blocked_fraction)
-
-        patches: Dict[int, Tuple[FirmAgent, object]] = {}
-        for supplier_id, (supplier, blocked_buyers) in supplier_blocks.items():
-            original = supplier.sell_goods_to_firm
-            patches[supplier_id] = (supplier, original)
-            supplier.sell_goods_to_firm = make_transport_patch(supplier, original, blocked_buyers)
-        return patches
-
-    def _remove_transport_patches(self, patches: Dict[int, Tuple[FirmAgent, object]]) -> None:
-        for supplier, original in patches.values():
-            supplier.sell_goods_to_firm = original
+    def _build_active_link_blocks(self) -> None:
+        self._active_link_blocks.clear()
+        for blocked_fraction, pairs in self._active_transport_blocks(self.current_step):
+            for supplier, buyer in pairs:
+                key = (
+                    int(getattr(supplier, "topology_id", supplier.unique_id)),
+                    int(getattr(buyer, "topology_id", buyer.unique_id)),
+                )
+                self._active_link_blocks[key] = max(
+                    self._active_link_blocks.get(key, 0.0), blocked_fraction
+                )
 
     def _count_reserved_capacity_contracts(self) -> int:
         return sum(
@@ -1224,6 +1185,21 @@ class EconomyModel(Model):
             for contract in contracts
             if float(contract.get("quantity", 0.0)) > 1e-9
         )
+
+    @staticmethod
+    def _dedupe_pairs(pairs: List[Tuple[object, object]]) -> List[Tuple[object, object]]:
+        seen: set[tuple[int, int]] = set()
+        deduped: List[Tuple[object, object]] = []
+        for supplier, buyer in pairs:
+            key = (
+                int(getattr(supplier, "topology_id", getattr(supplier, "unique_id", id(supplier)))),
+                int(getattr(buyer, "topology_id", getattr(buyer, "unique_id", id(buyer)))),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append((supplier, buyer))
+        return deduped
 
     @staticmethod
     def _safe_share(numerator: float, denominator: float) -> float:
@@ -1801,14 +1777,12 @@ class EconomyModel(Model):
         firms = self._firms.copy()
         # Sort by broad supply-chain tier so upstream sectors replenish before downstream buyers.
         firms.sort(key=self._sector_priority)
-        transport_patches = self._apply_transport_patches(
-            self._active_transport_blocks(self.current_step)
-        )
+        self._build_active_link_blocks()
         try:
             for firm in firms:
                 firm.step()
         finally:
-            self._remove_transport_patches(transport_patches)
+            self._active_link_blocks.clear()
 
         # 3. Households consume the goods produced in the current period.
         households = self._households.copy()
