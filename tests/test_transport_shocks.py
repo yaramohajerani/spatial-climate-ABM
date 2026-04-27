@@ -101,11 +101,12 @@ def test_lane_shock_throttles_deliveries_without_direct_damage(tmp_path: Path) -
     supplier.inventory_output = 20.0
     supplier.price = 2.0
 
-    patches = model._apply_transport_patches(model._active_transport_blocks(1))
+    model.current_step = 1
+    model._build_active_link_blocks()
     try:
         delivered = supplier.sell_goods_to_firm(buyer, quantity=10.0)
     finally:
-        model._remove_transport_patches(patches)
+        model._active_link_blocks.clear()
 
     assert delivered == pytest.approx(3.0)
     assert supplier.raw_direct_loss_fraction_this_step == 0.0
