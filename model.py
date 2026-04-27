@@ -747,6 +747,12 @@ class EconomyModel(Model):
                 continue
             if not supplier.active:
                 continue
+            # Intentional design: mid-step rewiring uses each candidate's current
+            # state. Candidates that haven't stepped yet this period have
+            # production == 0 (reset by plan_operations) and must therefore carry
+            # over inventory_output > 0 to qualify. Candidates with zero carryover
+            # that will produce later in the same period are excluded — the rewire
+            # conservatively avoids depending on production not yet confirmed.
             if supplier.inventory_output <= 1e-9 and supplier.production <= 1e-9:
                 continue
             candidates.append(supplier)
@@ -1302,8 +1308,12 @@ class EconomyModel(Model):
     def _topological_firm_order(self) -> list[FirmAgent]:
         """Return firms in topological supply-chain order (suppliers before buyers).
 
-        Kahn's algorithm over the live connected_firms graph. Sector priority
-        breaks ties within the ready set and handles any cycles as a fallback.
+        Kahn's algorithm over the live connected_firms graph. When the ready
+        queue empties before all firms are placed (a cycle exists), the
+        lowest-priority unvisited firm is force-scheduled to break the deadlock
+        and Kahn's continues. This correctly orders acyclic firms downstream of
+        a cycle, which a simple sorted-remainder fallback cannot guarantee.
+        Sector priority breaks ties within the ready set.
         """
         import heapq
 
@@ -1329,21 +1339,29 @@ class EconomyModel(Model):
 
         order: list[FirmAgent] = []
         visited: set[int] = set()
-        while ready:
+        while len(order) < len(self._firms):
+            if not ready:
+                # Cycle detected: force-schedule the best unvisited firm to
+                # break the deadlock, then let Kahn's drain its dependents
+                # normally so downstream-of-cycle firms stay correctly ordered.
+                for f in sorted(
+                    (f for f in self._firms if f.unique_id not in visited),
+                    key=lambda f: (self.SECTOR_ORDER.get(f.sector, 1), f.unique_id),
+                ):
+                    heapq.heappush(ready, _entry(f))
+                    break
             _, _, firm = heapq.heappop(ready)
+            if firm.unique_id in visited:
+                continue  # duplicate push from cycle-breaking
             order.append(firm)
             visited.add(firm.unique_id)
             for dep in dependents[firm.unique_id]:
+                if dep.unique_id in visited:
+                    continue
                 in_degree[dep.unique_id] -= 1
                 if in_degree[dep.unique_id] == 0:
                     heapq.heappush(ready, _entry(dep))
 
-        # Firms in supply-chain cycles: append sorted by sector priority
-        remaining = sorted(
-            [f for f in self._firms if f.unique_id not in visited],
-            key=lambda f: (self.SECTOR_ORDER.get(f.sector, 1), f.unique_id),
-        )
-        order.extend(remaining)
         return order
 
     def _solve_initial_expected_sales(self) -> Dict[int, float]:
