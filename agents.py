@@ -1305,9 +1305,6 @@ class FirmAgent(Agent):
         reservation_buyer_id: int | None = None,
     ) -> float:
         """Sell intermediate goods to another firm."""
-        if not self.active:
-            return 0.0
-
         sup_tid = int(getattr(self, "topology_id", self.unique_id))
         buy_tid = int(getattr(buyer, "topology_id", buyer.unique_id))
         link_key = (sup_tid, buy_tid)
@@ -1329,6 +1326,9 @@ class FirmAgent(Agent):
                 buyer.inbound_route_sales_blocked_this_step += blocked_qty
                 buyer.inbound_route_revenue_blocked_this_step += blocked_rev
                 quantity = attempted_qty * (1.0 - blocked_fraction)
+
+        if not self.active:
+            return 0.0
 
         if reservation_buyer_id is None:
             available_inventory = self.model.available_inventory_for_spot_sales(self)

@@ -448,7 +448,6 @@ class EconomyModel(Model):
             for supplier in getattr(buyer, "connected_firms", [])
             if supplier is not None
         }
-        self._initialize_transport_route_metrics()
         self._register_node_shocks()
         self._precomputed_route_transport_edges: List[Tuple[RouteShock, List[Tuple[FirmAgent, FirmAgent]]]] = []
         self._precomputed_lane_transport_edges: List[Tuple[LaneShock, List[Tuple[FirmAgent, FirmAgent]]]] = []
@@ -1071,17 +1070,6 @@ class EconomyModel(Model):
             return []
         return [(supplier_agent, buyer_agent)]
 
-    def _initialize_transport_route_metrics(self) -> None:
-        for firm in self._firms:
-            firm.route_sales_attempted_this_step = 0.0
-            firm.route_sales_blocked_this_step = 0.0
-            firm.route_revenue_attempted_this_step = 0.0
-            firm.route_revenue_blocked_this_step = 0.0
-            firm.inbound_route_sales_attempted_this_step = 0.0
-            firm.inbound_route_sales_blocked_this_step = 0.0
-            firm.inbound_route_revenue_attempted_this_step = 0.0
-            firm.inbound_route_revenue_blocked_this_step = 0.0
-
     def _reset_transport_route_metrics(self) -> None:
         for firm in self._firms:
             firm.route_sales_attempted_this_step = 0.0
@@ -1204,8 +1192,8 @@ class EconomyModel(Model):
         deduped: List[Tuple[object, object]] = []
         for supplier, buyer in pairs:
             key = (
-                getattr(supplier, "unique_id", id(supplier)),
-                getattr(buyer, "unique_id", id(buyer)),
+                int(getattr(supplier, "topology_id", getattr(supplier, "unique_id", id(supplier)))),
+                int(getattr(buyer, "topology_id", getattr(buyer, "unique_id", id(buyer)))),
             )
             if key in seen:
                 continue
