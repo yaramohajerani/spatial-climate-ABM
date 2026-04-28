@@ -1305,8 +1305,8 @@ class EconomyModel(Model):
         """Return firms in topological supply-chain order (suppliers before buyers).
 
         Kahn's algorithm over the live connected_firms graph. When the ready
-        queue empties before all firms are placed (a cycle exists), Tarjan's SCC
-        is run on the remaining induced subgraph to identify a source SCC — one
+        queue empties before all firms are placed (a cycle exists), an iterative
+        Kosaraju SCC is run on the remaining induced subgraph to identify a source SCC — one
         with no incoming edges from other SCCs in the condensation. The best
         member of that source SCC is force-scheduled to break the deadlock, then
         Kahn's continues normally. This guarantees supplier-before-buyer ordering
@@ -1333,7 +1333,7 @@ class EconomyModel(Model):
         def _best_source_scc_member(remaining_ids: set[int]) -> FirmAgent:
             """Return the best firm from a source SCC of the remaining subgraph.
 
-            Runs Tarjan's SCC on the supplier→buyer adjacency restricted to
+            Runs iterative Kosaraju SCC on the supplier→buyer adjacency restricted to
             remaining_ids, computes the condensation in-degrees, then returns
             the lowest-(sector,id) firm in any source SCC (condensation
             in-degree == 0). Source SCCs have no unprocessed upstream
