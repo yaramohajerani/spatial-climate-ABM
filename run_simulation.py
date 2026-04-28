@@ -391,6 +391,7 @@ def _run_single_simulation(
         route_shocks=route_shocks,
         seed=seed,
         apply_hazard_impacts=apply_shocks,
+        apply_transport_shocks=apply_shocks,
         firm_topology_path=args.topology,
         start_year=args.start_year,
         steps_per_year=args.steps_per_year,

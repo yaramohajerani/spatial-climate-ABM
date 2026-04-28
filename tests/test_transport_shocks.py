@@ -79,6 +79,7 @@ def test_lane_shock_throttles_deliveries_without_direct_damage(tmp_path: Path) -
         num_households=20,
         firm_topology_path=topology_path,
         apply_hazard_impacts=False,
+        apply_transport_shocks=True,
         adaptation_params={"enabled": False},
         consumption_ratios={"retail": 1.0},
         seed=5,
@@ -117,6 +118,7 @@ def test_lane_shock_throttles_deliveries_without_direct_damage(tmp_path: Path) -
         num_households=20,
         firm_topology_path=topology_path,
         apply_hazard_impacts=False,
+        apply_transport_shocks=True,
         adaptation_params={"enabled": False},
         consumption_ratios={"retail": 1.0},
         seed=5,
@@ -136,6 +138,45 @@ def test_lane_shock_throttles_deliveries_without_direct_damage(tmp_path: Path) -
 
     assert results_df["Average_Realized_Direct_Loss"].iloc[0] == 0.0
     assert results_df["Flooded_Firms"].iloc[0] == 0
+
+
+def test_disabled_shocks_leave_transport_lanes_unblocked(tmp_path: Path) -> None:
+    topology_path = _write_transport_topology(tmp_path)
+    model = build_model(
+        num_households=20,
+        firm_topology_path=topology_path,
+        apply_hazard_impacts=False,
+        adaptation_params={"enabled": False},
+        consumption_ratios={"retail": 1.0},
+        seed=6,
+        damage_functions_path=str(_DAMAGE_FUNCTIONS_PATH),
+        land_boundaries_path=str(_LAND_BOUNDARIES_PATH),
+        lane_shocks=[
+            LaneShock(
+                label="Lane",
+                supplier_id=1,
+                buyer_id=2,
+                capacity_fraction=0.3,
+                start_step=1,
+                end_step=1,
+            )
+        ],
+    )
+
+    supplier = _firm_by_id(model, 1)
+    buyer = _firm_by_id(model, 2)
+    supplier.inventory_output = 20.0
+    supplier.price = 2.0
+
+    model.current_step = 1
+    model._build_active_link_blocks()
+    try:
+        delivered = supplier.sell_goods_to_firm(buyer, quantity=10.0)
+    finally:
+        model._active_link_blocks.clear()
+
+    assert delivered == pytest.approx(10.0)
+    assert model.effective_configuration_metadata()["ApplyTransportShocks"] is False
 
 
 def test_route_shock_resolves_pairs_from_route_dependencies(tmp_path: Path) -> None:

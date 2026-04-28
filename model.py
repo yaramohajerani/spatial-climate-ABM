@@ -91,6 +91,7 @@ class EconomyModel(Model):
         steps_per_year: int = 4,
         firm_topology_path: str | None = None,
         apply_hazard_impacts: bool = True,
+        apply_transport_shocks: bool | None = None,
         adaptation_params: dict | None = None,
         consumption_ratios: dict | None = None,
         input_recipe_ranges: dict | None = None,
@@ -103,14 +104,19 @@ class EconomyModel(Model):
     ) -> None:  # noqa: D401
         super().__init__(seed=seed)
 
-        # Ensure NumPy uses the same seed so hazard sampling is reproducible
-        if seed is not None:
-            np.random.seed(seed)
+        # Hazard sampling uses a model-owned generator so multiple model
+        # instances in one process do not share global NumPy RNG state.
+        self.hazard_rng = np.random.default_rng(seed)
 
         # Flag to toggle whether sampled hazards actually affect agents.
         # If False, hazards are still sampled to preserve random draws but
         # impacts (capital loss, damage, relocation triggers) are disabled.
         self.apply_hazard_impacts: bool = apply_hazard_impacts
+        self.apply_transport_shocks: bool = (
+            bool(apply_hazard_impacts)
+            if apply_transport_shocks is None
+            else bool(apply_transport_shocks)
+        )
 
         # Flag to toggle household relocation (both hazard-driven and job-driven).
         # If False, households stay in place regardless of hazards or employment.
@@ -570,6 +576,7 @@ class EconomyModel(Model):
             ),
             "FirmReplacement": self.firm_replacement,
             "DynamicSupplierSearch": bool(self.dynamic_supplier_search_enabled),
+            "ApplyTransportShocks": bool(self.apply_transport_shocks),
             "StartupCapitalFloorCount": int(len(self._startup_capital_floor_overrides)),
             "StartupCapitalFloorTotal": float(startup_added_capital),
             "StartupCapitalFloorFirms": json.dumps(
@@ -1152,6 +1159,9 @@ class EconomyModel(Model):
         )
 
     def _active_transport_blocks(self, step_number: int) -> List[ActiveTransportBlock]:
+        if not self.apply_transport_shocks:
+            return []
+
         active: List[ActiveTransportBlock] = []
         for shock, pairs in self._precomputed_route_transport_edges:
             if not (shock.start_step <= step_number <= shock.end_step):
@@ -2180,7 +2190,7 @@ class EconomyModel(Model):
         # exceeded threshold. Sort rare-to-common so the first match is the
         # selected severity rather than relying on overwrite order.
         active_events.sort(key=lambda item: item[1])
-        severity_draw = float(np.random.random())
+        severity_draw = float(self.hazard_rng.random())
         selected_event: tuple[int, float] | None = None
 
         for idx_ev, p_hit in active_events:
