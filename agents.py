@@ -1617,18 +1617,6 @@ class FirmAgent(Agent):
                     remaining_inputs_needed,
                 )
 
-        if self.model.dynamic_supplier_search_enabled and self.INPUT_COEFF > 0:
-            for sector, remaining_inputs_needed in list(sector_remaining_inputs_needed.items()):
-                if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
-                    continue
-                new_suppliers = self.model.rewire_dynamic_supplier_edge(self, sector)
-                if not new_suppliers:
-                    continue
-                sector_remaining_inputs_needed[sector] = self._buy_inputs_from_suppliers(
-                    new_suppliers,
-                    remaining_inputs_needed,
-                )
-
         physical_shortfall_ratio = max(
             (
                 min(1.0, max(0.0, sector_remaining_inputs_needed.get(sector, 0.0) / desired_sector_units))
@@ -1689,6 +1677,22 @@ class FirmAgent(Agent):
                 sector_remaining_inputs_needed[sector] = remaining_inputs_needed
                 reserved_capacity_purchases += sector_reserved_purchases
                 reserved_capacity_price_savings += sector_reserved_price_savings
+
+        # Generic supplier rewiring is a last-resort market search. It should not
+        # preempt hazard-conditioned continuity mechanisms, otherwise those
+        # mechanisms never observe the primary supplier disruption they are meant
+        # to manage.
+        if self.model.dynamic_supplier_search_enabled and self.INPUT_COEFF > 0:
+            for sector, remaining_inputs_needed in list(sector_remaining_inputs_needed.items()):
+                if remaining_inputs_needed <= 1e-9 or self._operating_cash_capacity() <= 1e-9:
+                    continue
+                new_suppliers = self.model.rewire_dynamic_supplier_edge(self, sector)
+                if not new_suppliers:
+                    continue
+                sector_remaining_inputs_needed[sector] = self._buy_inputs_from_suppliers(
+                    new_suppliers,
+                    remaining_inputs_needed,
+                )
         self.backup_purchases_this_step = backup_purchases
         self.reserved_capacity_purchases_this_step = reserved_capacity_purchases
         self.reserved_capacity_price_savings_this_step = reserved_capacity_price_savings
