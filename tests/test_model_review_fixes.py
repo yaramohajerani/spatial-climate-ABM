@@ -371,7 +371,7 @@ def test_dynamic_supplier_search_disabled_prevents_rewiring() -> None:
     assert new_supplier not in buyer.connected_firms
 
 
-def test_dynamic_supplier_search_replaces_highest_price_supplier() -> None:
+def test_dynamic_supplier_search_preserves_available_highest_price_supplier() -> None:
     model = _build_model()
     buyer = next(f for f in model._firms if f.sector == "services")
     sector = "manufacturing"
@@ -393,10 +393,10 @@ def test_dynamic_supplier_search_replaces_highest_price_supplier() -> None:
 
     new_suppliers = model.rewire_dynamic_supplier_edge(buyer, sector)
 
-    assert new_suppliers == [new_supplier]
+    assert new_suppliers == []
     assert low_price_supplier in buyer.connected_firms
-    assert high_price_supplier not in buyer.connected_firms
-    assert new_supplier in buyer.connected_firms
+    assert high_price_supplier in buyer.connected_firms
+    assert new_supplier not in buyer.connected_firms
 
 
 def test_topology_missing_recipe_supplier_warns_without_rewriting(tmp_path) -> None:

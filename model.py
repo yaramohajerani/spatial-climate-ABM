@@ -747,6 +747,12 @@ class EconomyModel(Model):
                 continue
             if not supplier.active:
                 continue
+            # Intentional design: mid-step rewiring uses each candidate's current
+            # state. Candidates that haven't stepped yet this period have
+            # production == 0 (reset by plan_operations) and must therefore carry
+            # over inventory_output > 0 to qualify. Candidates with zero carryover
+            # that will produce later in the same period are excluded — the rewire
+            # conservatively avoids depending on production not yet confirmed.
             if supplier.inventory_output <= 1e-9 and supplier.production <= 1e-9:
                 continue
             candidates.append(supplier)
@@ -765,15 +771,13 @@ class EconomyModel(Model):
         best_candidate = candidates[0]
         unavailable_suppliers = [
             supplier for supplier in sector_suppliers
-            if (not supplier.active) or supplier.inventory_output <= 1e-9
+            if (not supplier.active) or (supplier.inventory_output <= 1e-9 and supplier.production <= 1e-9)
         ]
-        if unavailable_suppliers:
-            unavailable_suppliers.sort(key=lambda supplier: (supplier.active, -supplier.price))
-            remove_supplier = unavailable_suppliers[0]
-        else:
-            remove_supplier = max(sector_suppliers, key=lambda supplier: supplier.price)
-            if best_candidate.price >= remove_supplier.price:
-                return []
+        if not unavailable_suppliers:
+            return []
+
+        unavailable_suppliers.sort(key=lambda supplier: (supplier.active, -supplier.price))
+        remove_supplier = unavailable_suppliers[0]
 
         buyer.connected_firms.remove(remove_supplier)
         buyer.connected_firms.append(best_candidate)
@@ -1297,6 +1301,132 @@ class EconomyModel(Model):
 
         return (self.SECTOR_ORDER.get(firm.sector, 1), self.random.random())
 
+    def _topological_firm_order(self) -> list[FirmAgent]:
+        """Return firms in topological supply-chain order (suppliers before buyers).
+
+        Kahn's algorithm over the live connected_firms graph. When the ready
+        queue empties before all firms are placed (a cycle exists), Tarjan's SCC
+        is run on the remaining induced subgraph to identify a source SCC — one
+        with no incoming edges from other SCCs in the condensation. The best
+        member of that source SCC is force-scheduled to break the deadlock, then
+        Kahn's continues normally. This guarantees supplier-before-buyer ordering
+        for all acyclic firms downstream of cycles. Sector priority breaks ties.
+        """
+        import heapq
+
+        firm_ids = {f.unique_id for f in self._firms}
+        firm_by_id: dict[int, FirmAgent] = {f.unique_id: f for f in self._firms}
+        in_degree: dict[int, int] = {f.unique_id: 0 for f in self._firms}
+        dependents: dict[int, list[FirmAgent]] = {f.unique_id: [] for f in self._firms}
+
+        for firm in self._firms:
+            for supplier in firm.connected_firms:
+                if supplier.unique_id in firm_ids:
+                    in_degree[firm.unique_id] += 1
+                    dependents[supplier.unique_id].append(firm)
+
+        # Heap entry: (sector_order, unique_id, firm) — unique_id ensures firm
+        # objects are never compared directly (FirmAgent has no __lt__).
+        def _entry(f: FirmAgent) -> tuple:
+            return (self.SECTOR_ORDER.get(f.sector, 1), f.unique_id, f)
+
+        def _best_source_scc_member(remaining_ids: set[int]) -> FirmAgent:
+            """Return the best firm from a source SCC of the remaining subgraph.
+
+            Runs Tarjan's SCC on the supplier→buyer adjacency restricted to
+            remaining_ids, computes the condensation in-degrees, then returns
+            the lowest-(sector,id) firm in any source SCC (condensation
+            in-degree == 0). Source SCCs have no unprocessed upstream
+            dependencies, so scheduling one cannot violate supplier-before-buyer
+            ordering for any acyclic node in the remaining graph.
+            """
+            adj: dict[int, list[int]] = {fid: [] for fid in remaining_ids}
+            reverse_adj: dict[int, list[int]] = {fid: [] for fid in remaining_ids}
+            for fid in remaining_ids:
+                for dep in dependents[fid]:
+                    if dep.unique_id in remaining_ids:
+                        adj[fid].append(dep.unique_id)
+                        reverse_adj[dep.unique_id].append(fid)
+
+            # Iterative Kosaraju SCC avoids recursion-depth failures on large
+            # user-supplied topologies.
+            visited_first: set[int] = set()
+            finish_order: list[int] = []
+            for start in remaining_ids:
+                if start in visited_first:
+                    continue
+                stack: list[tuple[int, bool]] = [(start, False)]
+                while stack:
+                    node, expanded = stack.pop()
+                    if expanded:
+                        finish_order.append(node)
+                        continue
+                    if node in visited_first:
+                        continue
+                    visited_first.add(node)
+                    stack.append((node, True))
+                    for nbr in adj[node]:
+                        if nbr not in visited_first:
+                            stack.append((nbr, False))
+
+            visited_second: set[int] = set()
+            sccs: list[list[int]] = []
+            for start in reversed(finish_order):
+                if start in visited_second:
+                    continue
+                scc: list[int] = []
+                stack = [start]
+                visited_second.add(start)
+                while stack:
+                    node = stack.pop()
+                    scc.append(node)
+                    for nbr in reverse_adj[node]:
+                        if nbr not in visited_second:
+                            visited_second.add(nbr)
+                            stack.append(nbr)
+                sccs.append(scc)
+
+            scc_of = {node: i for i, scc in enumerate(sccs) for node in scc}
+            scc_in_degree = [0] * len(sccs)
+            for fid in remaining_ids:
+                for nbr in adj[fid]:
+                    if scc_of[fid] != scc_of[nbr]:
+                        scc_in_degree[scc_of[nbr]] += 1
+
+            source_ids = {i for i, d in enumerate(scc_in_degree) if d == 0}
+            return min(
+                (firm_by_id[fid] for fid in remaining_ids if scc_of[fid] in source_ids),
+                key=lambda f: (self.SECTOR_ORDER.get(f.sector, 1), f.unique_id),
+            )
+
+        ready: list[tuple] = []
+        for f in self._firms:
+            if in_degree[f.unique_id] == 0:
+                heapq.heappush(ready, _entry(f))
+
+        order: list[FirmAgent] = []
+        visited: set[int] = set()
+        while len(order) < len(self._firms):
+            if not ready:
+                # Cycle detected: find a source SCC in the remaining induced
+                # subgraph and force-schedule its best member to break the
+                # deadlock without misordering downstream acyclic firms.
+                remaining_ids = {fid for fid in firm_ids if fid not in visited}
+                heapq.heappush(ready, _entry(_best_source_scc_member(remaining_ids)))
+            _, _, firm = heapq.heappop(ready)
+            if firm.unique_id in visited:
+                continue  # duplicate push from cycle-breaking
+            order.append(firm)
+            visited.add(firm.unique_id)
+            for dep in dependents[firm.unique_id]:
+                if dep.unique_id in visited:
+                    continue
+                in_degree[dep.unique_id] -= 1
+                if in_degree[dep.unique_id] == 0:
+                    heapq.heappush(ready, _entry(dep))
+
+        return order
+
     def _solve_initial_expected_sales(self) -> Dict[int, float]:
         """Bootstrap firm demand from final-demand shares scaled to labour supply."""
 
@@ -1774,9 +1904,9 @@ class EconomyModel(Model):
 
         # 2. Firms – hire labour accumulated in phase 1, purchase inputs,
         #    produce goods, and adjust prices/wages.
-        firms = self._firms.copy()
-        # Sort by broad supply-chain tier so upstream sectors replenish before downstream buyers.
-        firms.sort(key=self._sector_priority)
+        # Topological sort so every firm's suppliers step before it, both across
+        # and within sectors. Falls back to sector priority for any cycles.
+        firms = self._topological_firm_order()
         self._build_active_link_blocks()
         try:
             for firm in firms:
