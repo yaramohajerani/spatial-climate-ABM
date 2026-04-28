@@ -773,15 +773,11 @@ class EconomyModel(Model):
             supplier for supplier in sector_suppliers
             if (not supplier.active) or (supplier.inventory_output <= 1e-9 and supplier.production <= 1e-9)
         ]
-        if unavailable_suppliers:
-            unavailable_suppliers.sort(key=lambda supplier: (supplier.active, -supplier.price))
-            remove_supplier = unavailable_suppliers[0]
-        else:
-            remove_supplier = max(sector_suppliers, key=lambda supplier: supplier.price)
-            if remove_supplier.production > 1e-9:
-                return []
-            if best_candidate.price >= remove_supplier.price:
-                return []
+        if not unavailable_suppliers:
+            return []
+
+        unavailable_suppliers.sort(key=lambda supplier: (supplier.active, -supplier.price))
+        remove_supplier = unavailable_suppliers[0]
 
         buyer.connected_firms.remove(remove_supplier)
         buyer.connected_firms.append(best_candidate)
@@ -1345,43 +1341,50 @@ class EconomyModel(Model):
             ordering for any acyclic node in the remaining graph.
             """
             adj: dict[int, list[int]] = {fid: [] for fid in remaining_ids}
+            reverse_adj: dict[int, list[int]] = {fid: [] for fid in remaining_ids}
             for fid in remaining_ids:
                 for dep in dependents[fid]:
                     if dep.unique_id in remaining_ids:
                         adj[fid].append(dep.unique_id)
+                        reverse_adj[dep.unique_id].append(fid)
 
-            # Tarjan's iterative-friendly recursive SCC (graph ≤ |firms| deep).
-            idx_cnt = [0]
-            stk: list[int] = []
-            on_stk: set[int] = set()
-            idx_map: dict[int, int] = {}
-            low_map: dict[int, int] = {}
+            # Iterative Kosaraju SCC avoids recursion-depth failures on large
+            # user-supplied topologies.
+            visited_first: set[int] = set()
+            finish_order: list[int] = []
+            for start in remaining_ids:
+                if start in visited_first:
+                    continue
+                stack: list[tuple[int, bool]] = [(start, False)]
+                while stack:
+                    node, expanded = stack.pop()
+                    if expanded:
+                        finish_order.append(node)
+                        continue
+                    if node in visited_first:
+                        continue
+                    visited_first.add(node)
+                    stack.append((node, True))
+                    for nbr in adj[node]:
+                        if nbr not in visited_first:
+                            stack.append((nbr, False))
+
+            visited_second: set[int] = set()
             sccs: list[list[int]] = []
-
-            def _visit(v: int) -> None:
-                idx_map[v] = low_map[v] = idx_cnt[0]
-                idx_cnt[0] += 1
-                stk.append(v)
-                on_stk.add(v)
-                for w in adj[v]:
-                    if w not in idx_map:
-                        _visit(w)
-                        low_map[v] = min(low_map[v], low_map[w])
-                    elif w in on_stk:
-                        low_map[v] = min(low_map[v], idx_map[w])
-                if low_map[v] == idx_map[v]:
-                    scc: list[int] = []
-                    while True:
-                        w = stk.pop()
-                        on_stk.discard(w)
-                        scc.append(w)
-                        if w == v:
-                            break
-                    sccs.append(scc)
-
-            for fid in remaining_ids:
-                if fid not in idx_map:
-                    _visit(fid)
+            for start in reversed(finish_order):
+                if start in visited_second:
+                    continue
+                scc: list[int] = []
+                stack = [start]
+                visited_second.add(start)
+                while stack:
+                    node = stack.pop()
+                    scc.append(node)
+                    for nbr in reverse_adj[node]:
+                        if nbr not in visited_second:
+                            visited_second.add(nbr)
+                            stack.append(nbr)
+                sccs.append(scc)
 
             scc_of = {node: i for i, scc in enumerate(sccs) for node in scc}
             scc_in_degree = [0] * len(sccs)
