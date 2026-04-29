@@ -119,6 +119,32 @@ def test_run_model_returns_model_and_agent_frames(tmp_path: Path) -> None:
     assert {"Step", "AgentID"}.issubset(set(agents_df.columns))
 
 
+def test_build_model_forwards_commercial_model_controls(tmp_path: Path) -> None:
+    topology_path = _write_topology(tmp_path)
+
+    model = build_model(
+        num_households=10,
+        firm_topology_path=topology_path,
+        apply_hazard_impacts=False,
+        apply_transport_shocks=True,
+        adaptation_params={"enabled": False},
+        consumption_ratios={"retail": 1.0},
+        input_recipe_ranges={"manufacturing": {"commodity": [1.0, 1.0]}},
+        firm_replacement="none",
+        dynamic_supplier_search=False,
+        seed=10,
+        damage_functions_path=str(_DAMAGE_FUNCTIONS_PATH),
+        land_boundaries_path=str(_LAND_BOUNDARIES_PATH),
+    )
+
+    metadata = model.effective_configuration_metadata()
+
+    assert metadata["FirmReplacement"] == "none"
+    assert metadata["DynamicSupplierSearch"] is False
+    assert metadata["ApplyTransportShocks"] is True
+    assert model.input_recipe_ranges["manufacturing"] == {"commodity": [1.0, 1.0]}
+
+
 def test_param_input_normalization_expands_lane_link_lists() -> None:
     raster_events, node_events, lane_events, route_events = _coerce_shock_inputs(
         legacy_rp_files=["5:1:2:FL:None"],

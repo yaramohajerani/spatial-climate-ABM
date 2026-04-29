@@ -1,6 +1,6 @@
 # ODD Protocol for the Spatial Climate-Economy ABM
 
-This document provides a detailed Overview, Design concepts, and Details (ODD) protocol for the agent-based model implemented in this repository. It is written against the current implementation in `model.py`, `agents.py`, `run_simulation.py`, and the associated configuration and manuscript files present in the repository on April 26, 2026.
+This document provides a detailed Overview, Design concepts, and Details (ODD) protocol for the agent-based model implemented in this repository. It is written against the current implementation in `model.py`, `agents.py`, `run_simulation.py`, and the associated configuration and manuscript files present in the repository on April 28, 2026.
 
 The protocol distinguishes between:
 
@@ -167,13 +167,13 @@ The step sequence is:
 7. If the reserved-capacity strategy is active, create reserved supplier contracts before procurement begins.
 8. Households supply labor. They search for employers, optionally relocate if that feature is enabled, and sell labor to hiring firms.
 9. Firms execute production in broad sector order. Commodity firms act before manufacturing firms, which act before retail/service firms. Ties within broad sector tiers are randomized each step.
-10. During firm execution, wages and prices are updated first using prior-period information, then firms procure inputs, optionally rewire existing supplier links for unavailable required input sectors, optionally access continuity-enabled backup channels, produce output, clear employees, and depreciate capital.
+10. During firm execution, wages and prices are updated first using prior-period information, then firms procure inputs from primary suppliers, identify hazard-related primary-supplier shortages, optionally access continuity-enabled backup or reserved-capacity channels, optionally use generic dynamic supplier rewiring as a last-resort market search, produce output, clear employees, and depreciate capital.
 11. Households consume final goods after current-period production is complete.
 12. Firms close the accounting period: compute profits, install productive capital when no current direct loss blocks it, fund adaptation from residual cash, pay dividends, and update adaptive expectations and exposure diagnostics.
 13. Firms partially recover damage factors after the current period's production and accounting have closed, so recovery affects the next period rather than smoothing the current shock.
 14. The model updates the mean wage, collects model-level and agent-level observations, and then applies the configured firm-failure policy at the global replacement interval.
 
-Optional transport shocks are applied only around the firm execution phase by temporarily patching supplier sale functions on affected edges.
+Optional transport shocks are applied only during firm-to-firm procurement. They are represented as active blocked fractions on affected supplier -> buyer edges and are enforced inside `sell_goods_to_firm()` when the buyer attempts to purchase inputs.
 
 ## 2. Design Concepts
 
@@ -355,7 +355,7 @@ Optional lane and route shocks reduce effective capacity on specific supplier ->
 
 #### Topology rewiring
 
-When enabled, dynamic supplier search allows firms to replace existing supplier counterparties in response to input bottlenecks. This is modeled as rewiring of standing relationship slots rather than edge accumulation. It is therefore distinct from continuity-capital strategies such as `backup_suppliers`, which provide emergency procurement without changing the standing network.
+When enabled, dynamic supplier search allows firms to replace existing supplier counterparties in response to input bottlenecks. This is modeled as rewiring of standing relationship slots rather than edge accumulation. It is distinct from continuity-capital strategies such as `backup_suppliers`, which provide emergency procurement without changing the standing network. During a hazard-related shortage, backup or reserved-capacity sourcing is attempted before generic dynamic rewiring so the continuity mechanism observes the disrupted primary relationship it is designed to manage.
 
 ### 2.9 Stochasticity
 
@@ -371,7 +371,7 @@ Several processes are stochastic:
 - household relocation destination choice,
 - optional route-shock firing when route shocks are given a return period.
 
-The simulation supports explicit seeding, and the repository workflow relies heavily on matched-seed comparisons across scenarios.
+The simulation supports explicit seeding, and the repository workflow relies heavily on matched-seed comparisons across scenarios. Mesa-level stochasticity uses the model seed, while hazard severity sampling uses a model-owned NumPy generator initialized from the same seed rather than global NumPy RNG state.
 
 ### 2.10 Collectives
 
@@ -810,7 +810,8 @@ Key features are:
 - firms buy cheapest available input first,
 - purchases require real supplier inventory and real buyer cash capacity,
 - input inventories are stored by supplier ID,
-- if dynamic supplier search is enabled, firms with unresolved required input demand can replace one existing supplier link in the affected supplier sector,
+- if a required input remains unavailable and the shortage is hazard-related, continuity-enabled `backup_suppliers` or `reserved_capacity` sourcing is attempted before generic rewiring,
+- if dynamic supplier search is enabled, firms with unresolved required input demand can then replace one existing supplier link in the affected supplier sector,
 - rewiring preserves the number of supplier links in that buyer-sector relationship set; it changes the counterparty, not the degree implied by the topology,
 - replacement candidates must be active same-sector firms with available inventory or current production and are ranked by price and then distance,
 - unavailable current suppliers are replaced first; otherwise, the highest-priced current supplier is replaced only if the best candidate is cheaper,
@@ -951,7 +952,7 @@ This reduces all three direct-loss channels represented in the code:
 
 #### Backup suppliers
 
-Under `backup_suppliers`, a hazard-affected firm with positive continuity capital can make emergency purchases from non-primary suppliers in the same supplier sectors. This is separate from `dynamic_supplier_search`: backup purchases do not create or rewire standing supplier edges, and dynamic supplier rewiring does not require continuity capital.
+Under `backup_suppliers`, a hazard-affected firm with positive continuity capital can make emergency purchases from non-primary suppliers in the same supplier sectors. This is separate from `dynamic_supplier_search`: backup purchases do not create or rewire standing supplier edges, and dynamic supplier rewiring does not require continuity capital. Backup sourcing is attempted before generic dynamic rewiring so that hazard-conditioned continuity capital is used for disrupted primary supplier relationships before the standing topology is changed.
 
 The rule is:
 
@@ -1065,7 +1066,7 @@ Under `firm_replacement = "none"`, failed firms are deactivated at the replaceme
 
 This submodel is optional.
 
-Lane and route shocks affect specific supplier -> buyer edges by blocking a fraction of attempted sales. The model implements this by temporarily patching each affected supplier's `sell_goods_to_firm` method during the firm execution phase.
+Lane and route shocks affect specific supplier -> buyer edges by blocking a fraction of attempted sales. The model precomputes affected pairs, builds a per-step map of active blocked edge fractions, and enforces those fractions inside `sell_goods_to_firm()` during firm procurement.
 
 Route shocks can apply:
 

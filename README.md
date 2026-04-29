@@ -26,6 +26,8 @@ need wrapper-owned monkeypatches to model transport disruption:
 - `LaneShock` for explicit supplier -> buyer transport throttles
 - `RouteShock` for disruptions keyed by topology `route_dependencies`
 - `build_model(...)` and `run_model(...)` for direct Python use from the repo root
+  with the same core controls exposed by the CLI, including input recipes, firm
+  replacement, dynamic supplier search, and transport-shock toggling
 
 ## What the Framework Does
 
@@ -72,7 +74,8 @@ python run_simulation.py --param-file quick_test_parameters.json
 Run directly from Python:
 
 ```python
-from upstream import NodeShock, RouteShock, run_model
+from api import run_model
+from shock_inputs import NodeShock, RouteShock
 
 model, results_df, agents_df = run_model(
     steps=12,
@@ -182,6 +185,12 @@ Key configuration blocks:
   (`retail`, `wholesale`, `services`; non-final sectors are ignored with a warning)
 - `adaptation`: hazard-conditional firm adaptation settings
 
+The CLI `--no-hazards` flag disables direct raster/node hazard impacts and
+transport shocks for a true no-shock baseline. In direct Python use, pass
+`apply_hazard_impacts=False` for no direct hazard damage; `apply_transport_shocks`
+defaults to the same value but can be set explicitly for logistics-only shock
+experiments.
+
 Using `None` as the hazard `path` encodes an explicit no-hazard warm-up window,
 for example:
 
@@ -237,6 +246,10 @@ Summary and member CSVs include `Meta_*` fields that record the effective
 scenario label, parameter file, topology file, hazard schedule, seed range, and
 adaptation settings. This makes saved outputs self-describing and easier to
 merge, re-plot, or audit later.
+
+Reproducibility is controlled by the model seed. Hazard severity sampling uses a
+model-owned NumPy generator rather than global NumPy RNG state, so multiple
+models can run in the same Python process without coupling their hazard draws.
 
 The model also records cascade-risk diagnostics used in the paper, including:
 

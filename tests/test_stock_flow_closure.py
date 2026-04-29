@@ -300,7 +300,7 @@ def test_none_hazard_entries_allow_explicit_warmup_windows() -> None:
     assert np.allclose(df["Flooded_Households"].to_numpy(), 0.0, atol=1e-12)
 
 
-def test_raster_return_period_layers_are_sampled_as_nested_exceedances(monkeypatch) -> None:
+def test_raster_return_period_layers_are_sampled_as_nested_exceedances() -> None:
     """One severity draw should select one RP layer per hazard type and step."""
 
     class FakeHazard:
@@ -318,12 +318,15 @@ def test_raster_return_period_layers_are_sampled_as_nested_exceedances(monkeypat
     model = build_closed_economy_model(adaptation_enabled=False)
     model.current_step = 1
     model.steps_per_year = 1
+    draw_values = iter([0.05, 0.2])
+    model.hazard_rng = type(
+        "FixedRng",
+        (),
+        {"random": staticmethod(lambda: next(draw_values))},
+    )()
     hazard = FakeHazard()
     cell_coords = [(0, 0), (1, 0), (2, 0)]
     geo_coords = [(0.5, 0.5), (1.5, 0.5), (2.5, 0.5)]
-
-    draw_values = iter([0.05, 0.2])
-    monkeypatch.setattr(np.random, "random", lambda: next(draw_values))
 
     intensities = model._sample_exceedance_hazard_intensities(
         hazard,
@@ -346,7 +349,7 @@ def test_raster_return_period_layers_are_sampled_as_nested_exceedances(monkeypat
     assert hazard.sampled_events == [1, 0, 0]
 
 
-def test_raster_return_period_sampling_enforces_nested_depth_envelope(monkeypatch) -> None:
+def test_raster_return_period_sampling_enforces_nested_depth_envelope() -> None:
     """Non-monotone raster inputs should not make rare events shallower."""
 
     class NonMonotoneHazard:
@@ -360,7 +363,11 @@ def test_raster_return_period_sampling_enforces_nested_depth_envelope(monkeypatc
     model = build_closed_economy_model(adaptation_enabled=False)
     model.current_step = 1
     model.steps_per_year = 1
-    monkeypatch.setattr(np.random, "random", lambda: 0.05)
+    model.hazard_rng = type(
+        "FixedRng",
+        (),
+        {"random": staticmethod(lambda: 0.05)},
+    )()
 
     intensities = model._sample_exceedance_hazard_intensities(
         NonMonotoneHazard(),
