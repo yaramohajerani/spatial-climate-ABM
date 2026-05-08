@@ -368,6 +368,7 @@ class FirmAgent(Agent):
         pos: Coords,
         sector: str = "manufacturing",
         capital_stock: float = 100.0,
+        sector_coefficients_override: dict | None = None,
     ) -> None:
         super().__init__(model)
 
@@ -375,8 +376,10 @@ class FirmAgent(Agent):
         self.sector = sector
         self.capital_stock = capital_stock
 
-        # Set sector-specific production coefficients
-        coeffs = self.SECTOR_COEFFICIENTS.get(sector, self.DEFAULT_COEFFICIENTS)
+        # Set sector-specific production coefficients (override wins over class constant)
+        coeffs_table = sector_coefficients_override if sector_coefficients_override is not None \
+            else self.SECTOR_COEFFICIENTS
+        coeffs = coeffs_table.get(sector, self.DEFAULT_COEFFICIENTS)
         self.LABOR_COEFF: float = coeffs["labor"]
         self.INPUT_COEFF: float = coeffs["input"]
         self.CAPITAL_COEFF: float = coeffs["capital"]

@@ -95,6 +95,7 @@ class EconomyModel(Model):
         adaptation_params: dict | None = None,
         consumption_ratios: dict | None = None,
         input_recipe_ranges: dict | None = None,
+        sector_coefficients: dict | None = None,
         firm_replacement: str = "startup_reset",
         dynamic_supplier_search: bool = True,
         grid_resolution: float = 1.0,
@@ -155,6 +156,9 @@ class EconomyModel(Model):
             if input_recipe_ranges is not None
             else FirmAgent.DEFAULT_INPUT_RECIPE_RANGES
         )
+        # Optional per-run override for FirmAgent sector coefficients (from IO calibration).
+        # None means FirmAgent uses its class-level SECTOR_COEFFICIENTS constant.
+        self.sector_coefficients_override: dict | None = sector_coefficients
         self.final_consumption_sectors = set(self.FINAL_CONSUMPTION_SECTORS)
         self._consumption_ratio_warning_emitted: bool = False
         self._startup_capital_floor_overrides: list[dict[str, float | int]] = []
@@ -570,6 +574,12 @@ class EconomyModel(Model):
             ),
             "InputRecipeRanges": json.dumps(
                 self.input_recipe_ranges,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ),
+            "SectorCoefficients": json.dumps(
+                self.sector_coefficients_override,
                 sort_keys=True,
                 separators=(",", ":"),
                 ensure_ascii=True,
@@ -1685,6 +1695,7 @@ class EconomyModel(Model):
                     model=self,
                     pos=(x, y),
                     sector=firm.get("sector", "manufacturing"),
+                    sector_coefficients_override=self.sector_coefficients_override,
                 )
                 # Preserve the external topology identifier for shock lookups.
                 ag.topology_id = int(firm["id"])
@@ -1713,7 +1724,8 @@ class EconomyModel(Model):
 
             for _ in range(num_firms):
                 pos = self.random.choice(filtered_land)
-                agent = FirmAgent(model=self, pos=pos, sector="manufacturing")
+                agent = FirmAgent(model=self, pos=pos, sector="manufacturing",
+                                  sector_coefficients_override=self.sector_coefficients_override)
                 self.grid.place_agent(agent, pos)
                 firm_agents_list.append(agent)
 

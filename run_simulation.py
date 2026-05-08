@@ -398,6 +398,7 @@ def _run_single_simulation(
         adaptation_params=adaptation_config,
         consumption_ratios=args.consumption_ratios,
         input_recipe_ranges=getattr(args, "input_recipe_ranges", None),
+        sector_coefficients=getattr(args, "sector_coefficients", None),
         firm_replacement=args.firm_replacement,
         dynamic_supplier_search=args.dynamic_supplier_search,
         grid_resolution=args.grid_resolution,
@@ -584,6 +585,7 @@ def main() -> None:  # noqa: D401
         # 8. Consumption ratios by sector -----------------------------------
         args.consumption_ratios = param_data.get("consumption_ratios", None)
         args.input_recipe_ranges = param_data.get("input_recipe_ranges", None)
+        args.sector_coefficients = param_data.get("sector_coefficients", None)
         # 9. Number of households -------------------------------------------
         args.num_households = int(param_data.get("num_households", 100))
 

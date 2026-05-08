@@ -1,0 +1,23 @@
+{
+  "_description": "Default concordance mapping WIOD National IO Table (NIOT nov16) sector codes to ABM model sectors. NIOT uses actual ISIC Rev.4 codes (A01, B, C10-C12, ...) rather than the sequential C01-C56 codes of the global WIOT. Assign each NIOT code to exactly one model sector; codes not listed are dropped. Adjust for your application region and research question.",
+  "_niot_sectors": "A01 A02 A03 B C10-C12 C13-C15 C16 C17 C18 C19 C20 C21 C22 C23 C24 C25 C26 C27 C28 C29 C30 C31_C32 C33 D35 E36 E37-E39 F G45 G46 G47 H49 H50 H51 H52 H53 I J58 J59_J60 J61 J62_J63 K64 K65 K66 L68 M69_M70 M71 M72 M73 M74_M75 N O84 P85 Q R_S T U",
+  "commodity": ["B", "D35", "E36", "E37-E39"],
+  "agriculture": ["A01", "A02", "A03"],
+  "components": ["C19", "C20", "C21", "C22", "C23", "C24"],
+  "manufacturing": [
+    "C10-C12", "C13-C15", "C16", "C17", "C18",
+    "C25", "C26", "C27", "C28", "C29", "C30", "C31_C32", "C33",
+    "F"
+  ],
+  "retail": ["G47"],
+  "wholesale": ["G45", "G46"],
+  "services": [
+    "H49", "H50", "H51", "H52", "H53",
+    "I",
+    "J58", "J59_J60", "J61", "J62_J63",
+    "K64", "K65", "K66",
+    "L68",
+    "M69_M70", "M71", "M72", "M73", "M74_M75",
+    "N", "O84", "P85", "Q", "R_S", "T", "U"
+  ]
+}
