@@ -358,7 +358,9 @@ class FirmAgent(Agent):
     WORKING_CAPITAL_CREDIT_REVENUE_SHARE: float = 1.0
     LABOR_SHARE: float = 0.5  # fixed labour share of revenue in wage targeting
     NO_WORKER_WAGE_PREMIUM: float = 1.02
-    NORMAL_COST_ALPHA: float = 0.05
+    COST_INCREASE_ALPHA: float = 0.08
+    COST_DECREASE_ALPHA: float = 0.03
+    SCARCITY_COST_DECREASE_DAMPING: float = 4.0
     PRICE_ADJUSTMENT_SPEED: float = 0.15
     BASE_MARKUP: float = 0.15
     MIN_MARKUP: float = 0.02
@@ -1231,9 +1233,12 @@ class FirmAgent(Agent):
         sell_through_signal = 2.0 * sell_through - 1.0
 
         scarcity_signal = float(np.clip(max(inventory_gap, sell_through_signal), -1.0, 1.0))
-        cost_alpha = self.NORMAL_COST_ALPHA
-        if scarcity_signal > 0.0 and current_unit_cost < self.normal_unit_cost:
-            cost_alpha = 0.0
+        if current_unit_cost >= self.normal_unit_cost:
+            cost_alpha = self.COST_INCREASE_ALPHA
+        else:
+            cost_alpha = self.COST_DECREASE_ALPHA / (
+                1.0 + self.SCARCITY_COST_DECREASE_DAMPING * max(0.0, scarcity_signal)
+            )
         self.normal_unit_cost = (
             (1.0 - cost_alpha) * max(1e-6, self.normal_unit_cost)
             + cost_alpha * current_unit_cost

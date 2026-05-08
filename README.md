@@ -529,11 +529,12 @@ for that run only; existing parameter files without this key are unaffected.
   `consumption_ratios`.
 - Firm prices follow a slow-moving normal unit-cost anchor plus a scarcity
   markup. The markup rises when finished-goods inventories are below target or
-  prior-period sell-through is high, and falls when inventory is abundant. When
-  scarcity is positive, falling current costs do not pull down the normal-cost
-  anchor. This prevents input-constrained downturns from mechanically turning
-  into deflation just because wages and current input costs fall in the same
-  period.
+  prior-period sell-through is high, and falls when inventory is abundant.
+  Cost increases pass through faster than cost decreases; cost decreases pass
+  through more slowly when scarcity is high. This prevents input-constrained
+  downturns from mechanically turning into deflation just because wages and
+  current input costs fall in the same period, while still allowing deflation
+  when weak-demand conditions persist.
 
 ## Repository Layout
 

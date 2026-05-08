@@ -781,15 +781,19 @@ Current unit cost is:
 unit_cost = (labor_coeff * wage_offer + input_coeff * average_input_price) / damage_factor
 ```
 
-Firms maintain a slow-moving normal-cost anchor:
+Firms maintain a slow-moving normal-cost anchor with asymmetric pass-through:
 
 ```text
-normal_unit_cost_(t+1) = 0.95 * normal_unit_cost_t + 0.05 * unit_cost_t
+if unit_cost_t >= normal_unit_cost_t:
+    cost_alpha = 0.08
+else:
+    cost_alpha = 0.03 / (1 + 4.0 * max(0, scarcity_signal))
+
+normal_unit_cost_(t+1) = (1 - cost_alpha) * normal_unit_cost_t + cost_alpha * unit_cost_t
 ```
 
-When the scarcity signal below is positive, decreases in current unit cost do
-not reduce the normal-cost anchor; cost decreases pass through only when the
-firm is not scarcity-constrained.
+Cost increases therefore pass through faster than cost decreases, and cost
+decreases pass through more slowly when scarcity is high.
 
 Markup responds to scarcity. The inventory-gap signal is target finished-goods
 inventory minus on-hand finished-goods inventory, divided by target inventory
