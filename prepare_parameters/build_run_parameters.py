@@ -220,7 +220,11 @@ def main(argv: list[str] | None = None) -> None:
     grid_resolution = args.grid_resolution
     if grid_resolution == 1.0 and "grid_resolution" in rp_src_defaults:
         grid_resolution = rp_src_defaults["grid_resolution"]
-    num_households = args.num_households or _households_from_topology(args.topology)
+    num_households = (
+        args.num_households
+        or rp_src_defaults.get("num_households")
+        or _households_from_topology(args.topology)
+    )
 
     # --- adaptation block ---
     adaptation = dict(_DEFAULT_ADAPTATION)
