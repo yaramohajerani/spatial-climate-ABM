@@ -384,6 +384,7 @@ def _compute_coefficients(
     gos_agg: pd.Series,
     X_agg: pd.Series,
     min_recipe_share: float,
+    no_self_supply: bool = False,
 ) -> dict:
     results: dict = {
         "sector_coefficients": {},
@@ -396,6 +397,15 @@ def _compute_coefficients(
     for j in MODEL_SECTORS:
         if X_agg[j] > 0:
             A[j] = Z_agg[j] / X_agg[j]
+
+    # Zero out diagonal (intra-sector self-supply) before computing recipes.
+    # In this ABM, intra-sector flows don't represent inter-firm supply chain
+    # risk and cause bootstrapping deadlocks at initialization (each sector
+    # would need its own output as an input before it can produce anything).
+    # This is the standard treatment in ABM IO literature (Hallegatte 2008).
+    if no_self_supply:
+        for s in MODEL_SECTORS:
+            A.at[s, s] = 0.0
 
     for j in MODEL_SECTORS:
         x_j = X_agg[j]
@@ -516,6 +526,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Drop supply links below this share (default: {RECIPE_SHARE_MIN_DEFAULT})",
     )
     p.add_argument(
+        "--self-supply", action="store_true", default=False,
+        help="Retain intra-sector self-supply (diagonal of A matrix) in input recipes. "
+             "By default self-supply is removed because it causes bootstrapping deadlocks "
+             "at initialization: every sector would need its own output as an input before "
+             "it can produce anything. Only use this flag for pure IO-table analysis, "
+             "not for ABM simulation runs.",
+    )
+    p.add_argument(
         "--out", type=Path, default=Path("prepare_parameters/calibrated_parameters.json"),
         help="Output path (default: prepare_parameters/calibrated_parameters.json)",
     )
@@ -564,7 +582,8 @@ def main(argv: list[str] | None = None) -> None:
 
     print("Computing calibrated parameters...")
     results = _compute_coefficients(
-        Z_agg, fd_agg, labor_agg, gos_agg, X_agg, args.min_recipe_share
+        Z_agg, fd_agg, labor_agg, gos_agg, X_agg, args.min_recipe_share,
+        no_self_supply=not args.self_supply,
     )
 
     results["_metadata"] = {
@@ -575,6 +594,7 @@ def main(argv: list[str] | None = None) -> None:
         "year": year,
         "concordance_file": str(args.concordance),
         "min_recipe_share": args.min_recipe_share,
+        "no_self_supply": not args.self_supply,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 

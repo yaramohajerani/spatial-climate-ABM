@@ -406,6 +406,16 @@ python prepare_parameters/calibrate_from_io.py \
     --out prepare_parameters/calibrated_parameters_IND.json
 ```
 
+**Intra-sector self-supply is removed by default.** IO tables contain large diagonal
+flows (e.g. energy firms buying energy from other energy firms, steel mills buying
+steel). These are real in aggregate national accounts but cause a bootstrapping
+deadlock in this ABM: since firms start with zero inventory, any sector that requires
+its own output as an input can never produce anything in the first step, collapsing
+the entire economy immediately. Removing the diagonal and renormalizing eliminates
+this. The resulting `INPUT_COEFF` values are roughly halved but remain data-grounded
+in inter-sector flows — this is the standard treatment in ABM IO literature (Hallegatte
+2008, Inoue & Todo 2019). Pass `--self-supply` to retain it for pure IO-table analysis.
+
 Year is auto-detected from the WIOT filename (`WIOT2014` → 2014) and defaults to
 2014 for NIOT. Country is auto-detected from the NIOT filename (`IND_NIOT` → IND).
 
@@ -413,6 +423,7 @@ This writes a JSON file containing `sector_coefficients`, `input_recipe_ranges`,
 `consumption_ratios`, and `sector_output_shares`.
 
 Optional flags:
+- `--self-supply` — retain intra-sector diagonal flows (not recommended for simulation; see note above)
 - `--min-recipe-share FLOAT` — drop supply links below this share (default 0.02)
 - `--year INT` — override year selection
 - `--country ISO3` — override country detection for NIOT
