@@ -119,7 +119,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sim = p.add_argument_group("simulation settings")
     sim.add_argument("--steps", type=int, default=None,
                      help="Total simulation steps (default: 80 = 20 years at 4 steps/year)")
-    sim.add_argument("--steps-per-year", type=int, default=4)
+    sim.add_argument("--steps-per-year", type=int, default=None)
     sim.add_argument("--start-year", type=int, default=None,
                      help="Simulation start year (default: inferred from calibration metadata)")
     sim.add_argument("--num-households", type=int, default=None,
