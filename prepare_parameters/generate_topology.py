@@ -42,9 +42,7 @@ CAPITAL_BASE = 3.0
 
 def _haversine_deg(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
     """Great-circle distance in degrees (proxy; avoids trig overhead in sampling)."""
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    return math.sqrt(dlat ** 2 + dlon ** 2)
+    return math.hypot(lat2 - lat1, lon2 - lon1)
 
 
 def _load_land_points(shapefile_dir: Path, bbox: tuple[float, float, float, float],
@@ -145,7 +143,6 @@ def _assign_capital(firms: list[dict], output_shares: dict[str, float]) -> None:
 
 def _generate_edges(firms: list[dict],
                     input_recipe_ranges: dict[str, dict],
-                    sector_coefficients: dict[str, dict],
                     suppliers_per_buyer: int,
                     rng: np.random.Generator) -> list[dict]:
     """Generate supply edges using distance-weighted sampling."""
@@ -169,19 +166,22 @@ def _generate_edges(firms: list[dict],
                 warnings.warn(f"No firms in supplier sector '{supplier_sector}' for buyers in '{buyer_sector}'.")
                 continue
 
-            k = min(suppliers_per_buyer, len(suppliers))
-
             for buyer in buyers:
+                candidate_suppliers = [supplier for supplier in suppliers if supplier["id"] != buyer["id"]]
+                if not candidate_suppliers:
+                    continue
+                k = min(suppliers_per_buyer, len(candidate_suppliers))
+
                 # Compute inverse-distance weights
                 dists = [_haversine_deg(buyer["lon"], buyer["lat"], s["lon"], s["lat"]) + 1e-6
-                         for s in suppliers]
+                         for s in candidate_suppliers]
                 weights = np.array([1.0 / d for d in dists])
                 weights /= weights.sum()
 
                 # Sample k suppliers without replacement
-                chosen_indices = rng.choice(len(suppliers), size=k, replace=False, p=weights)
+                chosen_indices = rng.choice(len(candidate_suppliers), size=k, replace=False, p=weights)
                 for idx in chosen_indices:
-                    supplier = suppliers[idx]
+                    supplier = candidate_suppliers[idx]
                     key = (supplier["id"], buyer["id"])
                     if key not in edge_set:
                         edges.append({"src": supplier["id"], "dst": buyer["id"]})
@@ -194,28 +194,33 @@ def _verify_coverage(firms: list[dict], edges: list[dict],
                      input_recipe_ranges: dict[str, dict],
                      sector_coefficients: dict[str, dict]) -> list[str]:
     """Return list of warning strings for uncovered buyer-sector requirements."""
-    # Build adjacency: buyer_id -> set of supplier sectors
-    buyer_suppliers: dict[int, set[str]] = {}
     id_to_sector = {f["id"]: f["sector"] for f in firms}
-    for e in edges:
-        dst = e["dst"]
-        src_sector = id_to_sector.get(e["src"], "")
-        buyer_suppliers.setdefault(dst, set()).add(src_sector)
+    buyer_suppliers = _buyer_supplier_sectors(edges, id_to_sector)
 
     issues = []
     for f in firms:
         sector = f["sector"]
-        required = set(input_recipe_ranges.get(sector, {}).keys())
-        if not required:
+        if not _sector_requires_inputs(sector, input_recipe_ranges, sector_coefficients):
             continue
-        coeff = sector_coefficients.get(sector, {})
-        if coeff.get("input", 0) < 0.01:
-            continue
-        covered = buyer_suppliers.get(f["id"], set())
-        missing = required - covered
+        missing = set(input_recipe_ranges.get(sector, {})) - buyer_suppliers.get(f["id"], set())
         if missing:
             issues.append(f"Firm {f['id']} (sector={sector}) missing suppliers for: {missing}")
     return issues
+
+
+def _buyer_supplier_sectors(edges: list[dict], id_to_sector: dict[int, str]) -> dict[int, set[str]]:
+    buyer_suppliers: dict[int, set[str]] = {}
+    for edge in edges:
+        buyer_suppliers.setdefault(edge["dst"], set()).add(id_to_sector.get(edge["src"], ""))
+    return buyer_suppliers
+
+
+def _sector_requires_inputs(
+    sector: str,
+    input_recipe_ranges: dict[str, dict],
+    sector_coefficients: dict[str, dict],
+) -> bool:
+    return bool(input_recipe_ranges.get(sector)) and sector_coefficients.get(sector, {}).get("input", 0) >= 0.01
 
 
 def _patch_missing_coverage(firms: list[dict], edges: list[dict],
@@ -223,28 +228,20 @@ def _patch_missing_coverage(firms: list[dict], edges: list[dict],
                              sector_coefficients: dict[str, dict]) -> None:
     """Greedily add nearest uncovered supplier for any uncovered buyer-sector pair."""
     id_to_sector = {f["id"]: f["sector"] for f in firms}
-    id_to_firm = {f["id"]: f for f in firms}
     by_sector: dict[str, list[dict]] = {s: [] for s in MODEL_SECTORS}
     for f in firms:
         by_sector[f["sector"]].append(f)
 
     edge_set = {(e["src"], e["dst"]) for e in edges}
-
-    buyer_suppliers: dict[int, set[str]] = {}
-    for e in edges:
-        dst = e["dst"]
-        src_sector = id_to_sector.get(e["src"], "")
-        buyer_suppliers.setdefault(dst, set()).add(src_sector)
+    buyer_suppliers = _buyer_supplier_sectors(edges, id_to_sector)
 
     for f in firms:
         sector = f["sector"]
-        required = set(input_recipe_ranges.get(sector, {}).keys())
-        coeff = sector_coefficients.get(sector, {})
-        if not required or coeff.get("input", 0) < 0.01:
+        if not _sector_requires_inputs(sector, input_recipe_ranges, sector_coefficients):
             continue
         covered = buyer_suppliers.get(f["id"], set())
-        for sup_sector in required - covered:
-            candidates = by_sector.get(sup_sector, [])
+        for sup_sector in set(input_recipe_ranges.get(sector, {})) - covered:
+            candidates = [candidate for candidate in by_sector.get(sup_sector, []) if candidate["id"] != f["id"]]
             if not candidates:
                 continue
             nearest = min(candidates, key=lambda s: _haversine_deg(f["lon"], f["lat"], s["lon"], s["lat"]))
@@ -252,6 +249,7 @@ def _patch_missing_coverage(firms: list[dict], edges: list[dict],
             if key not in edge_set:
                 edges.append({"src": nearest["id"], "dst": f["id"]})
                 edge_set.add(key)
+                buyer_suppliers.setdefault(f["id"], set()).add(sup_sector)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -312,8 +310,7 @@ def main(argv: list[str] | None = None) -> None:
     _assign_capital(firms, output_shares)
 
     print("Generating supply edges...")
-    edges = _generate_edges(firms, input_recipe_ranges, sector_coefficients,
-                             args.suppliers_per_buyer, rng)
+    edges = _generate_edges(firms, input_recipe_ranges, args.suppliers_per_buyer, rng)
     print(f"  {len(edges)} edges generated.")
 
     print("Verifying coverage...")

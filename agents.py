@@ -747,17 +747,10 @@ class FirmAgent(Agent):
         *,
         damage_factor: float,
     ) -> float:
-        sector_coefficients = self._input_coefficients_by_sector()
-        if not sector_coefficients:
-            if self.INPUT_COEFF > 1e-12:
-                return 0.0
+        if self.INPUT_COEFF <= 1e-12:
             return float("inf")
-        sector_limits: list[float] = []
-        for sector, coeff in sector_coefficients.items():
-            if coeff <= 1e-12:
-                continue
-            sector_limits.append((input_units_by_sector.get(sector, 0.0) / coeff) * damage_factor)
-        return min(sector_limits) if sector_limits else float("inf")
+        total_input_units = sum(max(0.0, units) for units in input_units_by_sector.values())
+        return (total_input_units / self.INPUT_COEFF) * damage_factor
 
     def _consume_inputs_by_sector(self, required_units_by_sector: dict[str, float]) -> float:
         if not required_units_by_sector:
@@ -771,20 +764,23 @@ class FirmAgent(Agent):
         if not remaining_by_sector:
             return 0.0
 
-        for supplier in self._technical_input_suppliers():
+        def consume_from_supplier(supp_id: int, required_units: float) -> float:
+            available = self.inventory_inputs.get(supp_id, 0.0)
+            if available <= 1e-12 or required_units <= 1e-12:
+                return 0.0
+            use_qty = min(available, required_units)
+            self.inventory_inputs[supp_id] = available - use_qty
+            return use_qty
+
+        technical_suppliers = self._technical_input_suppliers()
+        for supplier in technical_suppliers:
             sector = supplier.sector
             remaining_needed = remaining_by_sector.get(sector, 0.0)
-            if remaining_needed <= 1e-12:
-                continue
-            supp_id = supplier.unique_id
-            available = self.inventory_inputs.get(supp_id, 0.0)
-            if available <= 1e-12:
-                continue
-            use_qty = min(available, remaining_needed)
-            self.inventory_inputs[supp_id] -= use_qty
-            remaining_by_sector[sector] = remaining_needed - use_qty
+            used = consume_from_supplier(supplier.unique_id, remaining_needed)
+            if used > 0:
+                remaining_by_sector[sector] = remaining_needed - used
 
-        primary_ids = {s.unique_id for s in self._technical_input_suppliers()}
+        primary_ids = {s.unique_id for s in technical_suppliers}
         for supp_id in list(self.inventory_inputs.keys()):
             if supp_id in primary_ids:
                 continue
@@ -792,18 +788,29 @@ class FirmAgent(Agent):
             if sector is None:
                 continue
             remaining_needed = remaining_by_sector.get(sector, 0.0)
-            if remaining_needed <= 1e-12:
-                continue
-            available = self.inventory_inputs[supp_id]
-            if available <= 1e-12:
-                continue
-            use_qty = min(available, remaining_needed)
-            self.inventory_inputs[supp_id] -= use_qty
-            remaining_by_sector[sector] = remaining_needed - use_qty
+            used = consume_from_supplier(int(supp_id), remaining_needed)
+            if used > 0:
+                remaining_by_sector[sector] = remaining_needed - used
 
         required_total = sum(required_units_by_sector.values())
         remaining_total = sum(max(0.0, units) for units in remaining_by_sector.values())
-        return max(0.0, required_total - remaining_total)
+        consumed_total = max(0.0, required_total - remaining_total)
+
+        # At the model-sector aggregation level, recipe sectors allocate planned
+        # procurement but are not strict complements. Use any remaining
+        # intermediate inventory to cover residual aggregate input needs.
+        residual_need = max(0.0, required_total - consumed_total)
+        if residual_need > 1e-12:
+            for supp_id in list(self.inventory_inputs.keys()):
+                use_qty = consume_from_supplier(int(supp_id), residual_need)
+                if use_qty <= 0:
+                    continue
+                residual_need -= use_qty
+                consumed_total += use_qty
+                if residual_need <= 1e-12:
+                    break
+
+        return consumed_total
 
     def _has_hazard_disruption_signal(self) -> bool:
         """Return whether this firm shows direct or indirect hazard stress.

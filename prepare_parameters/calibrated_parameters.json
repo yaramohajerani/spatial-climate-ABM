@@ -32,7 +32,7 @@
     },
     "services": {
       "labor": 0.357,
-      "input": 0.0,
+      "input": 0.1538,
       "capital": 0.238
     }
   },
@@ -41,46 +41,103 @@
     "agriculture": {},
     "components": {
       "commodity": [
-        0.7156,
-        0.7156
+        0.5773,
+        0.5773
       ],
       "services": [
-        0.2844,
-        0.2844
+        0.2294,
+        0.2294
+      ],
+      "manufacturing": [
+        0.1023,
+        0.1023
+      ],
+      "wholesale": [
+        0.091,
+        0.091
       ]
     },
     "manufacturing": {
       "components": [
-        0.6062,
-        0.6062
+        0.4821,
+        0.4821
       ],
       "services": [
-        0.3938,
-        0.3938
+        0.3132,
+        0.3132
+      ],
+      "wholesale": [
+        0.1294,
+        0.1294
+      ],
+      "commodity": [
+        0.0752,
+        0.0752
       ]
     },
     "retail": {
-      "agriculture": [
-        0.4873,
-        0.4873
-      ],
       "services": [
-        0.5127,
-        0.5127
+        0.3517,
+        0.3517
+      ],
+      "agriculture": [
+        0.3343,
+        0.3343
+      ],
+      "wholesale": [
+        0.116,
+        0.116
+      ],
+      "components": [
+        0.1012,
+        0.1012
+      ],
+      "manufacturing": [
+        0.0969,
+        0.0969
       ]
     },
     "wholesale": {
       "services": [
-        1.0,
-        1.0
+        0.798,
+        0.798
+      ],
+      "manufacturing": [
+        0.1411,
+        0.1411
+      ],
+      "components": [
+        0.0609,
+        0.0609
       ]
     },
-    "services": {}
+    "services": {
+      "manufacturing": [
+        0.3374,
+        0.3374
+      ],
+      "components": [
+        0.2282,
+        0.2282
+      ],
+      "retail": [
+        0.1877,
+        0.1877
+      ],
+      "wholesale": [
+        0.1432,
+        0.1432
+      ],
+      "commodity": [
+        0.1036,
+        0.1036
+      ]
+    }
   },
   "consumption_ratios": {
-    "services": 0.667,
+    "retail": 0.2428,
     "wholesale": 0.0902,
-    "retail": 0.2428
+    "services": 0.667
   },
   "sector_output_shares": {
     "commodity": 0.0759,
@@ -98,13 +155,13 @@
     "country": "GLOBAL",
     "year": 2014,
     "concordance_file": "/Users/yaramohajerani/spatial-climate-ABM/prepare_parameters/niot_concordance_default.json",
-    "min_recipe_share": 0.15,
+    "min_recipe_share": 0.02,
+    "recipe_coverage": 0.9,
     "no_self_supply": true,
     "primary_sectors": [
       "agriculture",
-      "commodity",
-      "services"
+      "commodity"
     ],
-    "generated_at": "2026-05-08T02:32:56.356513+00:00"
+    "generated_at": "2026-05-08T02:56:39.187453+00:00"
   }
 }

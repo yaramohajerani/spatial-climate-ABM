@@ -1557,15 +1557,50 @@ class EconomyModel(Model):
         firm.startup_price = firm.price
         firm.startup_wage_offer = firm.wage_offer
 
+    def _seed_firm_input_inventories(
+        self,
+        firm: FirmAgent,
+        *,
+        expected_sales: float,
+        input_inventory_coverage: float = 1.0,
+    ) -> None:
+        """Seed IO-consistent input inventories so circular recipes can start."""
+
+        planned_output = expected_sales * max(0.0, input_inventory_coverage)
+        if firm.INPUT_COEFF <= 0 or planned_output <= 0:
+            return
+
+        required_by_sector = firm._desired_input_units_by_sector(planned_output)
+        if not required_by_sector:
+            return
+
+        suppliers_by_sector: dict[str, list[FirmAgent]] = defaultdict(list)
+        for supplier in firm._technical_input_suppliers():
+            if supplier is firm:
+                continue
+            suppliers_by_sector[supplier.sector].append(supplier)
+
+        for sector, required_units in required_by_sector.items():
+            sector_suppliers = suppliers_by_sector.get(sector, [])
+            if required_units <= 1e-12 or not sector_suppliers:
+                continue
+            units_per_supplier = required_units / len(sector_suppliers)
+            for supplier in sector_suppliers:
+                firm.inventory_inputs[supplier.unique_id] = (
+                    firm.inventory_inputs.get(supplier.unique_id, 0.0) + units_per_supplier
+                )
+
     def _initialize_firm_operating_state(self) -> None:
         """Initialize firms from demand-consistent inventories and working capital."""
 
         expected_sales = self._solve_initial_expected_sales()
         for firm in self._firms:
+            firm_expected_sales = expected_sales.get(firm.unique_id, 1.0)
             self._seed_firm_operating_state(
                 firm,
-                expected_sales=expected_sales.get(firm.unique_id, 1.0),
+                expected_sales=firm_expected_sales,
             )
+            self._seed_firm_input_inventories(firm, expected_sales=firm_expected_sales)
         if self._startup_capital_floor_overrides:
             warnings.warn(
                 "Raised startup capital to the demand-consistent seeding floor for "

@@ -48,7 +48,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -76,12 +75,17 @@ _DEFAULT_ADAPTATION = {
 }
 
 _HOUSEHOLDS_PER_FIRM = 5  # default ratio used when --num-households is omitted
+_HAZARD_KEYS = ("rp_files", "raster_hazard_events", "node_shocks", "lane_shocks", "route_shocks")
+
+
+def _read_json(path: Path) -> dict:
+    return json.loads(path.read_text())
 
 
 def _households_from_topology(topology_path: Path) -> int:
     """Derive a default household count from the topology firm count."""
     try:
-        topo = json.loads(topology_path.read_text())
+        topo = _read_json(topology_path)
         n_firms = len(topo.get("firms", []))
         return max(100, n_firms * _HOUSEHOLDS_PER_FIRM)
     except Exception:
@@ -180,7 +184,7 @@ def main(argv: list[str] | None = None) -> None:
     if not args.topology.exists():
         sys.exit(f"Topology file not found: {args.topology}")
 
-    cal = json.loads(args.calibrated_params.read_text())
+    cal = _read_json(args.calibrated_params)
     meta = cal.get("_metadata", {})
 
     # --- extract calibrated economic parameters ---
@@ -190,15 +194,15 @@ def main(argv: list[str] | None = None) -> None:
                      "Re-run calibrate_from_io.py to regenerate.")
 
     # --- hazard events from --rp-from ---
-    _HAZARD_KEYS = ("rp_files", "raster_hazard_events", "node_shocks", "lane_shocks", "route_shocks")
+    rp_src_defaults: dict = {}
     hazard_source: dict = {}
     if args.rp_from is not None:
         if not args.rp_from.exists():
             sys.exit(f"--rp-from file not found: {args.rp_from}")
-        rp_src = json.loads(args.rp_from.read_text())
+        rp_src_defaults = _read_json(args.rp_from)
         for k in _HAZARD_KEYS:
-            if k in rp_src:
-                hazard_source[k] = rp_src[k]
+            if k in rp_src_defaults:
+                hazard_source[k] = rp_src_defaults[k]
         if not hazard_source:
             print(f"Warning: no hazard keys found in {args.rp_from}; output will have no hazard events.")
         else:
@@ -208,7 +212,6 @@ def main(argv: list[str] | None = None) -> None:
     # --- simulation settings ---
     # When --rp-from is given, inherit steps/timing/resolution from that file as
     # defaults so the hazard schedule's timestamps and raster grid stay consistent.
-    rp_src_defaults = json.loads(args.rp_from.read_text()) if args.rp_from else {}
     start_year = (args.start_year
                   or rp_src_defaults.get("start_year")
                   or _start_year_from_calibration(cal))
@@ -224,7 +227,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.adaptation_from is not None:
         if not args.adaptation_from.exists():
             sys.exit(f"--adaptation-from file not found: {args.adaptation_from}")
-        src = json.loads(args.adaptation_from.read_text())
+        src = _read_json(args.adaptation_from)
         if "adaptation" not in src:
             sys.exit(f"No 'adaptation' block in {args.adaptation_from}")
         adaptation = src["adaptation"]

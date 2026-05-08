@@ -77,6 +77,7 @@ _FD_CODES = frozenset({"CONS_h", "CONS_np", "CONS_g", "GFCF", "INVEN", "EXP"})
 
 COEFF_FLOOR = 0.02
 RECIPE_SHARE_MIN_DEFAULT = 0.02
+RECIPE_COVERAGE_DEFAULT = 0.90
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +385,7 @@ def _compute_coefficients(
     gos_agg: pd.Series,
     X_agg: pd.Series,
     min_recipe_share: float,
+    recipe_coverage: float,
     no_self_supply: bool = False,
     primary_sectors: frozenset[str] = frozenset(),
 ) -> dict:
@@ -408,18 +410,10 @@ def _compute_coefficients(
         for s in MODEL_SECTORS:
             A.at[s, s] = 0.0
 
-    # Zero out rows for primary sectors: they require no inputs from other
-    # sectors (they produce from labor+capital alone — natural resources,
-    # land, human services). Their IO-table intermediate costs are absorbed
-    # into CAPITAL_COEFF and LABOR_COEFF rather than Leontief input slots.
-    # Their columns are left intact so they still appear as suppliers in
-    # other sectors' recipes — flood disruption of primary sectors still
-    # cascades downstream through those supply links.
+    # Zero out columns for primary sectors: they buy no intermediate inputs
+    # in the ABM, but their rows stay intact so they remain upstream suppliers.
     for s in primary_sectors:
-        A[s] = 0.0  # zero column s: s buys nothing (INPUT_COEFF → 0)
-        # row s (what s sells to others) is intentionally kept non-zero so that
-        # primary sectors still appear as suppliers in other sectors' recipes and
-        # their flood disruption can cascade downstream through supply links.
+        A[s] = 0.0
 
     for j in MODEL_SECTORS:
         x_j = X_agg[j]
@@ -457,10 +451,22 @@ def _compute_coefficients(
             results["input_recipe_ranges"][j] = {}
             continue
         recipe: dict[str, list[float]] = {}
-        for i in MODEL_SECTORS:
-            share = float(A.at[i, j]) / input_total
-            if share >= min_recipe_share:
-                recipe[i] = [round(share, 4), round(share, 4)]
+        cumulative_share = 0.0
+        coverage_target = max(0.0, min(1.0, recipe_coverage))
+        recipe_shares = sorted(
+            (
+                (i, share)
+                for i in MODEL_SECTORS
+                if (share := float(A.at[i, j]) / input_total) >= min_recipe_share
+            ),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        for sector, share in recipe_shares:
+            recipe[sector] = [round(share, 4), round(share, 4)]
+            cumulative_share += share
+            if cumulative_share + 1e-12 >= coverage_target:
+                break
         total = sum(v[0] for v in recipe.values())
         if total > 0:
             recipe = {k: [round(v[0] / total, 4), round(v[0] / total, 4)] for k, v in recipe.items()}
@@ -548,6 +554,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Drop supply links below this share (default: {RECIPE_SHARE_MIN_DEFAULT})",
     )
     p.add_argument(
+        "--recipe-coverage", type=float, default=RECIPE_COVERAGE_DEFAULT,
+        help="Keep the largest supplier-sector shares for each buyer until this "
+             "fraction of intermediate input cost is represented, then renormalize "
+             f"(default: {RECIPE_COVERAGE_DEFAULT}).",
+    )
+    p.add_argument(
         "--self-supply", action="store_true", default=False,
         help="Retain intra-sector self-supply (diagonal of A matrix) in input recipes. "
              "By default self-supply is removed because it causes bootstrapping deadlocks "
@@ -557,15 +569,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--primary-sectors", nargs="+",
-        default=["commodity", "agriculture", "services"],
+        default=["commodity", "agriculture"],
         metavar="SECTOR",
-        help="Sectors that produce from labor+capital alone with no intermediate input "
+        help="Optional sectors that produce from labor+capital alone with no intermediate input "
              "requirements (INPUT_COEFF forced to 0, recipe forced to empty). Their "
              "columns in the A matrix are preserved so they still appear as suppliers "
-             "to other sectors. Default: commodity agriculture services. "
-             "These three cover the natural-resource and human-service base of the "
-             "supply chain and are needed for the economy to bootstrap from zero "
-             "inventory. Pass an empty list (--primary-sectors '') to disable.",
+             "to other sectors. Default: commodity agriculture. This is an explicit "
+             "resource-sector closure; IO-consistent initial inventories handle the "
+             "remaining circular dependencies.",
     )
     p.add_argument(
         "--out", type=Path, default=Path("prepare_parameters/calibrated_parameters.json"),
@@ -622,6 +633,7 @@ def main(argv: list[str] | None = None) -> None:
 
     results = _compute_coefficients(
         Z_agg, fd_agg, labor_agg, gos_agg, X_agg, args.min_recipe_share,
+        args.recipe_coverage,
         no_self_supply=not args.self_supply,
         primary_sectors=primary_sectors,
     )
@@ -634,6 +646,7 @@ def main(argv: list[str] | None = None) -> None:
         "year": year,
         "concordance_file": str(args.concordance),
         "min_recipe_share": args.min_recipe_share,
+        "recipe_coverage": args.recipe_coverage,
         "no_self_supply": not args.self_supply,
         "primary_sectors": sorted(primary_sectors),
         "generated_at": datetime.now(timezone.utc).isoformat(),
