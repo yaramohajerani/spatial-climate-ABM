@@ -385,6 +385,7 @@ def _compute_coefficients(
     X_agg: pd.Series,
     min_recipe_share: float,
     no_self_supply: bool = False,
+    primary_sectors: frozenset[str] = frozenset(),
 ) -> dict:
     results: dict = {
         "sector_coefficients": {},
@@ -407,13 +408,30 @@ def _compute_coefficients(
         for s in MODEL_SECTORS:
             A.at[s, s] = 0.0
 
+    # Zero out rows for primary sectors: they require no inputs from other
+    # sectors (they produce from labor+capital alone — natural resources,
+    # land, human services). Their IO-table intermediate costs are absorbed
+    # into CAPITAL_COEFF and LABOR_COEFF rather than Leontief input slots.
+    # Their columns are left intact so they still appear as suppliers in
+    # other sectors' recipes — flood disruption of primary sectors still
+    # cascades downstream through those supply links.
+    for s in primary_sectors:
+        A[s] = 0.0  # zero column s: s buys nothing (INPUT_COEFF → 0)
+        # row s (what s sells to others) is intentionally kept non-zero so that
+        # primary sectors still appear as suppliers in other sectors' recipes and
+        # their flood disruption can cascade downstream through supply links.
+
     for j in MODEL_SECTORS:
         x_j = X_agg[j]
-        input_coeff = float(A[j].sum()) if x_j > 0 else 0.0
+        # Primary sectors: force INPUT_COEFF to 0
+        if j in primary_sectors:
+            input_coeff = 0.0
+        else:
+            input_coeff = float(A[j].sum()) if x_j > 0 else 0.0
+            input_coeff = max(COEFF_FLOOR, min(0.95, input_coeff))
         labor_coeff = float(labor_agg[j] / x_j) if x_j > 0 else 0.4
         capital_coeff = float(gos_agg[j] / x_j) if x_j > 0 else 0.2
 
-        input_coeff = max(COEFF_FLOOR, min(0.95, input_coeff))
         labor_coeff = max(COEFF_FLOOR, min(0.95, labor_coeff))
         capital_coeff = max(COEFF_FLOOR, min(0.95, capital_coeff))
 
@@ -430,6 +448,10 @@ def _compute_coefficients(
         }
 
     for j in MODEL_SECTORS:
+        # Primary sectors need no inputs
+        if j in primary_sectors:
+            results["input_recipe_ranges"][j] = {}
+            continue
         input_total = float(A[j].sum())
         if input_total < COEFF_FLOOR:
             results["input_recipe_ranges"][j] = {}
@@ -534,6 +556,18 @@ def _build_parser() -> argparse.ArgumentParser:
              "not for ABM simulation runs.",
     )
     p.add_argument(
+        "--primary-sectors", nargs="+",
+        default=["commodity", "agriculture", "services"],
+        metavar="SECTOR",
+        help="Sectors that produce from labor+capital alone with no intermediate input "
+             "requirements (INPUT_COEFF forced to 0, recipe forced to empty). Their "
+             "columns in the A matrix are preserved so they still appear as suppliers "
+             "to other sectors. Default: commodity agriculture services. "
+             "These three cover the natural-resource and human-service base of the "
+             "supply chain and are needed for the economy to bootstrap from zero "
+             "inventory. Pass an empty list (--primary-sectors '') to disable.",
+    )
+    p.add_argument(
         "--out", type=Path, default=Path("prepare_parameters/calibrated_parameters.json"),
         help="Output path (default: prepare_parameters/calibrated_parameters.json)",
     )
@@ -581,9 +615,15 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     print("Computing calibrated parameters...")
+    primary_sectors = frozenset(s for s in args.primary_sectors if s)
+    invalid = primary_sectors - set(MODEL_SECTORS)
+    if invalid:
+        sys.exit(f"Unknown primary sectors: {invalid}. Valid: {MODEL_SECTORS}")
+
     results = _compute_coefficients(
         Z_agg, fd_agg, labor_agg, gos_agg, X_agg, args.min_recipe_share,
         no_self_supply=not args.self_supply,
+        primary_sectors=primary_sectors,
     )
 
     results["_metadata"] = {
@@ -595,6 +635,7 @@ def main(argv: list[str] | None = None) -> None:
         "concordance_file": str(args.concordance),
         "min_recipe_share": args.min_recipe_share,
         "no_self_supply": not args.self_supply,
+        "primary_sectors": sorted(primary_sectors),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 

@@ -406,15 +406,29 @@ python prepare_parameters/calibrate_from_io.py \
     --out prepare_parameters/calibrated_parameters_IND.json
 ```
 
-**Intra-sector self-supply is removed by default.** IO tables contain large diagonal
-flows (e.g. energy firms buying energy from other energy firms, steel mills buying
-steel). These are real in aggregate national accounts but cause a bootstrapping
-deadlock in this ABM: since firms start with zero inventory, any sector that requires
-its own output as an input can never produce anything in the first step, collapsing
-the entire economy immediately. Removing the diagonal and renormalizing eliminates
-this. The resulting `INPUT_COEFF` values are roughly halved but remain data-grounded
-in inter-sector flows — this is the standard treatment in ABM IO literature (Hallegatte
-2008, Inoue & Todo 2019). Pass `--self-supply` to retain it for pure IO-table analysis.
+**Two defaults are applied to make calibrated recipes compatible with ABM initialization:**
+
+1. **Self-supply is removed** (diagonal of A matrix zeroed). IO tables contain large
+   intra-sector flows (energy firms buying energy, steel mills buying steel). These are
+   real in national accounts but cause bootstrapping deadlocks: each sector would need
+   its own output as an input before it can produce anything. Pass `--self-supply` to
+   retain them for pure IO-table analysis.
+
+2. **Primary sectors are declared** (default: `commodity agriculture services`). After
+   removing self-supply, the global IO table still creates a fully circular dependency
+   graph — every sector needs inputs from every other sector, so no firm can produce in
+   step 1 from zero inventory. Declaring primary sectors breaks this: they produce from
+   labor+capital alone (their IO-table intermediate costs absorbed into `CAPITAL_COEFF`),
+   providing the bootstrapping foundation for the rest of the supply chain. Commodity and
+   agriculture are natural primaries (resource extraction, farming). Services (IT, finance,
+   healthcare) is declared primary because its core input is human labor, which is already
+   modeled explicitly through the labor market. Primary sectors still appear as *suppliers*
+   in other sectors' recipes — flood disruption to a commodity firm still cascades
+   downstream. Pass `--primary-sectors` to change the set.
+
+The combined result is a clean 3-step bootstrap: primary sectors produce in step 1,
+input-intensive sectors produce in step 2, and all remaining sectors produce by step 3.
+This is consistent with ABM IO literature (Hallegatte 2008, Inoue & Todo 2019).
 
 Year is auto-detected from the WIOT filename (`WIOT2014` → 2014) and defaults to
 2014 for NIOT. Country is auto-detected from the NIOT filename (`IND_NIOT` → IND).
@@ -424,7 +438,8 @@ This writes a JSON file containing `sector_coefficients`, `input_recipe_ranges`,
 
 Optional flags:
 - `--self-supply` — retain intra-sector diagonal flows (not recommended for simulation; see note above)
-- `--min-recipe-share FLOAT` — drop supply links below this share (default 0.02)
+- `--primary-sectors SECTOR [SECTOR ...]` — override which sectors are declared primary producers (default: `commodity agriculture services`)
+- `--min-recipe-share FLOAT` — drop supply links below this share (default 0.02; raise to 0.15 to further simplify recipes)
 - `--year INT` — override year selection
 - `--country ISO3` — override country detection for NIOT
 
