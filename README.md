@@ -357,6 +357,33 @@ WIOT and NIOT to the model's 7 sectors (`commodity`, `agriculture`,
 file to adjust the mapping for your region or research focus. Each ISIC code
 must appear in exactly one model sector.
 
+**`retail` is intentionally broader than trade alone.** The model only routes
+household final demand through `FINAL_CONSUMPTION_SECTORS`
+(`retail`, `wholesale`, `services`). In raw WIOT data roughly 30% of
+household spending goes to sectors that are not pure trade (food, clothing,
+furniture, vehicles). To avoid silently dropping that demand, the default
+concordance maps three consumer-goods manufacturing sectors into `retail`:
+
+| ISIC code | Sector | Rationale |
+|---|---|---|
+| C10-C12 | Food, beverages, tobacco | Households are the primary end-buyer; food manufacturers supply restaurants and retailers (captured in intra-retail input recipes) |
+| C13-C15 | Textiles, clothing, leather | Predominantly household-facing; clothing is consumed directly |
+| C31_C32 | Furniture, other consumer goods | Low intermediate use; end-product is mostly household consumption |
+
+With this mapping the default concordance captures **~82% of global household
+final demand** (18% residual from direct agricultural purchases, vehicles, and
+petroleum — harder to re-route without conflating distinct supply-chain roles).
+
+The trade-off: the `retail` sector now has higher `INPUT_COEFF` (~0.61 vs
+~0.35 for pure trade) and shows significant intra-sector and
+agriculture-sourced inputs in `input_recipe_ranges`, reflecting food
+manufacturing's raw-material dependence.
+
+**Sectors kept in `manufacturing`** (C16-C18, C25-C30, C33, F) are
+predominantly intermediate-goods producers: wood, paper, fabricated metals,
+electronics, machinery, vehicles, and construction. Their household final
+demand share is small and their dominant economic role is supplying other firms.
+
 ### Step-by-step calibration workflow
 
 **1. Calibrate parameters from IO table**
@@ -411,29 +438,51 @@ from the IO table. Supply edges are drawn by inverse-distance-weighted
 sampling, consistent with the calibrated `input_recipe_ranges`. A post-pass
 ensures every buyer firm has at least one supplier per required sector.
 
-**3. Run a simulation with calibrated parameters**
-
-Create a parameter JSON that merges the calibrated values into the standard
-simulation configuration:
-
-```json
-{
-  "topology": "calibrated_topology.json",
-  "num_households": 1000,
-  "steps": 200,
-  "sector_coefficients": { ... },
-  "input_recipe_ranges": { ... },
-  "consumption_ratios": { ... },
-  "adaptation": { "enabled": true, "adaptation_strategy": "capital_hardening" }
-}
-```
-
-Copy `sector_coefficients`, `input_recipe_ranges`, and `consumption_ratios`
-directly from `calibrated_parameters.json`, or reference that file from a
-wrapper script. Then run as usual:
+**3. Build a run parameter file**
 
 ```bash
-python run_simulation.py --param-file calibrated_run_parameters.json --steps 200
+python prepare_parameters/build_run_parameters.py \
+    --calibrated-params prepare_parameters/calibrated_parameters.json \
+    --topology calibrated_topology.json \
+    --out calibrated_run_parameters.json
+```
+
+This merges the calibrated economic parameters with simulation defaults and
+writes a complete parameter file. Common overrides:
+
+```bash
+# Change horizon, household count, seed, or strategy:
+python prepare_parameters/build_run_parameters.py \
+    --calibrated-params prepare_parameters/calibrated_parameters.json \
+    --topology calibrated_topology.json \
+    --steps 200 --num-households 1000 --seed 7 \
+    --adaptation-strategy backup_suppliers \
+    --out calibrated_run_parameters.json
+
+# Add a hazard schedule (no-hazard warmup + flood event):
+python prepare_parameters/build_run_parameters.py \
+    --calibrated-params prepare_parameters/calibrated_parameters.json \
+    --topology calibrated_topology.json \
+    --rp-files "10:1:80:FL:None" "10:81:200:FL:data/processed/flood.tif" \
+    --steps 200 \
+    --out calibrated_hazard_parameters.json
+
+# Inherit adaptation settings from an existing parameter file:
+python prepare_parameters/build_run_parameters.py \
+    --calibrated-params prepare_parameters/calibrated_parameters.json \
+    --topology calibrated_topology.json \
+    --adaptation-from aqueduct_riverine_parameters_rcp8p5.json \
+    --out calibrated_run_parameters.json
+```
+
+Defaults: 80 steps (20 years at 4 steps/year), 5× households per firm,
+`start_year` inferred from the calibration metadata, `capital_hardening`
+adaptation. All defaults are documented in `build_run_parameters.py --help`.
+
+Then run as usual:
+
+```bash
+python run_simulation.py --param-file calibrated_run_parameters.json
 ```
 
 The `sector_coefficients` key overrides the model's default hand-tuned values
@@ -448,10 +497,16 @@ for that run only; existing parameter files without this key are unaffected.
 - If `LABOR_COEFF + INPUT_COEFF > 1.0` for any sector the calibration script
   emits a warning. This usually indicates an unusual concordance mapping or
   a sector with negative gross operating surplus in the source data.
-- Final demand flows for non-household-facing sectors (`commodity`,
-  `agriculture`, `components`, `manufacturing`) are ignored by the model.
-  The calibration script warns when these account for more than 5% of total
-  household demand so you can adjust the concordance accordingly.
+- The model routes household spending only through `FINAL_CONSUMPTION_SECTORS`
+  (`retail`, `wholesale`, `services`). Any household final demand recorded
+  against other sectors in the IO table is silently dropped. The calibration
+  script warns when more than 5% of total household demand is affected. With
+  the default concordance this residual is ~18% (direct agricultural purchases,
+  vehicle production, and petroleum) — see the concordance section above for
+  the design choices that reduced it from the raw ~30%.
+- The remaining ~18% residual could be reduced further by either broadening the
+  concordance further (at the cost of blurring supply-chain roles) or by making
+  `FINAL_CONSUMPTION_SECTORS` configurable at run time (a planned extension).
 
 ## Repository Layout
 
