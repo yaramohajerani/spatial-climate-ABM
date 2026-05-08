@@ -19,6 +19,7 @@ Outputs calibrated_parameters.json containing:
   sector_coefficients  — labor/input/capital shares per sector (Leontief)
   input_recipe_ranges  — inter-sector supply fractions per buyer sector
   consumption_ratios   — household final-demand shares per sector
+  final_consumption_sectors — sectors allowed to receive household demand
   sector_output_shares — gross-output share per sector (for topology sizing)
 
 Data download
@@ -67,7 +68,6 @@ import pandas as pd
 
 MODEL_SECTORS = ["commodity", "agriculture", "components", "manufacturing",
                  "retail", "wholesale", "services"]
-FINAL_DEMAND_SECTORS = {"retail", "wholesale", "services"}
 
 _AGGREGATE_CODES = frozenset({
     "II_fob", "TXSP", "EXP_adj", "PURR", "PURNR", "VA", "IntTTM", "GO",
@@ -393,6 +393,7 @@ def _compute_coefficients(
         "sector_coefficients": {},
         "input_recipe_ranges": {},
         "consumption_ratios": {},
+        "final_consumption_sectors": [],
         "sector_output_shares": {},
     }
 
@@ -472,25 +473,17 @@ def _compute_coefficients(
             recipe = {k: [round(v[0] / total, 4), round(v[0] / total, 4)] for k, v in recipe.items()}
         results["input_recipe_ranges"][j] = recipe
 
-    fd_total = float(fd_agg.sum())
-    non_final = [s for s in MODEL_SECTORS if s not in FINAL_DEMAND_SECTORS and fd_agg[s] > 0]
-    if non_final and fd_total > 0:
-        non_final_share = sum(fd_agg[s] for s in non_final) / fd_total
-        if non_final_share > 0.05:
-            warnings.warn(
-                f"Sectors {non_final} account for {non_final_share:.1%} of household "
-                "final demand but are not final-demand sectors in the model "
-                "(retail/wholesale/services). These flows will be ignored."
-            )
-    final_fd = {s: float(fd_agg[s]) for s in FINAL_DEMAND_SECTORS if fd_agg[s] > 0}
+    final_fd = {s: float(fd_agg[s]) for s in MODEL_SECTORS if fd_agg[s] > 0}
     final_total = sum(final_fd.values())
     if final_total > 0:
         results["consumption_ratios"] = {
             s: round(v / final_total, 4) for s, v in final_fd.items()
         }
+        results["final_consumption_sectors"] = sorted(final_fd)
     else:
         results["consumption_ratios"] = {"retail": 1.0}
-        warnings.warn("No household final demand in retail/wholesale/services; defaulting to {retail: 1.0}.")
+        results["final_consumption_sectors"] = ["retail"]
+        warnings.warn("No mapped household final demand; defaulting to {retail: 1.0}.")
 
     x_total = float(X_agg.sum())
     results["sector_output_shares"] = (
@@ -668,6 +661,8 @@ def main(argv: list[str] | None = None) -> None:
     print("\n--- consumption_ratios ---")
     for sec, share in results["consumption_ratios"].items():
         print(f"  {sec:15s}  {share:.3f}")
+    print("\n--- final_consumption_sectors ---")
+    print(f"  {', '.join(results['final_consumption_sectors'])}")
     print("\n--- sector_output_shares ---")
     for sec, share in results["sector_output_shares"].items():
         print(f"  {sec:15s}  {share:.3f}")

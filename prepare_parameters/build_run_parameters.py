@@ -191,7 +191,7 @@ def main(argv: list[str] | None = None) -> None:
     for key in ("sector_coefficients", "input_recipe_ranges", "consumption_ratios"):
         if key not in cal:
             sys.exit(f"Key '{key}' missing from {args.calibrated_params}. "
-                     "Re-run calibrate_from_io.py to regenerate.")
+                      "Re-run calibrate_from_io.py to regenerate.")
 
     # --- hazard events from --rp-from ---
     rp_src_defaults: dict = {}
@@ -273,6 +273,7 @@ def main(argv: list[str] | None = None) -> None:
         "sector_coefficients": cal["sector_coefficients"],
         "input_recipe_ranges": cal["input_recipe_ranges"],
         "consumption_ratios": cal["consumption_ratios"],
+        "final_consumption_sectors": cal.get("final_consumption_sectors"),
 
         "adaptation": adaptation,
     }

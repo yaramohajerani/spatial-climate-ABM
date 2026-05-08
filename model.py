@@ -94,6 +94,7 @@ class EconomyModel(Model):
         apply_transport_shocks: bool | None = None,
         adaptation_params: dict | None = None,
         consumption_ratios: dict | None = None,
+        final_consumption_sectors: list[str] | set[str] | tuple[str, ...] | None = None,
         input_recipe_ranges: dict | None = None,
         sector_coefficients: dict | None = None,
         firm_replacement: str = "startup_reset",
@@ -146,8 +147,9 @@ class EconomyModel(Model):
         self._reserved_capacity_contracts: Dict[int, List[dict[str, object]]] = {}
         self._supplier_reserved_inventory: Dict[int, float] = {}
 
-        # Household consumption ratios across final-good sectors.
-        # Upstream sectors sell to firms, not directly to households.
+        # Household consumption ratios across sectors eligible for final demand.
+        # Calibrated runs may include sectors such as manufacturing or agriculture
+        # when the IO final-demand vector records direct household purchases there.
         self.consumption_ratios: dict = consumption_ratios or {
             'retail': 1.0,
         }
@@ -159,7 +161,11 @@ class EconomyModel(Model):
         # Optional per-run override for FirmAgent sector coefficients (from IO calibration).
         # None means FirmAgent uses its class-level SECTOR_COEFFICIENTS constant.
         self.sector_coefficients_override: dict | None = sector_coefficients
-        self.final_consumption_sectors = set(self.FINAL_CONSUMPTION_SECTORS)
+        self.final_consumption_sectors = (
+            set(final_consumption_sectors)
+            if final_consumption_sectors is not None
+            else set(self.FINAL_CONSUMPTION_SECTORS)
+        )
         self._consumption_ratio_warning_emitted: bool = False
         self._startup_capital_floor_overrides: list[dict[str, float | int]] = []
 
@@ -568,6 +574,12 @@ class EconomyModel(Model):
         return {
             "EffectiveConsumptionRatios": json.dumps(
                 self.get_final_consumption_ratios(),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ),
+            "FinalConsumptionSectors": json.dumps(
+                sorted(self.final_consumption_sectors),
                 sort_keys=True,
                 separators=(",", ":"),
                 ensure_ascii=True,
