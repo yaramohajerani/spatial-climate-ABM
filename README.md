@@ -473,6 +473,15 @@ python prepare_parameters/build_run_parameters.py \
     --topology calibrated_topology.json \
     --adaptation-from aqueduct_riverine_parameters_rcp8p5.json \
     --out calibrated_run_parameters.json
+
+# Inherit a full hazard schedule from an existing parameter file
+# (also inherits steps, start_year, steps_per_year, grid_resolution):
+python prepare_parameters/build_run_parameters.py \
+    --calibrated-params prepare_parameters/calibrated_parameters.json \
+    --topology calibrated_topology.json \
+    --rp-from   aqueduct_riverine_parameters_rcp8p5.json \
+    --adaptation-from aqueduct_riverine_parameters_rcp8p5.json \
+    --out calibrated_rcp8p5_parameters.json
 ```
 
 Defaults: 80 steps (20 years at 4 steps/year), 5× households per firm,
