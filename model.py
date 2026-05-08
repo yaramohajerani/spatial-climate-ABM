@@ -1562,11 +1562,13 @@ class EconomyModel(Model):
             )
         firm.capital_stock = seeded_capital
         firm.money = max(firm.money, working_capital)
+        firm.normal_unit_cost = max(1e-6, unit_variable_cost)
         firm.startup_expected_sales = expected_sales
         firm.startup_inventory_target = inventory_target
         firm.startup_capital_stock = seeded_capital
         firm.startup_money = firm.money
         firm.startup_price = firm.price
+        firm.startup_normal_unit_cost = firm.normal_unit_cost
         firm.startup_wage_offer = firm.wage_offer
 
     def _seed_firm_input_inventories(
@@ -2082,6 +2084,13 @@ class EconomyModel(Model):
         firm.inventory_output = firm.base_inventory_target
         firm.inventory_inputs.clear()
         firm.price = float(getattr(firm, "startup_price", firm.price))
+        firm.normal_unit_cost = float(
+            getattr(
+                firm,
+                "startup_normal_unit_cost",
+                firm.price / (1.0 + firm.BASE_MARKUP),
+            )
+        )
         firm.wage_offer = float(getattr(firm, "startup_wage_offer", self.initial_mean_wage))
         firm.damage_factor = 1.0
         firm.counterfactual_damage_factor = 1.0

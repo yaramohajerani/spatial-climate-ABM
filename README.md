@@ -527,6 +527,13 @@ for that run only; existing parameter files without this key are unaffected.
   (`retail`, `wholesale`, `services`). Direct household purchases from mapped
   manufacturing, agriculture, commodity, or components sectors are preserved in
   `consumption_ratios`.
+- Firm prices follow a slow-moving normal unit-cost anchor plus a scarcity
+  markup. The markup rises when finished-goods inventories are below target or
+  prior-period sell-through is high, and falls when inventory is abundant. When
+  scarcity is positive, falling current costs do not pull down the normal-cost
+  anchor. This prevents input-constrained downturns from mechanically turning
+  into deflation just because wages and current input costs fall in the same
+  period.
 
 ## Repository Layout
 

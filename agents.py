@@ -358,6 +358,13 @@ class FirmAgent(Agent):
     WORKING_CAPITAL_CREDIT_REVENUE_SHARE: float = 1.0
     LABOR_SHARE: float = 0.5  # fixed labour share of revenue in wage targeting
     NO_WORKER_WAGE_PREMIUM: float = 1.02
+    NORMAL_COST_ALPHA: float = 0.05
+    PRICE_ADJUSTMENT_SPEED: float = 0.15
+    BASE_MARKUP: float = 0.15
+    MIN_MARKUP: float = 0.02
+    MAX_MARKUP: float = 0.75
+    SCARCITY_MARKUP_SENSITIVITY: float = 0.35
+    RELATIVE_PRICE_FLOOR: float = 0.5
     ADAPTATION_EXPECTED_WEIGHT: float = 0.5
     ADAPTATION_LOCAL_WEIGHT: float = 0.3
     ADAPTATION_SUPPLIER_WEIGHT: float = 0.2
@@ -400,6 +407,7 @@ class FirmAgent(Agent):
             "services": 1.2,
         }
         self.price: float = float(base_price_by_sector.get(self.sector, 1.2))
+        self.normal_unit_cost: float = self.price / (1.0 + self.BASE_MARKUP)
         self.money: float = 100.0
 
         # Firm-specific wage offer (labour price) – starts at the model's base wage
@@ -478,6 +486,7 @@ class FirmAgent(Agent):
         self.expected_sales: float = 0.0
         self.demand_driven_output: float = 0.0
         self.base_inventory_target: float = 1.0
+        self.target_inventory_output: float = 1.0
         self.base_capital_target: float = self.capital_stock
         self.target_capital_stock: float = self.capital_stock
         self.no_hazard_target_output: float = 0.0
@@ -1199,6 +1208,50 @@ class FirmAgent(Agent):
         downtime_value = downtime_units * max(self.price, 0.5)
         return max(1.0, self.capital_stock + inventory_value + input_value + downtime_value)
 
+    def _current_unit_cost(self) -> float:
+        technical_suppliers = self._technical_input_suppliers()
+        avg_input_price = float(np.mean([s.price for s in technical_suppliers])) if technical_suppliers else 0.0
+        return (
+            self.wage_offer * self.LABOR_COEFF
+            + avg_input_price * self.INPUT_COEFF
+        ) / max(self.damage_factor, 1e-6)
+
+    def _update_price_from_cost_and_scarcity(self) -> None:
+        current_unit_cost = max(1e-6, self._current_unit_cost())
+
+        target_inventory = max(1.0, self.target_inventory_output)
+        inventory_gap = (target_inventory - self.inventory_output) / target_inventory
+        inventory_gap = float(np.clip(inventory_gap, -1.0, 1.0))
+
+        available = self.inventory_available_last_step
+        if available > 1e-9 and self.sales_last_step > 0:
+            sell_through = min(1.0, self.sales_last_step / available)
+        else:
+            sell_through = 0.0
+        sell_through_signal = 2.0 * sell_through - 1.0
+
+        scarcity_signal = float(np.clip(max(inventory_gap, sell_through_signal), -1.0, 1.0))
+        cost_alpha = self.NORMAL_COST_ALPHA
+        if scarcity_signal > 0.0 and current_unit_cost < self.normal_unit_cost:
+            cost_alpha = 0.0
+        self.normal_unit_cost = (
+            (1.0 - cost_alpha) * max(1e-6, self.normal_unit_cost)
+            + cost_alpha * current_unit_cost
+        )
+
+        target_markup = float(
+            np.clip(
+                self.BASE_MARKUP + self.SCARCITY_MARKUP_SENSITIVITY * scarcity_signal,
+                self.MIN_MARKUP,
+                self.MAX_MARKUP,
+            )
+        )
+        target_price = self.normal_unit_cost * (1.0 + target_markup)
+
+        self.price += self.PRICE_ADJUSTMENT_SPEED * (target_price - self.price)
+        relative_floor = max(1e-6, float(getattr(self, "startup_price", self.price)) * self.RELATIVE_PRICE_FLOOR)
+        self.price = float(max(relative_floor, self.price))
+
     def get_adapted_loss_fraction(self, raw_loss_fraction: float) -> float:
         """Return adapted loss fraction, strategy-dependent.
 
@@ -1417,6 +1470,7 @@ class FirmAgent(Agent):
 
         effective_buffer_ratio = self._effective_inventory_buffer_ratio()
         inventory_target = max(1.0, self.expected_sales * effective_buffer_ratio)
+        self.target_inventory_output = inventory_target
         demand_driven_output = max(0.0, self.expected_sales + inventory_target - self.inventory_output)
         no_hazard_inventory_output = max(
             0.0,
@@ -1562,39 +1616,10 @@ class FirmAgent(Agent):
         self.wage_offer = float(max(wage_floor, self.wage_offer))
 
         # ---------------- Dynamic pricing ----------------------------- #
-        # Markup pricing: price = unit_cost × (1 + markup), where markup is set
-        # by sell-through rate.  This replaces ad-hoc inventory-threshold bands,
-        # cost-floor ratchets, and price ceilings with one economic principle:
-        # prices track costs and adjust margins based on realised demand.
-
-        # Unit cost from actual production inputs
-        avg_input_price = 0.0
-        technical_suppliers = self._technical_input_suppliers()
-        if technical_suppliers:
-            avg_input_price = float(np.mean([s.price for s in technical_suppliers]))
-        unit_cost = (
-            self.wage_offer * self.LABOR_COEFF
-            + avg_input_price * self.INPUT_COEFF
-        ) / max(self.damage_factor, 1e-6)
-
-        # Sell-through is based on realised demand from the previous full period.
-        available = self.inventory_available_last_step
-        if available > 0 and self.sales_last_step > 0:
-            sell_through = min(1.0, self.sales_last_step / available)
-        else:
-            sell_through = 0.0
-
-        # Target markup stays positive but modest:
-        #   sell_through = 1.0  →  markup = +0.32
-        #   sell_through = 0.5  →  markup = +0.17
-        #   sell_through = 0.0  →  markup = +0.02
-        # This avoids below-cost pricing while limiting long-run markup compounding.
-        target_markup = 0.02 + 0.30 * sell_through
-        target_price = unit_cost * (1.0 + target_markup)
-
-        # Smooth adjustment: 20% toward target each step
-        self.price += 0.2 * (target_price - self.price)
-        self.price = float(max(0.5, self.price))  # absolute floor to prevent zero/negative
+        # Prices track a slow-moving normal cost, while inventory shortages and
+        # high sell-through raise the markup. This avoids mechanical deflation
+        # when wages fall during input-constrained periods.
+        self._update_price_from_cost_and_scarcity()
 
         labour_units = self._labor_available()
         effective_damage = max(self.damage_factor, 1e-6)

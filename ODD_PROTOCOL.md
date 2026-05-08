@@ -257,7 +257,7 @@ Firms:
 - avoid exhausting liquidity by preserving a cash reserve,
 - procure inputs at lowest available price subject to actual supply,
 - set wages in line with prior revenue per worker,
-- set prices as cost plus a modest markup tied to sell-through,
+- set prices from normal unit cost plus scarcity-sensitive markup,
 - preserve and rebuild productive capital before distributing profits,
 - build continuity capacity only when hazard signals justify it.
 
@@ -775,28 +775,40 @@ There is a wage floor equal to 40 percent of the initial mean wage.
 
 Prices are updated before procurement and production.
 
-Unit cost is:
+Current unit cost is:
 
 ```text
 unit_cost = (labor_coeff * wage_offer + input_coeff * average_input_price) / damage_factor
 ```
 
-Markup depends on prior-period sell-through:
+Firms maintain a slow-moving normal-cost anchor:
 
 ```text
-markup = 0.02 + 0.30 * sell_through
-target_price = unit_cost * (1 + markup)
+normal_unit_cost_(t+1) = 0.95 * normal_unit_cost_t + 0.05 * unit_cost_t
 ```
 
-Sell-through is previous-period sales divided by previous-period goods available for sale.
+When the scarcity signal below is positive, decreases in current unit cost do
+not reduce the normal-cost anchor; cost decreases pass through only when the
+firm is not scarcity-constrained.
+
+Markup responds to scarcity. The inventory-gap signal is target finished-goods
+inventory minus on-hand finished-goods inventory, divided by target inventory
+and clipped to [-1, 1]. The sell-through signal is `2 * sell_through - 1`,
+where sell-through is previous-period sales divided by previous-period goods
+available for sale. The scarcity signal is the larger of those two signals.
+
+```text
+markup = clip(0.15 + 0.35 * scarcity_signal, 0.02, 0.75)
+target_price = normal_unit_cost * (1 + markup)
+```
 
 Prices adjust gradually:
 
 ```text
-price_(t+1) = price_t + 0.2 * (target_price - price_t)
+price_(t+1) = price_t + 0.15 * (target_price - price_t)
 ```
 
-There is an absolute floor of 0.5.
+There is a relative floor of `0.5 * startup_price`.
 
 #### 3.3.7 Intermediate-input procurement submodel
 
