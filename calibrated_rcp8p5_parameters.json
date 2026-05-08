@@ -158,6 +158,15 @@
     "services",
     "wholesale"
   ],
+  "sector_output_shares": {
+    "commodity": 0.0759,
+    "agriculture": 0.0355,
+    "components": 0.1093,
+    "manufacturing": 0.2748,
+    "retail": 0.0314,
+    "wholesale": 0.0572,
+    "services": 0.4159
+  },
   "adaptation": {
     "enabled": true,
     "decision_interval": 4,

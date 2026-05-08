@@ -1595,13 +1595,16 @@ class FirmAgent(Agent):
             return
 
         # ---------------- Wage adjustment ----------------------------- #
-        # Revenue-based wage targeting: wages track marginal revenue product of labor.
-        # This replaces ad-hoc shortage-signal heuristics with a single economic principle:
-        # firms pay workers a fraction of what they produce, so wages are structurally
-        # bounded by firm revenue and self-correct during downturns.
+        # Revenue-based wage targeting: wages track revenue per effective worker.
+        # When firms sell from inventory, last period's headcount can be much lower
+        # than the labour needed to reproduce the sold volume. Use the larger of
+        # actual workers and implied production labour to avoid inventory-sale
+        # windfalls ratcheting wages above sustainable operating productivity.
         labor_share = self.LABOR_SHARE
         if self.last_hired_labor > 0 and self.revenue_last_step > 0:
-            revenue_per_worker = self.revenue_last_step / self.last_hired_labor
+            implied_sales_labor = self.sales_last_step * self.LABOR_COEFF / max(self.damage_factor, 1e-6)
+            effective_labor_denominator = max(float(self.last_hired_labor), implied_sales_labor, 1.0)
+            revenue_per_worker = self.revenue_last_step / effective_labor_denominator
             target_wage = revenue_per_worker * labor_share
         elif self.last_hired_labor == 0:
             # No workers last round. Use only a modest premium over the market

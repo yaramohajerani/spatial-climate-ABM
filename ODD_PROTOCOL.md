@@ -256,7 +256,7 @@ Firms:
 - try to meet expected demand while maintaining inventory buffers,
 - avoid exhausting liquidity by preserving a cash reserve,
 - procure inputs at lowest available price subject to actual supply,
-- set wages in line with prior revenue per worker,
+- set wages in line with prior revenue per effective worker,
 - set prices from normal unit cost plus scarcity-sensitive markup,
 - preserve and rebuild productive capital before distributing profits,
 - build continuity capacity only when hazard signals justify it.
@@ -752,8 +752,13 @@ Wages are updated at the start of the firm's execution phase using prior-period 
 If the firm had workers and positive revenue last step:
 
 ```text
-target_wage = (revenue_last_step / last_hired_labor) * 0.5
+effective_labor = max(last_hired_labor, sales_last_step * labor_coeff / damage_factor, 1)
+target_wage = (revenue_last_step / effective_labor) * 0.5
 ```
+
+The effective-labor denominator prevents sales from inherited finished-goods
+inventory from being treated as if they were produced by the smaller current
+workforce.
 
 If it had no workers:
 

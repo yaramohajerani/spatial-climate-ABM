@@ -278,6 +278,7 @@ def main(argv: list[str] | None = None) -> None:
         "input_recipe_ranges": cal["input_recipe_ranges"],
         "consumption_ratios": cal["consumption_ratios"],
         "final_consumption_sectors": cal.get("final_consumption_sectors"),
+        "sector_output_shares": cal.get("sector_output_shares"),
 
         "adaptation": adaptation,
     }
