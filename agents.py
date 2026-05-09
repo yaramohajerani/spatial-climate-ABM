@@ -328,9 +328,13 @@ class FirmAgent(Agent):
     DEFAULT_COEFFICIENTS: dict = {"labor": 0.5, "input": 0.5, "capital": 0.5}
 
     # Default intermediate-input recipes. Values are ranges for firm-level shares
-    # of total intermediate input requirements; the model draws and normalizes one
-    # recipe per firm at initialization. Supplier firms within a required sector
-    # are substitutes, while required sectors are complementary Leontief inputs.
+    # of the calibrated intermediate-input bundle; the model draws and normalizes
+    # one recipe per firm at initialization. Recipe shares define preferred
+    # sourcing weights and the firm's cost-mix exposure, not strict input
+    # complements: production uses inputs as a single aggregate Leontief factor
+    # (see ``_max_output_from_sector_inputs`` and ``step``), and procurement runs
+    # an aggregate top-up pass that fills any residual demand from any technical
+    # supplier when one recipe sector is transiently short.
     DEFAULT_INPUT_RECIPE_RANGES: dict = {
         "commodity": {},
         "agriculture": {},
@@ -1099,7 +1103,7 @@ class FirmAgent(Agent):
                 investable_profit=investable_earnings,
             )
 
-    def _pay_dividends(self, *, distributable_earnings: float, operating_cash_reserve: float) -> None:
+    def _pay_dividends(self, *, operating_cash_reserve: float) -> None:
         if not self.model._households:
             return
         available_cash = self._available_cash_after_reserve(operating_cash_reserve)
@@ -1989,10 +1993,7 @@ class FirmAgent(Agent):
                 distributable_earnings=distributable_earnings,
                 operating_cash_reserve=operating_cash_reserve,
             )
-            self._pay_dividends(
-                distributable_earnings=distributable_earnings,
-                operating_cash_reserve=operating_cash_reserve,
-            )
+            self._pay_dividends(operating_cash_reserve=operating_cash_reserve)
         self.inventory_available_last_step = self.inventory_output + self.sales_this_step
         self._update_post_step_state()
 

@@ -234,7 +234,10 @@ def main(argv: list[str] | None = None) -> None:
         src = _read_json(args.adaptation_from)
         if "adaptation" not in src:
             sys.exit(f"No 'adaptation' block in {args.adaptation_from}")
-        adaptation = src["adaptation"]
+        # Merge onto defaults so the inherited block doesn't have to be
+        # exhaustive — any keys it omits fall back to canonical values, which
+        # protects both downstream printing and runtime consumers.
+        adaptation.update(src["adaptation"])
         print(f"Inherited adaptation settings from: {args.adaptation_from}")
     else:
         if args.no_adaptation:

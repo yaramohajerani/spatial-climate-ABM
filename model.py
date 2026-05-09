@@ -1537,8 +1537,12 @@ class EconomyModel(Model):
         expected_sales = max(1.0, float(expected_sales))
         inventory_target = max(1.0, expected_sales * inventory_coverage)
         capital_target = max(1.0, expected_sales * firm.capital_coeff * capital_coverage)
-        technical_suppliers = firm._technical_input_suppliers()
-        avg_input_price = float(np.mean([s.price for s in technical_suppliers])) if technical_suppliers else 0.0
+        # Recipe-share-weighted input price — matches the runtime cost basis used
+        # in ``_current_unit_cost``/``plan_operations`` so the seeded
+        # ``normal_unit_cost`` (and the ``startup_normal_unit_cost`` snapshot
+        # consulted on firm reset) reflects the calibrated IO expenditure mix
+        # rather than an unweighted mean over linked suppliers.
+        avg_input_price = firm._avg_input_price()
         unit_variable_cost = (
             firm.wage_offer * firm.LABOR_COEFF
             + avg_input_price * firm.INPUT_COEFF

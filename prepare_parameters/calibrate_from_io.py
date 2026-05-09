@@ -267,8 +267,12 @@ def _parse_niot(
     year_tot = year_df[year_df["Origin"] == "TOT"]
     go_row = year_tot[year_tot["Code"] == "GO"]
     if go_row.empty:
-        warnings.warn("'GO' row not found; computing gross output from column sums.")
-        X_series = Z_df.sum(axis=0) + fd_series
+        # Gross output of industry i from the supply side: intermediate sales by
+        # i (row sum of Z) plus final demand from i. Column sums would instead
+        # give intermediate purchases by j, which is the cost side and only
+        # equals gross output once value added is added back.
+        warnings.warn("'GO' row not found; computing gross output from row sums plus final demand.")
+        X_series = Z_df.sum(axis=1) + fd_series
     else:
         X_series = (
             go_row[industry_col_codes].iloc[0]
