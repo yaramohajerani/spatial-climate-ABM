@@ -412,6 +412,15 @@ python prepare_parameters/calibrate_from_io.py \
 At runtime, recipe shares guide procurement by sector while aggregate intermediate
 input availability binds production. This matches the model's reduced-form treatment
 of intermediate inputs as substitutable within a calibrated input bundle.
+Procurement is two-pass: a recipe-guided per-sector pass preserves the calibrated
+cost mix when supply allows, followed by an aggregate top-up that fills any
+residual demand from the cheapest available technical supplier across recipe
+sectors. The hazard-related supplier disruption signal is computed from the
+aggregate residual after substitution, so a sector-level gap that has been
+filled across the input bundle is not flagged as a supplier disruption. Unit
+cost used in pricing and working-capital sizing weights supplier prices by the
+calibrated recipe shares, falling back to an unweighted mean when no recipe is
+configured.
 
 Year is auto-detected from the WIOT filename (`WIOT2014` → 2014) and defaults to
 2014 for NIOT. Country is auto-detected from the NIOT filename (`IND_NIOT` → IND).
@@ -535,6 +544,14 @@ for that run only; existing parameter files without this key are unaffected.
   downturns from mechanically turning into deflation just because wages and
   current input costs fall in the same period, while still allowing deflation
   when weak-demand conditions persist.
+- Dividend payouts distribute all firm cash above the operating reserve when
+  the firm is in a dividend-eligible state (no current direct loss and no
+  pending deferred capital repair). Capping dividends at current-period
+  earnings would otherwise strand cash retained from hazard-suppressed periods
+  on firm balance sheets and break the closed-economy circular flow when
+  shocks recur. Distributing the full available cash makes hazards manifest as
+  inflation and real-output effects rather than as a monotone wealth transfer
+  from households to firms.
 
 ## Repository Layout
 
