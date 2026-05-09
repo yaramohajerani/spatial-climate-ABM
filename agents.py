@@ -1217,8 +1217,11 @@ class FirmAgent(Agent):
         self.revenue_this_step = 0.0
 
     def estimate_direct_value_at_risk(self) -> float:
-        technical_suppliers = self._technical_input_suppliers()
-        avg_input_price = float(np.mean([s.price for s in technical_suppliers])) if technical_suppliers else self.price
+        # Use the recipe-share-weighted input price so input-inventory damage
+        # valuation matches the cost basis used in pricing/working-capital
+        # sizing. ``_avg_input_price`` returns 0 when no technical suppliers
+        # exist, in which case fall back to the firm's own output price.
+        avg_input_price = self._avg_input_price() or self.price
         input_units = sum(self.inventory_inputs.values())
         downtime_units = max(self.expected_sales, self.sales_last_step, self.target_output, 1.0)
         inventory_value = self.inventory_output * max(self.price, 0.5)
@@ -1536,7 +1539,6 @@ class FirmAgent(Agent):
         desired_output = demand_driven_output
         no_hazard_desired_output = no_hazard_demand_driven_output
 
-        technical_suppliers = self._technical_input_suppliers()
         avg_input_price = self._avg_input_price()
 
         effective_damage = max(self.damage_factor, 1e-6)
@@ -1686,7 +1688,6 @@ class FirmAgent(Agent):
             self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf"),
         )
         desired_input_units_by_sector = self._desired_input_units_by_sector(desired_pre_damage_output)
-        desired_input_units = sum(desired_input_units_by_sector.values())
         current_input_units_by_sector = self._input_inventory_by_sector()
         sector_remaining_inputs_needed: dict[str, float] = {}
         for sector, desired_sector_units in desired_input_units_by_sector.items():

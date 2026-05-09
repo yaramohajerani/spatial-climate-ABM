@@ -14,7 +14,6 @@ try:  # pragma: no cover - package import path
     from .model import EconomyModel
     from .agents import FirmAgent, HouseholdAgent
     from .ensemble_utils import (
-        ENSEMBLE_STAT_ORDER,
         METADATA_PREFIX,
         apply_metadata as apply_ensemble_metadata,
         build_ensemble_summary as summarize_ensemble,
@@ -32,7 +31,6 @@ except ImportError:  # pragma: no cover - flat script import path
     from model import EconomyModel
     from agents import FirmAgent, HouseholdAgent
     from ensemble_utils import (
-        ENSEMBLE_STAT_ORDER,
         METADATA_PREFIX,
         apply_metadata as apply_ensemble_metadata,
         build_ensemble_summary as summarize_ensemble,

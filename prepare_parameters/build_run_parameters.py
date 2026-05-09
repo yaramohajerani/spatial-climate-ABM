@@ -311,11 +311,11 @@ def main(argv: list[str] | None = None) -> None:
         summary = ", ".join(f"{k}[{len(v)}]" for k, v in hazard_source.items())
         print(f"  hazard:             {summary} (from {args.rp_from.name})")
     else:
-        print(f"  hazard:             none (baseline)")
+        print("  hazard:             none (baseline)")
     print()
     print(f"  calibration source: {source_desc}")
     print()
-    print(f"Run with:")
+    print("Run with:")
     print(f"  python run_simulation.py --param-file {args.out}")
 
 

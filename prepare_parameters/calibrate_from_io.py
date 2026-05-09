@@ -63,7 +63,6 @@ import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 MODEL_SECTORS = ["commodity", "agriculture", "components", "manufacturing",
@@ -601,7 +600,7 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(f"WIOT file not found: {args.wiot_file}")
         year = args.year or _extract_year_from_wiot_filename(args.wiot_file) or 2014
         Z_df, fd_df, labor, gos, X_series = _parse_wiot(args.wiot_file, sea_path, year)
-        source = f"WIOD 2016 WIOT (global aggregate)"
+        source = "WIOD 2016 WIOT (global aggregate)"
         source_file = args.wiot_file.name
         country = "GLOBAL"
     else:

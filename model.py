@@ -2437,9 +2437,7 @@ class EconomyModel(Model):
     def _build_trade_network(self) -> None:
         """Randomly connect firms <-> firms and households <-> firms based on distance."""
 
-        # Separate lists for convenience
         firm_agents = [ag for ag in self.agents if isinstance(ag, FirmAgent)]
-        household_agents = [ag for ag in self.agents if isinstance(ag, HouseholdAgent)]
 
         # 1. Firm – firm trade network (directed edges)
         dist_scale = 5.0  # characteristic decay distance

@@ -1,6 +1,6 @@
 # ODD Protocol for the Spatial Climate-Economy ABM
 
-This document provides a detailed Overview, Design concepts, and Details (ODD) protocol for the agent-based model implemented in this repository. It is written against the current implementation in `model.py`, `agents.py`, `run_simulation.py`, and the associated configuration and manuscript files present in the repository on April 28, 2026.
+This document provides a detailed Overview, Design concepts, and Details (ODD) protocol for the agent-based model implemented in this repository. It is written against the current implementation in `model.py`, `agents.py`, `run_simulation.py`, and the associated configuration and manuscript files.
 
 The protocol distinguishes between:
 
@@ -110,6 +110,7 @@ Each firm maintains:
 - sector,
 - money holdings,
 - price,
+- slow-moving normal unit cost (cost anchor used in markup pricing),
 - wage offer,
 - capital stock,
 - damage factor (effective productive condition),
@@ -117,6 +118,7 @@ Each firm maintains:
 - output inventory,
 - input inventories by supplier,
 - connected suppliers,
+- input recipe shares (firm-specific preferred-sourcing weights drawn at initialization from configured supplier-sector ranges),
 - current employees,
 - expected sales,
 - target output,
@@ -167,7 +169,7 @@ The step sequence is:
 7. If the reserved-capacity strategy is active, create reserved supplier contracts before procurement begins.
 8. Households supply labor. They search for employers, optionally relocate if that feature is enabled, and sell labor to hiring firms.
 9. Firms execute production in broad sector order. Commodity firms act before manufacturing firms, which act before retail/service firms. Ties within broad sector tiers are randomized each step.
-10. During firm execution, wages and prices are updated first using prior-period information, then firms procure inputs from primary suppliers, identify hazard-related primary-supplier shortages, optionally access continuity-enabled backup or reserved-capacity channels, optionally use generic dynamic supplier rewiring as a last-resort market search, produce output, clear employees, and depreciate capital.
+10. During firm execution, wages and prices are updated first using prior-period information; firms then procure inputs in two passes — a recipe-guided per-sector pass followed by an aggregate top-up that fills any residual demand from any technical supplier — identify hazard-related supplier shortages from the residual aggregate shortfall, optionally access continuity-enabled backup or reserved-capacity channels, optionally use generic dynamic supplier rewiring as a last-resort market search, produce output, clear employees, and depreciate capital.
 11. Households consume final goods after current-period production is complete.
 12. Firms close the accounting period: compute profits, install productive capital when no current direct loss blocks it, fund adaptation from residual cash, pay dividends, and update adaptive expectations and exposure diagnostics.
 13. Firms partially recover damage factors after the current period's production and accounting have closed, so recovery affects the next period rather than smoothing the current shock.
@@ -482,7 +484,7 @@ If a topology JSON is provided, firms are created from that file:
 - initial topology identifiers are preserved,
 - directed edges are read as supplier -> buyer relationships.
 
-The topology defines the initial number of supplier relationship slots. When `dynamic_supplier_search` is enabled, firms may rewire an existing supplier edge within a required supplier sector, but they do not create additional supplier slots. If a required supplier-sector link is missing from the topology, that is treated as a topology/input issue: the model warns and the missing input category can bind production rather than being filled automatically.
+The topology defines the initial number of supplier relationship slots. When `dynamic_supplier_search` is enabled, firms may rewire an existing supplier edge within a required supplier sector, but they do not create additional supplier slots. If a required supplier-sector link is missing from the topology, the model emits a runtime warning; under the aggregate-bundle production closure (see Section 3.3.7) that recipe share is dropped from the cost basis and its demand is sourced through the aggregate top-up pass, so a missing recipe sector binds production only when the aggregate intermediate-input bundle is itself short.
 
 If no topology is provided, firms are placed randomly on land and a random distance-based trade network is generated.
 
@@ -618,13 +620,9 @@ The directed edges define the initial supplier relationship slots used by dynami
 
 #### 3.2.4 Household demand weights
 
-Household consumption ratios are read from configuration. Only final-demand sectors are eligible:
+Household consumption ratios are read from configuration. The set of eligible final-demand sectors is determined by the model's `final_consumption_sectors` attribute, which defaults to the legacy `{retail, wholesale, services}` (`EconomyModel.FINAL_CONSUMPTION_SECTORS`). The default can be overridden per-run through the JSON `final_consumption_sectors` key — calibrated parameter files generated by `prepare_parameters/calibrate_from_io.py` typically include the full mapped set (e.g. `agriculture`, `commodity`, `components`, `manufacturing`, plus `retail`, `wholesale`, `services`) so households can buy directly from any sector that records household final demand in the source IO table.
 
-- retail,
-- wholesale,
-- services.
-
-Weights assigned to non-final sectors are ignored with a warning.
+Weights assigned to non-eligible sectors are dropped with a runtime warning that names the eligible set.
 
 #### 3.2.5 Optional explicit shock inputs
 
@@ -858,14 +856,16 @@ Supplier disruption is measured as the share of desired aggregate inputs that re
 
 #### 3.3.8 Production submodel
 
-Production uses a Leontief structure with sector-specific coefficients:
+Production uses a Leontief structure with sector-specific coefficients. The built-in defaults (used when no `sector_coefficients` block is provided) are:
 
 | Sector | Labor coeff | Input coeff | Capital coeff |
 | --- | ---: | ---: | ---: |
 | Commodity / agriculture | 0.6 | 0.0 | 0.7 |
-| Manufacturing | 0.3 | 0.6 | 0.6 |
+| Components / manufacturing | 0.3 | 0.6 | 0.6 |
 | Retail / wholesale | 0.5 | 0.4 | 0.2 |
 | Services | 0.9 | 0.1 | 0.1 |
+
+A calibrated `sector_coefficients` block in the parameter file overrides these defaults per sector and is the path used by the IO-table calibration workflow.
 
 Actual output is:
 
@@ -910,6 +910,8 @@ The model also tracks:
 - counterfactual direct loss value,
 - realized direct loss value,
 - direct-loss expense for accounting purposes.
+
+The direct-loss expense aggregates the value of destroyed capital, finished-goods inventory, and input inventories at their respective replacement prices (capital at unit installation cost, finished-goods inventory at the firm's own price, input inventory at the firm's calibrated-recipe-weighted average supplier price — see Section 3.3.6). It is a non-cash write-down that lowers reported net profit but leaves money holdings unchanged; the cash to repair the destroyed capital is spent at the start of the next period through the deferred-repair mechanism (see Section 3.3.14).
 
 When a firm experiences any raw direct loss, its `ever_directly_hit` flag becomes true.
 
