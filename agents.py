@@ -1210,9 +1210,39 @@ class FirmAgent(Agent):
         downtime_value = downtime_units * max(self.price, 0.5)
         return max(1.0, self.capital_stock + inventory_value + input_value + downtime_value)
 
-    def _current_unit_cost(self) -> float:
+    def _avg_input_price(self) -> float:
+        """Recipe-share-weighted mean supplier price.
+
+        Calibrated input_recipe_shares represent IO expenditure shares — the
+        cost basis at the firm's planned input mix. An unweighted mean over
+        all linked suppliers would attribute equal cost weight to each supply
+        sector regardless of its share, biasing markup pricing and working-
+        capital sizing away from the calibrated economic technology.
+        """
         technical_suppliers = self._technical_input_suppliers()
-        avg_input_price = float(np.mean([s.price for s in technical_suppliers])) if technical_suppliers else 0.0
+        if not technical_suppliers:
+            return 0.0
+        if not self.input_recipe_shares:
+            return float(np.mean([s.price for s in technical_suppliers]))
+
+        sector_prices: dict[str, list[float]] = defaultdict(list)
+        for supplier in technical_suppliers:
+            sector_prices[supplier.sector].append(float(supplier.price))
+
+        weighted_sum = 0.0
+        weight_total = 0.0
+        for sector, share in self.input_recipe_shares.items():
+            prices = sector_prices.get(sector)
+            if not prices or share <= 1e-12:
+                continue
+            weighted_sum += share * float(np.mean(prices))
+            weight_total += share
+        if weight_total <= 1e-12:
+            return float(np.mean([s.price for s in technical_suppliers]))
+        return weighted_sum / weight_total
+
+    def _current_unit_cost(self) -> float:
+        avg_input_price = self._avg_input_price()
         return (
             self.wage_offer * self.LABOR_COEFF
             + avg_input_price * self.INPUT_COEFF
@@ -1490,10 +1520,8 @@ class FirmAgent(Agent):
         desired_output = demand_driven_output
         no_hazard_desired_output = no_hazard_demand_driven_output
 
-        avg_input_price = 0.0
         technical_suppliers = self._technical_input_suppliers()
-        if technical_suppliers:
-            avg_input_price = float(np.mean([s.price for s in technical_suppliers]))
+        avg_input_price = self._avg_input_price()
 
         effective_damage = max(self.damage_factor, 1e-6)
         no_hazard_damage = max(
@@ -1652,6 +1680,9 @@ class FirmAgent(Agent):
 
         technical_suppliers = self._technical_input_suppliers()
         if technical_suppliers and self.INPUT_COEFF > 0:
+            # First pass: recipe-guided sourcing. Sourcing per the calibrated
+            # mix preserves cost exposure to the IO-implied supplier composition
+            # whenever supply is available.
             for sector, remaining_inputs_needed in list(sector_remaining_inputs_needed.items()):
                 if remaining_inputs_needed <= 1e-9:
                     continue
@@ -1660,13 +1691,44 @@ class FirmAgent(Agent):
                     remaining_inputs_needed,
                 )
 
-        physical_shortfall_ratio = max(
-            (
-                min(1.0, max(0.0, sector_remaining_inputs_needed.get(sector, 0.0) / desired_sector_units))
-                for sector, desired_sector_units in desired_input_units_by_sector.items()
-                if desired_sector_units > 1e-9
-            ),
-            default=0.0,
+            # Second pass: aggregate top-up. The calibrated production function
+            # treats intermediate inputs as an aggregate bundle (see
+            # ``_max_output_from_sector_inputs``), so per-sector recipe shares
+            # define preferred sourcing, not strict input complements. When a
+            # recipe sector's primary suppliers are depleted (e.g., due to IO
+            # circularity at startup or transient hazard disruption), residual
+            # aggregate demand can be filled from any technical supplier. Without
+            # this step procurement remains sector-recipe constrained while
+            # production is aggregate, which mechanically suppresses output and
+            # collapses employment whenever any one recipe sector runs short.
+            aggregate_residual = sum(
+                max(0.0, remaining)
+                for remaining in sector_remaining_inputs_needed.values()
+            )
+            if aggregate_residual > 1e-9:
+                aggregate_residual_after = self._buy_inputs_from_suppliers(
+                    technical_suppliers, aggregate_residual,
+                )
+                if aggregate_residual_after + 1e-12 < aggregate_residual:
+                    scale = max(0.0, aggregate_residual_after / aggregate_residual)
+                    sector_remaining_inputs_needed = {
+                        sector: max(0.0, remaining * scale)
+                        for sector, remaining in sector_remaining_inputs_needed.items()
+                    }
+
+        # Hazard signal is computed from aggregate residual to match the
+        # aggregate production closure: a transient sector-level gap that has
+        # been substituted across the aggregate bundle is not a true supplier
+        # disruption.
+        total_desired_inputs = sum(desired_input_units_by_sector.values())
+        total_remaining_inputs = sum(
+            max(0.0, remaining)
+            for remaining in sector_remaining_inputs_needed.values()
+        )
+        physical_shortfall_ratio = (
+            min(1.0, total_remaining_inputs / total_desired_inputs)
+            if total_desired_inputs > 1e-9
+            else 0.0
         )
         hazard_affected_suppliers = (
             physical_shortfall_ratio > 1e-9
@@ -1763,20 +1825,23 @@ class FirmAgent(Agent):
         possible_output = min(self.target_output, technical_output_limit)
 
         # Update supplier disruption to reflect actual residual shortfall
-        # after backup search.
-        residual_sector_shortfall_ratios: dict[str, float] = {}
-        for sector, desired_sector_units in desired_input_units_by_sector.items():
-            if desired_sector_units <= 1e-9:
-                continue
-            available_sector_units = current_input_units_by_sector.get(sector, 0.0)
-            residual_sector_shortfall_ratios[sector] = min(
+        # after backup search. Computed at the aggregate level to match the
+        # aggregate production closure.
+        total_desired_inputs_post = sum(desired_input_units_by_sector.values())
+        total_available_inputs_post = sum(
+            max(0.0, units) for units in current_input_units_by_sector.values()
+        )
+        residual_aggregate_shortfall = (
+            min(
                 1.0,
-                max(0.0, desired_sector_units - available_sector_units) / desired_sector_units,
+                max(0.0, total_desired_inputs_post - total_available_inputs_post)
+                / total_desired_inputs_post,
             )
-        self.supplier_disruption_this_step = (
-            max(residual_sector_shortfall_ratios.values(), default=0.0)
-            if hazard_affected_suppliers
+            if total_desired_inputs_post > 1e-9
             else 0.0
+        )
+        self.supplier_disruption_this_step = (
+            residual_aggregate_shortfall if hazard_affected_suppliers else 0.0
         )
         self.continuity_gap_coverage_this_step = continuity_purchase_coverage
 
