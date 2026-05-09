@@ -1103,13 +1103,25 @@ class FirmAgent(Agent):
         if not self.model._households:
             return
         available_cash = self._available_cash_after_reserve(operating_cash_reserve)
-        desired_dividends = min(
-            max(
-                0.0,
-                distributable_earnings - self.investment_spending_this_step - self.adaptation_spending_this_step,
-            ),
-            available_cash,
-        )
+        if available_cash <= 1e-9:
+            return
+
+        # Distribute all cash above the operating reserve.
+        #
+        # The dividend formula is reached only when ``current_direct_loss`` is
+        # False and deferred capital repair is complete (see ``close_step``),
+        # so the operating reserve already protects the cash the firm needs
+        # for next-period wages, inputs, and any new deferred repair. Capping
+        # dividends at current-period earnings (the prior behaviour) left
+        # retained cash from hazard-suppressed periods stranded on the firm's
+        # balance sheet — in a closed economy this drains the household–firm
+        # circular flow indefinitely whenever shocks recur. Paying out all
+        # available cash closes the loop and matches the steady-state property
+        # that retained earnings have no productive role beyond the operating
+        # buffer in this model (no equity issuance, no growth target above
+        # ``target_capital_stock`` after maintenance).
+        desired_dividends = available_cash
+
         if desired_dividends > 0:
             self.money -= desired_dividends
             self.dividends_paid_this_step = desired_dividends

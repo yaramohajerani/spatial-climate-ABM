@@ -168,7 +168,7 @@
     "services": 0.4159
   },
   "adaptation": {
-    "enabled": true,
+    "enabled": false,
     "decision_interval": 4,
     "ewma_alpha": 0.2,
     "observation_radius": 4,
