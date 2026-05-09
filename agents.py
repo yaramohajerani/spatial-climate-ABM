@@ -328,9 +328,13 @@ class FirmAgent(Agent):
     DEFAULT_COEFFICIENTS: dict = {"labor": 0.5, "input": 0.5, "capital": 0.5}
 
     # Default intermediate-input recipes. Values are ranges for firm-level shares
-    # of total intermediate input requirements; the model draws and normalizes one
-    # recipe per firm at initialization. Supplier firms within a required sector
-    # are substitutes, while required sectors are complementary Leontief inputs.
+    # of the calibrated intermediate-input bundle; the model draws and normalizes
+    # one recipe per firm at initialization. Recipe shares define preferred
+    # sourcing weights and the firm's cost-mix exposure, not strict input
+    # complements: production uses inputs as a single aggregate Leontief factor
+    # (see ``_max_output_from_sector_inputs`` and ``step``), and procurement runs
+    # an aggregate top-up pass that fills any residual demand from any technical
+    # supplier when one recipe sector is transiently short.
     DEFAULT_INPUT_RECIPE_RANGES: dict = {
         "commodity": {},
         "agriculture": {},
@@ -358,6 +362,15 @@ class FirmAgent(Agent):
     WORKING_CAPITAL_CREDIT_REVENUE_SHARE: float = 1.0
     LABOR_SHARE: float = 0.5  # fixed labour share of revenue in wage targeting
     NO_WORKER_WAGE_PREMIUM: float = 1.02
+    COST_INCREASE_ALPHA: float = 0.08
+    COST_DECREASE_ALPHA: float = 0.03
+    SCARCITY_COST_DECREASE_DAMPING: float = 4.0
+    PRICE_ADJUSTMENT_SPEED: float = 0.15
+    BASE_MARKUP: float = 0.15
+    MIN_MARKUP: float = 0.02
+    MAX_MARKUP: float = 0.75
+    SCARCITY_MARKUP_SENSITIVITY: float = 0.35
+    RELATIVE_PRICE_FLOOR: float = 0.5
     ADAPTATION_EXPECTED_WEIGHT: float = 0.5
     ADAPTATION_LOCAL_WEIGHT: float = 0.3
     ADAPTATION_SUPPLIER_WEIGHT: float = 0.2
@@ -368,6 +381,7 @@ class FirmAgent(Agent):
         pos: Coords,
         sector: str = "manufacturing",
         capital_stock: float = 100.0,
+        sector_coefficients_override: dict | None = None,
     ) -> None:
         super().__init__(model)
 
@@ -375,8 +389,10 @@ class FirmAgent(Agent):
         self.sector = sector
         self.capital_stock = capital_stock
 
-        # Set sector-specific production coefficients
-        coeffs = self.SECTOR_COEFFICIENTS.get(sector, self.DEFAULT_COEFFICIENTS)
+        # Set sector-specific production coefficients (override wins over class constant)
+        coeffs_table = sector_coefficients_override if sector_coefficients_override is not None \
+            else self.SECTOR_COEFFICIENTS
+        coeffs = coeffs_table.get(sector, self.DEFAULT_COEFFICIENTS)
         self.LABOR_COEFF: float = coeffs["labor"]
         self.INPUT_COEFF: float = coeffs["input"]
         self.CAPITAL_COEFF: float = coeffs["capital"]
@@ -397,6 +413,7 @@ class FirmAgent(Agent):
             "services": 1.2,
         }
         self.price: float = float(base_price_by_sector.get(self.sector, 1.2))
+        self.normal_unit_cost: float = self.price / (1.0 + self.BASE_MARKUP)
         self.money: float = 100.0
 
         # Firm-specific wage offer (labour price) – starts at the model's base wage
@@ -475,6 +492,7 @@ class FirmAgent(Agent):
         self.expected_sales: float = 0.0
         self.demand_driven_output: float = 0.0
         self.base_inventory_target: float = 1.0
+        self.target_inventory_output: float = 1.0
         self.base_capital_target: float = self.capital_stock
         self.target_capital_stock: float = self.capital_stock
         self.no_hazard_target_output: float = 0.0
@@ -744,17 +762,10 @@ class FirmAgent(Agent):
         *,
         damage_factor: float,
     ) -> float:
-        sector_coefficients = self._input_coefficients_by_sector()
-        if not sector_coefficients:
-            if self.INPUT_COEFF > 1e-12:
-                return 0.0
+        if self.INPUT_COEFF <= 1e-12:
             return float("inf")
-        sector_limits: list[float] = []
-        for sector, coeff in sector_coefficients.items():
-            if coeff <= 1e-12:
-                continue
-            sector_limits.append((input_units_by_sector.get(sector, 0.0) / coeff) * damage_factor)
-        return min(sector_limits) if sector_limits else float("inf")
+        total_input_units = sum(max(0.0, units) for units in input_units_by_sector.values())
+        return (total_input_units / self.INPUT_COEFF) * damage_factor
 
     def _consume_inputs_by_sector(self, required_units_by_sector: dict[str, float]) -> float:
         if not required_units_by_sector:
@@ -768,20 +779,23 @@ class FirmAgent(Agent):
         if not remaining_by_sector:
             return 0.0
 
-        for supplier in self._technical_input_suppliers():
+        def consume_from_supplier(supp_id: int, required_units: float) -> float:
+            available = self.inventory_inputs.get(supp_id, 0.0)
+            if available <= 1e-12 or required_units <= 1e-12:
+                return 0.0
+            use_qty = min(available, required_units)
+            self.inventory_inputs[supp_id] = available - use_qty
+            return use_qty
+
+        technical_suppliers = self._technical_input_suppliers()
+        for supplier in technical_suppliers:
             sector = supplier.sector
             remaining_needed = remaining_by_sector.get(sector, 0.0)
-            if remaining_needed <= 1e-12:
-                continue
-            supp_id = supplier.unique_id
-            available = self.inventory_inputs.get(supp_id, 0.0)
-            if available <= 1e-12:
-                continue
-            use_qty = min(available, remaining_needed)
-            self.inventory_inputs[supp_id] -= use_qty
-            remaining_by_sector[sector] = remaining_needed - use_qty
+            used = consume_from_supplier(supplier.unique_id, remaining_needed)
+            if used > 0:
+                remaining_by_sector[sector] = remaining_needed - used
 
-        primary_ids = {s.unique_id for s in self._technical_input_suppliers()}
+        primary_ids = {s.unique_id for s in technical_suppliers}
         for supp_id in list(self.inventory_inputs.keys()):
             if supp_id in primary_ids:
                 continue
@@ -789,18 +803,29 @@ class FirmAgent(Agent):
             if sector is None:
                 continue
             remaining_needed = remaining_by_sector.get(sector, 0.0)
-            if remaining_needed <= 1e-12:
-                continue
-            available = self.inventory_inputs[supp_id]
-            if available <= 1e-12:
-                continue
-            use_qty = min(available, remaining_needed)
-            self.inventory_inputs[supp_id] -= use_qty
-            remaining_by_sector[sector] = remaining_needed - use_qty
+            used = consume_from_supplier(int(supp_id), remaining_needed)
+            if used > 0:
+                remaining_by_sector[sector] = remaining_needed - used
 
         required_total = sum(required_units_by_sector.values())
         remaining_total = sum(max(0.0, units) for units in remaining_by_sector.values())
-        return max(0.0, required_total - remaining_total)
+        consumed_total = max(0.0, required_total - remaining_total)
+
+        # At the model-sector aggregation level, recipe sectors allocate planned
+        # procurement but are not strict complements. Use any remaining
+        # intermediate inventory to cover residual aggregate input needs.
+        residual_need = max(0.0, required_total - consumed_total)
+        if residual_need > 1e-12:
+            for supp_id in list(self.inventory_inputs.keys()):
+                use_qty = consume_from_supplier(int(supp_id), residual_need)
+                if use_qty <= 0:
+                    continue
+                residual_need -= use_qty
+                consumed_total += use_qty
+                if residual_need <= 1e-12:
+                    break
+
+        return consumed_total
 
     def _has_hazard_disruption_signal(self) -> bool:
         """Return whether this firm shows direct or indirect hazard stress.
@@ -1078,17 +1103,29 @@ class FirmAgent(Agent):
                 investable_profit=investable_earnings,
             )
 
-    def _pay_dividends(self, *, distributable_earnings: float, operating_cash_reserve: float) -> None:
+    def _pay_dividends(self, *, operating_cash_reserve: float) -> None:
         if not self.model._households:
             return
         available_cash = self._available_cash_after_reserve(operating_cash_reserve)
-        desired_dividends = min(
-            max(
-                0.0,
-                distributable_earnings - self.investment_spending_this_step - self.adaptation_spending_this_step,
-            ),
-            available_cash,
-        )
+        if available_cash <= 1e-9:
+            return
+
+        # Distribute all cash above the operating reserve.
+        #
+        # The dividend formula is reached only when ``current_direct_loss`` is
+        # False and deferred capital repair is complete (see ``close_step``),
+        # so the operating reserve already protects the cash the firm needs
+        # for next-period wages, inputs, and any new deferred repair. Capping
+        # dividends at current-period earnings (the prior behaviour) left
+        # retained cash from hazard-suppressed periods stranded on the firm's
+        # balance sheet — in a closed economy this drains the household–firm
+        # circular flow indefinitely whenever shocks recur. Paying out all
+        # available cash closes the loop and matches the steady-state property
+        # that retained earnings have no productive role beyond the operating
+        # buffer in this model (no equity issuance, no growth target above
+        # ``target_capital_stock`` after maintenance).
+        desired_dividends = available_cash
+
         if desired_dividends > 0:
             self.money -= desired_dividends
             self.dividends_paid_this_step = desired_dividends
@@ -1180,14 +1217,94 @@ class FirmAgent(Agent):
         self.revenue_this_step = 0.0
 
     def estimate_direct_value_at_risk(self) -> float:
-        technical_suppliers = self._technical_input_suppliers()
-        avg_input_price = float(np.mean([s.price for s in technical_suppliers])) if technical_suppliers else self.price
+        # Use the recipe-share-weighted input price so input-inventory damage
+        # valuation matches the cost basis used in pricing/working-capital
+        # sizing. ``_avg_input_price`` returns 0 when no technical suppliers
+        # exist, in which case fall back to the firm's own output price.
+        avg_input_price = self._avg_input_price() or self.price
         input_units = sum(self.inventory_inputs.values())
         downtime_units = max(self.expected_sales, self.sales_last_step, self.target_output, 1.0)
         inventory_value = self.inventory_output * max(self.price, 0.5)
         input_value = input_units * max(avg_input_price, 0.5)
         downtime_value = downtime_units * max(self.price, 0.5)
         return max(1.0, self.capital_stock + inventory_value + input_value + downtime_value)
+
+    def _avg_input_price(self) -> float:
+        """Recipe-share-weighted mean supplier price.
+
+        Calibrated input_recipe_shares represent IO expenditure shares — the
+        cost basis at the firm's planned input mix. An unweighted mean over
+        all linked suppliers would attribute equal cost weight to each supply
+        sector regardless of its share, biasing markup pricing and working-
+        capital sizing away from the calibrated economic technology.
+        """
+        technical_suppliers = self._technical_input_suppliers()
+        if not technical_suppliers:
+            return 0.0
+        if not self.input_recipe_shares:
+            return float(np.mean([s.price for s in technical_suppliers]))
+
+        sector_prices: dict[str, list[float]] = defaultdict(list)
+        for supplier in technical_suppliers:
+            sector_prices[supplier.sector].append(float(supplier.price))
+
+        weighted_sum = 0.0
+        weight_total = 0.0
+        for sector, share in self.input_recipe_shares.items():
+            prices = sector_prices.get(sector)
+            if not prices or share <= 1e-12:
+                continue
+            weighted_sum += share * float(np.mean(prices))
+            weight_total += share
+        if weight_total <= 1e-12:
+            return float(np.mean([s.price for s in technical_suppliers]))
+        return weighted_sum / weight_total
+
+    def _current_unit_cost(self) -> float:
+        avg_input_price = self._avg_input_price()
+        return (
+            self.wage_offer * self.LABOR_COEFF
+            + avg_input_price * self.INPUT_COEFF
+        ) / max(self.damage_factor, 1e-6)
+
+    def _update_price_from_cost_and_scarcity(self) -> None:
+        current_unit_cost = max(1e-6, self._current_unit_cost())
+
+        target_inventory = max(1.0, self.target_inventory_output)
+        inventory_gap = (target_inventory - self.inventory_output) / target_inventory
+        inventory_gap = float(np.clip(inventory_gap, -1.0, 1.0))
+
+        available = self.inventory_available_last_step
+        if available > 1e-9 and self.sales_last_step > 0:
+            sell_through = min(1.0, self.sales_last_step / available)
+        else:
+            sell_through = 0.0
+        sell_through_signal = 2.0 * sell_through - 1.0
+
+        scarcity_signal = float(np.clip(max(inventory_gap, sell_through_signal), -1.0, 1.0))
+        if current_unit_cost >= self.normal_unit_cost:
+            cost_alpha = self.COST_INCREASE_ALPHA
+        else:
+            cost_alpha = self.COST_DECREASE_ALPHA / (
+                1.0 + self.SCARCITY_COST_DECREASE_DAMPING * max(0.0, scarcity_signal)
+            )
+        self.normal_unit_cost = (
+            (1.0 - cost_alpha) * max(1e-6, self.normal_unit_cost)
+            + cost_alpha * current_unit_cost
+        )
+
+        target_markup = float(
+            np.clip(
+                self.BASE_MARKUP + self.SCARCITY_MARKUP_SENSITIVITY * scarcity_signal,
+                self.MIN_MARKUP,
+                self.MAX_MARKUP,
+            )
+        )
+        target_price = self.normal_unit_cost * (1.0 + target_markup)
+
+        self.price += self.PRICE_ADJUSTMENT_SPEED * (target_price - self.price)
+        relative_floor = max(1e-6, float(getattr(self, "startup_price", self.price)) * self.RELATIVE_PRICE_FLOOR)
+        self.price = float(max(relative_floor, self.price))
 
     def get_adapted_loss_fraction(self, raw_loss_fraction: float) -> float:
         """Return adapted loss fraction, strategy-dependent.
@@ -1407,6 +1524,7 @@ class FirmAgent(Agent):
 
         effective_buffer_ratio = self._effective_inventory_buffer_ratio()
         inventory_target = max(1.0, self.expected_sales * effective_buffer_ratio)
+        self.target_inventory_output = inventory_target
         demand_driven_output = max(0.0, self.expected_sales + inventory_target - self.inventory_output)
         no_hazard_inventory_output = max(
             0.0,
@@ -1421,10 +1539,7 @@ class FirmAgent(Agent):
         desired_output = demand_driven_output
         no_hazard_desired_output = no_hazard_demand_driven_output
 
-        avg_input_price = 0.0
-        technical_suppliers = self._technical_input_suppliers()
-        if technical_suppliers:
-            avg_input_price = float(np.mean([s.price for s in technical_suppliers]))
+        avg_input_price = self._avg_input_price()
 
         effective_damage = max(self.damage_factor, 1e-6)
         no_hazard_damage = max(
@@ -1526,13 +1641,16 @@ class FirmAgent(Agent):
             return
 
         # ---------------- Wage adjustment ----------------------------- #
-        # Revenue-based wage targeting: wages track marginal revenue product of labor.
-        # This replaces ad-hoc shortage-signal heuristics with a single economic principle:
-        # firms pay workers a fraction of what they produce, so wages are structurally
-        # bounded by firm revenue and self-correct during downturns.
+        # Revenue-based wage targeting: wages track revenue per effective worker.
+        # When firms sell from inventory, last period's headcount can be much lower
+        # than the labour needed to reproduce the sold volume. Use the larger of
+        # actual workers and implied production labour to avoid inventory-sale
+        # windfalls ratcheting wages above sustainable operating productivity.
         labor_share = self.LABOR_SHARE
         if self.last_hired_labor > 0 and self.revenue_last_step > 0:
-            revenue_per_worker = self.revenue_last_step / self.last_hired_labor
+            implied_sales_labor = self.sales_last_step * self.LABOR_COEFF / max(self.damage_factor, 1e-6)
+            effective_labor_denominator = max(float(self.last_hired_labor), implied_sales_labor, 1.0)
+            revenue_per_worker = self.revenue_last_step / effective_labor_denominator
             target_wage = revenue_per_worker * labor_share
         elif self.last_hired_labor == 0:
             # No workers last round. Use only a modest premium over the market
@@ -1552,39 +1670,10 @@ class FirmAgent(Agent):
         self.wage_offer = float(max(wage_floor, self.wage_offer))
 
         # ---------------- Dynamic pricing ----------------------------- #
-        # Markup pricing: price = unit_cost × (1 + markup), where markup is set
-        # by sell-through rate.  This replaces ad-hoc inventory-threshold bands,
-        # cost-floor ratchets, and price ceilings with one economic principle:
-        # prices track costs and adjust margins based on realised demand.
-
-        # Unit cost from actual production inputs
-        avg_input_price = 0.0
-        technical_suppliers = self._technical_input_suppliers()
-        if technical_suppliers:
-            avg_input_price = float(np.mean([s.price for s in technical_suppliers]))
-        unit_cost = (
-            self.wage_offer * self.LABOR_COEFF
-            + avg_input_price * self.INPUT_COEFF
-        ) / max(self.damage_factor, 1e-6)
-
-        # Sell-through is based on realised demand from the previous full period.
-        available = self.inventory_available_last_step
-        if available > 0 and self.sales_last_step > 0:
-            sell_through = min(1.0, self.sales_last_step / available)
-        else:
-            sell_through = 0.0
-
-        # Target markup stays positive but modest:
-        #   sell_through = 1.0  →  markup = +0.32
-        #   sell_through = 0.5  →  markup = +0.17
-        #   sell_through = 0.0  →  markup = +0.02
-        # This avoids below-cost pricing while limiting long-run markup compounding.
-        target_markup = 0.02 + 0.30 * sell_through
-        target_price = unit_cost * (1.0 + target_markup)
-
-        # Smooth adjustment: 20% toward target each step
-        self.price += 0.2 * (target_price - self.price)
-        self.price = float(max(0.5, self.price))  # absolute floor to prevent zero/negative
+        # Prices track a slow-moving normal cost, while inventory shortages and
+        # high sell-through raise the markup. This avoids mechanical deflation
+        # when wages fall during input-constrained periods.
+        self._update_price_from_cost_and_scarcity()
 
         labour_units = self._labor_available()
         effective_damage = max(self.damage_factor, 1e-6)
@@ -1599,7 +1688,6 @@ class FirmAgent(Agent):
             self.capital_stock / self.capital_coeff if self.capital_coeff else float("inf"),
         )
         desired_input_units_by_sector = self._desired_input_units_by_sector(desired_pre_damage_output)
-        desired_input_units = sum(desired_input_units_by_sector.values())
         current_input_units_by_sector = self._input_inventory_by_sector()
         sector_remaining_inputs_needed: dict[str, float] = {}
         for sector, desired_sector_units in desired_input_units_by_sector.items():
@@ -1609,6 +1697,9 @@ class FirmAgent(Agent):
 
         technical_suppliers = self._technical_input_suppliers()
         if technical_suppliers and self.INPUT_COEFF > 0:
+            # First pass: recipe-guided sourcing. Sourcing per the calibrated
+            # mix preserves cost exposure to the IO-implied supplier composition
+            # whenever supply is available.
             for sector, remaining_inputs_needed in list(sector_remaining_inputs_needed.items()):
                 if remaining_inputs_needed <= 1e-9:
                     continue
@@ -1617,13 +1708,44 @@ class FirmAgent(Agent):
                     remaining_inputs_needed,
                 )
 
-        physical_shortfall_ratio = max(
-            (
-                min(1.0, max(0.0, sector_remaining_inputs_needed.get(sector, 0.0) / desired_sector_units))
-                for sector, desired_sector_units in desired_input_units_by_sector.items()
-                if desired_sector_units > 1e-9
-            ),
-            default=0.0,
+            # Second pass: aggregate top-up. The calibrated production function
+            # treats intermediate inputs as an aggregate bundle (see
+            # ``_max_output_from_sector_inputs``), so per-sector recipe shares
+            # define preferred sourcing, not strict input complements. When a
+            # recipe sector's primary suppliers are depleted (e.g., due to IO
+            # circularity at startup or transient hazard disruption), residual
+            # aggregate demand can be filled from any technical supplier. Without
+            # this step procurement remains sector-recipe constrained while
+            # production is aggregate, which mechanically suppresses output and
+            # collapses employment whenever any one recipe sector runs short.
+            aggregate_residual = sum(
+                max(0.0, remaining)
+                for remaining in sector_remaining_inputs_needed.values()
+            )
+            if aggregate_residual > 1e-9:
+                aggregate_residual_after = self._buy_inputs_from_suppliers(
+                    technical_suppliers, aggregate_residual,
+                )
+                if aggregate_residual_after + 1e-12 < aggregate_residual:
+                    scale = max(0.0, aggregate_residual_after / aggregate_residual)
+                    sector_remaining_inputs_needed = {
+                        sector: max(0.0, remaining * scale)
+                        for sector, remaining in sector_remaining_inputs_needed.items()
+                    }
+
+        # Hazard signal is computed from aggregate residual to match the
+        # aggregate production closure: a transient sector-level gap that has
+        # been substituted across the aggregate bundle is not a true supplier
+        # disruption.
+        total_desired_inputs = sum(desired_input_units_by_sector.values())
+        total_remaining_inputs = sum(
+            max(0.0, remaining)
+            for remaining in sector_remaining_inputs_needed.values()
+        )
+        physical_shortfall_ratio = (
+            min(1.0, total_remaining_inputs / total_desired_inputs)
+            if total_desired_inputs > 1e-9
+            else 0.0
         )
         hazard_affected_suppliers = (
             physical_shortfall_ratio > 1e-9
@@ -1720,20 +1842,23 @@ class FirmAgent(Agent):
         possible_output = min(self.target_output, technical_output_limit)
 
         # Update supplier disruption to reflect actual residual shortfall
-        # after backup search.
-        residual_sector_shortfall_ratios: dict[str, float] = {}
-        for sector, desired_sector_units in desired_input_units_by_sector.items():
-            if desired_sector_units <= 1e-9:
-                continue
-            available_sector_units = current_input_units_by_sector.get(sector, 0.0)
-            residual_sector_shortfall_ratios[sector] = min(
+        # after backup search. Computed at the aggregate level to match the
+        # aggregate production closure.
+        total_desired_inputs_post = sum(desired_input_units_by_sector.values())
+        total_available_inputs_post = sum(
+            max(0.0, units) for units in current_input_units_by_sector.values()
+        )
+        residual_aggregate_shortfall = (
+            min(
                 1.0,
-                max(0.0, desired_sector_units - available_sector_units) / desired_sector_units,
+                max(0.0, total_desired_inputs_post - total_available_inputs_post)
+                / total_desired_inputs_post,
             )
-        self.supplier_disruption_this_step = (
-            max(residual_sector_shortfall_ratios.values(), default=0.0)
-            if hazard_affected_suppliers
+            if total_desired_inputs_post > 1e-9
             else 0.0
+        )
+        self.supplier_disruption_this_step = (
+            residual_aggregate_shortfall if hazard_affected_suppliers else 0.0
         )
         self.continuity_gap_coverage_this_step = continuity_purchase_coverage
 
@@ -1869,10 +1994,7 @@ class FirmAgent(Agent):
                 distributable_earnings=distributable_earnings,
                 operating_cash_reserve=operating_cash_reserve,
             )
-            self._pay_dividends(
-                distributable_earnings=distributable_earnings,
-                operating_cash_reserve=operating_cash_reserve,
-            )
+            self._pay_dividends(operating_cash_reserve=operating_cash_reserve)
         self.inventory_available_last_step = self.inventory_output + self.sales_this_step
         self._update_post_step_state()
 

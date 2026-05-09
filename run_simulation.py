@@ -14,7 +14,6 @@ try:  # pragma: no cover - package import path
     from .model import EconomyModel
     from .agents import FirmAgent, HouseholdAgent
     from .ensemble_utils import (
-        ENSEMBLE_STAT_ORDER,
         METADATA_PREFIX,
         apply_metadata as apply_ensemble_metadata,
         build_ensemble_summary as summarize_ensemble,
@@ -32,7 +31,6 @@ except ImportError:  # pragma: no cover - flat script import path
     from model import EconomyModel
     from agents import FirmAgent, HouseholdAgent
     from ensemble_utils import (
-        ENSEMBLE_STAT_ORDER,
         METADATA_PREFIX,
         apply_metadata as apply_ensemble_metadata,
         build_ensemble_summary as summarize_ensemble,
@@ -303,6 +301,8 @@ def _base_metadata(
         f"{METADATA_PREFIX}LandBoundariesPath": str(getattr(args, "land_boundaries_path", "") or ""),
         f"{METADATA_PREFIX}ConsumptionRatios": _metadata_json(getattr(args, "consumption_ratios", None)),
         f"{METADATA_PREFIX}ParamConsumptionRatios": _metadata_json(param_data.get("consumption_ratios")),
+        f"{METADATA_PREFIX}FinalConsumptionSectors": _metadata_json(getattr(args, "final_consumption_sectors", None)),
+        f"{METADATA_PREFIX}ParamFinalConsumptionSectors": _metadata_json(param_data.get("final_consumption_sectors")),
         f"{METADATA_PREFIX}ParamInputRecipeRanges": _metadata_json(param_data.get("input_recipe_ranges")),
         f"{METADATA_PREFIX}ParamFirmReplacement": str(param_data.get("firm_replacement", "")),
         f"{METADATA_PREFIX}ParamDynamicSupplierSearch": _metadata_json(param_data.get("dynamic_supplier_search")),
@@ -397,7 +397,9 @@ def _run_single_simulation(
         steps_per_year=args.steps_per_year,
         adaptation_params=adaptation_config,
         consumption_ratios=args.consumption_ratios,
+        final_consumption_sectors=getattr(args, "final_consumption_sectors", None),
         input_recipe_ranges=getattr(args, "input_recipe_ranges", None),
+        sector_coefficients=getattr(args, "sector_coefficients", None),
         firm_replacement=args.firm_replacement,
         dynamic_supplier_search=args.dynamic_supplier_search,
         grid_resolution=args.grid_resolution,
@@ -512,6 +514,7 @@ def main() -> None:  # noqa: D401
     args.steps_per_year = 4
     args.adaptation_params = {}
     args.consumption_ratios = None
+    args.final_consumption_sectors = None
     args.num_households = 100
     args.grid_resolution = 1.0
     args.household_relocation = False
@@ -583,7 +586,9 @@ def main() -> None:  # noqa: D401
 
         # 8. Consumption ratios by sector -----------------------------------
         args.consumption_ratios = param_data.get("consumption_ratios", None)
+        args.final_consumption_sectors = param_data.get("final_consumption_sectors", None)
         args.input_recipe_ranges = param_data.get("input_recipe_ranges", None)
+        args.sector_coefficients = param_data.get("sector_coefficients", None)
         # 9. Number of households -------------------------------------------
         args.num_households = int(param_data.get("num_households", 100))
 

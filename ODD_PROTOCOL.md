@@ -1,6 +1,6 @@
 # ODD Protocol for the Spatial Climate-Economy ABM
 
-This document provides a detailed Overview, Design concepts, and Details (ODD) protocol for the agent-based model implemented in this repository. It is written against the current implementation in `model.py`, `agents.py`, `run_simulation.py`, and the associated configuration and manuscript files present in the repository on April 28, 2026.
+This document provides a detailed Overview, Design concepts, and Details (ODD) protocol for the agent-based model implemented in this repository. It is written against the current implementation in `model.py`, `agents.py`, `run_simulation.py`, and the associated configuration and manuscript files.
 
 The protocol distinguishes between:
 
@@ -110,6 +110,7 @@ Each firm maintains:
 - sector,
 - money holdings,
 - price,
+- slow-moving normal unit cost (cost anchor used in markup pricing),
 - wage offer,
 - capital stock,
 - damage factor (effective productive condition),
@@ -117,6 +118,7 @@ Each firm maintains:
 - output inventory,
 - input inventories by supplier,
 - connected suppliers,
+- input recipe shares (firm-specific preferred-sourcing weights drawn at initialization from configured supplier-sector ranges),
 - current employees,
 - expected sales,
 - target output,
@@ -167,7 +169,7 @@ The step sequence is:
 7. If the reserved-capacity strategy is active, create reserved supplier contracts before procurement begins.
 8. Households supply labor. They search for employers, optionally relocate if that feature is enabled, and sell labor to hiring firms.
 9. Firms execute production in broad sector order. Commodity firms act before manufacturing firms, which act before retail/service firms. Ties within broad sector tiers are randomized each step.
-10. During firm execution, wages and prices are updated first using prior-period information, then firms procure inputs from primary suppliers, identify hazard-related primary-supplier shortages, optionally access continuity-enabled backup or reserved-capacity channels, optionally use generic dynamic supplier rewiring as a last-resort market search, produce output, clear employees, and depreciate capital.
+10. During firm execution, wages and prices are updated first using prior-period information; firms then procure inputs in two passes — a recipe-guided per-sector pass followed by an aggregate top-up that fills any residual demand from any technical supplier — identify hazard-related supplier shortages from the residual aggregate shortfall, optionally access continuity-enabled backup or reserved-capacity channels, optionally use generic dynamic supplier rewiring as a last-resort market search, produce output, clear employees, and depreciate capital.
 11. Households consume final goods after current-period production is complete.
 12. Firms close the accounting period: compute profits, install productive capital when no current direct loss blocks it, fund adaptation from residual cash, pay dividends, and update adaptive expectations and exposure diagnostics.
 13. Firms partially recover damage factors after the current period's production and accounting have closed, so recovery affects the next period rather than smoothing the current shock.
@@ -256,8 +258,8 @@ Firms:
 - try to meet expected demand while maintaining inventory buffers,
 - avoid exhausting liquidity by preserving a cash reserve,
 - procure inputs at lowest available price subject to actual supply,
-- set wages in line with prior revenue per worker,
-- set prices as cost plus a modest markup tied to sell-through,
+- set wages in line with prior revenue per effective worker,
+- set prices from normal unit cost plus scarcity-sensitive markup,
 - preserve and rebuild productive capital before distributing profits,
 - build continuity capacity only when hazard signals justify it.
 
@@ -482,7 +484,7 @@ If a topology JSON is provided, firms are created from that file:
 - initial topology identifiers are preserved,
 - directed edges are read as supplier -> buyer relationships.
 
-The topology defines the initial number of supplier relationship slots. When `dynamic_supplier_search` is enabled, firms may rewire an existing supplier edge within a required supplier sector, but they do not create additional supplier slots. If a required supplier-sector link is missing from the topology, that is treated as a topology/input issue: the model warns and the missing input category can bind production rather than being filled automatically.
+The topology defines the initial number of supplier relationship slots. When `dynamic_supplier_search` is enabled, firms may rewire an existing supplier edge within a required supplier sector, but they do not create additional supplier slots. If a required supplier-sector link is missing from the topology, the model emits a runtime warning; under the aggregate-bundle production closure (see Section 3.3.7) that recipe share is dropped from the cost basis and its demand is sourced through the aggregate top-up pass, so a missing recipe sector binds production only when the aggregate intermediate-input bundle is itself short.
 
 If no topology is provided, firms are placed randomly on land and a random distance-based trade network is generated.
 
@@ -618,13 +620,9 @@ The directed edges define the initial supplier relationship slots used by dynami
 
 #### 3.2.4 Household demand weights
 
-Household consumption ratios are read from configuration. Only final-demand sectors are eligible:
+Household consumption ratios are read from configuration. The set of eligible final-demand sectors is determined by the model's `final_consumption_sectors` attribute, which defaults to the legacy `{retail, wholesale, services}` (`EconomyModel.FINAL_CONSUMPTION_SECTORS`). The default can be overridden per-run through the JSON `final_consumption_sectors` key — calibrated parameter files generated by `prepare_parameters/calibrate_from_io.py` typically include the full mapped set (e.g. `agriculture`, `commodity`, `components`, `manufacturing`, plus `retail`, `wholesale`, `services`) so households can buy directly from any sector that records household final demand in the source IO table.
 
-- retail,
-- wholesale,
-- services.
-
-Weights assigned to non-final sectors are ignored with a warning.
+Weights assigned to non-eligible sectors are dropped with a runtime warning that names the eligible set.
 
 #### 3.2.5 Optional explicit shock inputs
 
@@ -752,8 +750,13 @@ Wages are updated at the start of the firm's execution phase using prior-period 
 If the firm had workers and positive revenue last step:
 
 ```text
-target_wage = (revenue_last_step / last_hired_labor) * 0.5
+effective_labor = max(last_hired_labor, sales_last_step * labor_coeff / damage_factor, 1)
+target_wage = (revenue_last_step / effective_labor) * 0.5
 ```
+
+The effective-labor denominator prevents sales from inherited finished-goods
+inventory from being treated as if they were produced by the smaller current
+workforce.
 
 If it had no workers:
 
@@ -775,61 +778,94 @@ There is a wage floor equal to 40 percent of the initial mean wage.
 
 Prices are updated before procurement and production.
 
-Unit cost is:
+Current unit cost is:
 
 ```text
 unit_cost = (labor_coeff * wage_offer + input_coeff * average_input_price) / damage_factor
 ```
 
-Markup depends on prior-period sell-through:
+`average_input_price` is the calibrated-recipe-weighted mean of supplier prices
+across the firm's required input sectors. This matches the IO-expenditure mix
+of the firm's planned input bundle, so dominant supplier sectors set the cost
+basis even when topology assigns a similar number of supplier links to each
+recipe sector. If a recipe sector has no available suppliers in the topology,
+its weight is dropped and the remaining shares renormalize. When no recipe is
+configured at all, the mean falls back to an unweighted average over connected
+technical suppliers.
+
+Firms maintain a slow-moving normal-cost anchor with asymmetric pass-through:
 
 ```text
-markup = 0.02 + 0.30 * sell_through
-target_price = unit_cost * (1 + markup)
+if unit_cost_t >= normal_unit_cost_t:
+    cost_alpha = 0.08
+else:
+    cost_alpha = 0.03 / (1 + 4.0 * max(0, scarcity_signal))
+
+normal_unit_cost_(t+1) = (1 - cost_alpha) * normal_unit_cost_t + cost_alpha * unit_cost_t
 ```
 
-Sell-through is previous-period sales divided by previous-period goods available for sale.
+Cost increases therefore pass through faster than cost decreases, and cost
+decreases pass through more slowly when scarcity is high.
+
+Markup responds to scarcity. The inventory-gap signal is target finished-goods
+inventory minus on-hand finished-goods inventory, divided by target inventory
+and clipped to [-1, 1]. The sell-through signal is `2 * sell_through - 1`,
+where sell-through is previous-period sales divided by previous-period goods
+available for sale. The scarcity signal is the larger of those two signals.
+
+```text
+markup = clip(0.15 + 0.35 * scarcity_signal, 0.02, 0.75)
+target_price = normal_unit_cost * (1 + markup)
+```
 
 Prices adjust gradually:
 
 ```text
-price_(t+1) = price_t + 0.2 * (target_price - price_t)
+price_(t+1) = price_t + 0.15 * (target_price - price_t)
 ```
 
-There is an absolute floor of 0.5.
+There is a relative floor of `0.5 * startup_price`.
 
 #### 3.3.7 Intermediate-input procurement submodel
 
-After updating wages and prices, firms procure the intermediate inputs required for planned output. Input requirements are set by a firm-specific sector recipe drawn from predetermined sector-level ranges at initialization. The recipe defines the complementary supplier-sector categories required for production, while the supply network defines which firms can provide each category. Suppliers within the same required sector are substitutes, but inventories from one required sector do not satisfy requirements for another required sector.
+After updating wages and prices, firms procure the intermediate inputs required for planned output. Input requirements are set by a firm-specific sector recipe drawn from predetermined sector-level ranges at initialization. The recipe defines the preferred supplier-sector composition of the firm's intermediate-input bundle and sets the firm's calibrated cost-mix exposure. Production treats intermediate inputs as a single aggregate bundle (see Section 3.3.8), so recipe shares are *preferred* sourcing weights rather than strict input complements: residual aggregate demand can be filled from any technical supplier when one recipe sector is transiently short.
+
+Procurement is two-pass:
+
+1. **Recipe-guided per-sector pass.** For each recipe sector, the firm buys from connected suppliers in that sector cheapest-first until that sector's recipe-share-implied demand is met. This preserves the calibrated cost mix whenever supply allows.
+2. **Aggregate top-up pass.** The firm sums any residual sector-level shortfalls into a single aggregate residual and fills it from any technical supplier (across all recipe sectors) cheapest-first. Once a sector inventory is consumed, residual shortfalls remaining across recipe sectors are scaled down proportionally so downstream signals remain coherent.
 
 Key features are:
 
-- connected suppliers in the same supplier sector are treated as substitutes,
-- supplier-sector requirements are derived from the firm's input recipe, not from raw supplier edge counts,
-- primary suppliers are sorted by price,
+- connected suppliers in the same supplier sector are treated as substitutes inside the recipe-guided pass,
+- supplier-sector preferred shares are derived from the firm's input recipe, not from raw supplier edge counts,
+- primary suppliers are sorted by price within each pass,
 - firms buy cheapest available input first,
 - purchases require real supplier inventory and real buyer cash capacity,
 - input inventories are stored by supplier ID,
-- if a required input remains unavailable and the shortage is hazard-related, continuity-enabled `backup_suppliers` or `reserved_capacity` sourcing is attempted before generic rewiring,
+- the aggregate top-up pass runs before continuity-capital mechanisms, so transient sector-level gaps that have been substituted across the input bundle do not spuriously trigger backup-supplier or reserved-capacity sourcing,
+- if a residual aggregate shortfall remains and the shortage is hazard-related, continuity-enabled `backup_suppliers` or `reserved_capacity` sourcing is attempted before generic rewiring,
 - if dynamic supplier search is enabled, firms with unresolved required input demand can then replace one existing supplier link in the affected supplier sector,
 - rewiring preserves the number of supplier links in that buyer-sector relationship set; it changes the counterparty, not the degree implied by the topology,
 - replacement candidates must be active same-sector firms with available inventory or current production and are ranked by price and then distance,
 - unavailable current suppliers are replaced first; otherwise, the highest-priced current supplier is replaced only if the best candidate is cheaper,
-- when a topology omits a supplier for a required recipe sector, the model emits a runtime warning and the unresolved recipe input can bind production,
-- if required supplier-sector inventory is unavailable, production may become input-limited.
+- when a topology omits a supplier for a required recipe sector, the model emits a runtime warning; that recipe share is dropped from the cost basis and its demand is sourced through the aggregate top-up pass instead,
+- if the aggregate intermediate-input bundle remains short of planned output, production becomes input-limited.
 
-Supplier disruption is measured as the share of desired inputs that remain unavailable when the shortage is attributed to hazard-related causes.
+Supplier disruption is measured as the share of desired aggregate inputs that remain unavailable after both procurement passes when the shortage is attributed to hazard-related causes. Computing the signal at the aggregate level matches the aggregate production closure: a per-sector gap that has been filled by cross-sector substitution is not a true supplier disruption.
 
 #### 3.3.8 Production submodel
 
-Production uses a Leontief structure with sector-specific coefficients:
+Production uses a Leontief structure with sector-specific coefficients. The built-in defaults (used when no `sector_coefficients` block is provided) are:
 
 | Sector | Labor coeff | Input coeff | Capital coeff |
 | --- | ---: | ---: | ---: |
 | Commodity / agriculture | 0.6 | 0.0 | 0.7 |
-| Manufacturing | 0.3 | 0.6 | 0.6 |
+| Components / manufacturing | 0.3 | 0.6 | 0.6 |
 | Retail / wholesale | 0.5 | 0.4 | 0.2 |
 | Services | 0.9 | 0.1 | 0.1 |
+
+A calibrated `sector_coefficients` block in the parameter file overrides these defaults per sector and is the path used by the IO-table calibration workflow.
 
 Actual output is:
 
@@ -842,7 +878,7 @@ possible_output = min(
 )
 ```
 
-Inputs consumed to generate realized output are scaled by the pre-damage quantity needed to support the realized post-damage output. Produced goods are added to finished-goods inventory.
+`output_from_inputs` aggregates input inventories across all required recipe sectors before dividing by the firm's input coefficient: production uses the intermediate-input bundle as a single Leontief factor rather than imposing strict per-sector complementarity. Inputs consumed to generate realized output are scaled by the pre-damage quantity needed to support the realized post-damage output. The consumption rule first draws from suppliers in each recipe sector for that sector's planned share, then falls back across remaining inventory in any sector to cover residual aggregate need, mirroring the procurement closure in Section 3.3.7. Produced goods are added to finished-goods inventory.
 
 Employees are cleared after production, and their number is stored as `last_hired_labor` for next-step wage targeting.
 
@@ -874,6 +910,8 @@ The model also tracks:
 - counterfactual direct loss value,
 - realized direct loss value,
 - direct-loss expense for accounting purposes.
+
+The direct-loss expense aggregates the value of destroyed capital, finished-goods inventory, and input inventories at their respective replacement prices (capital at unit installation cost, finished-goods inventory at the firm's own price, input inventory at the firm's calibrated-recipe-weighted average supplier price — see Section 3.3.6). It is a non-cash write-down that lowers reported net profit but leaves money holdings unchanged; the cash to repair the destroyed capital is spent at the start of the next period through the deferred-repair mechanism (see Section 3.3.14).
 
 When a firm experiences any raw direct loss, its `ever_directly_hit` flag becomes true.
 
@@ -991,7 +1029,7 @@ In ordinary no-direct-loss periods, the funding sequence is:
 1. use positive post-loss net profit to restore base productive capital,
 2. use some remaining profit for discretionary capital expansion,
 3. if adaptation is enabled, fund continuity maintenance and new continuity investment from residual cash,
-4. distribute remaining positive profit as dividends.
+4. distribute remaining cash above the operating reserve as dividends (see Section 3.3.14).
 
 Maintenance spending is:
 
@@ -1017,16 +1055,18 @@ accounting_profit
 
 Reported net profit subtracts direct-loss expense. Payout and discretionary allocation decisions use positive post-loss net profit, and any current-period direct loss blocks same-period capital repair, adaptation funding, and dividends.
 
-When there is no current direct loss and positive post-loss net profit is available, earnings are allocated in this order:
+When there is no current direct loss and any pending deferred capital repair is complete, earnings are allocated in this order:
 
 1. productive-capital maintenance up to the base capital target,
 2. discretionary expansion toward the target capital stock,
 3. adaptation spending,
 4. dividends.
 
+Steps 1–3 draw from positive post-loss net profit, capped by available cash above the operating reserve. Step 4 distributes *all* remaining firm cash above the operating reserve, not only the residual current-period earnings. The operating reserve, defined as `max(liquidity_buffer, current wage_bill + input_spend)`, already protects the cash the firm needs for next-period wages, inputs, and any new deferred capital repair, so paying out the residual cash above the reserve closes the household–firm circular flow. If dividends were instead capped at current-period earnings, retained cash from periods in which payouts were suppressed (current direct loss or pending deferred repair) would be stranded on firm balance sheets indefinitely; under recurring shocks this would drain money out of the household sector until shocks abate. Distributing the full available cash makes hazards manifest as inflation and real-output effects rather than as a monotone wealth transfer from households to firms.
+
 Because there is no explicit capital-goods sector, productive-capital installation spending is redistributed to households as reduced-form capital income.
 
-If direct hazard losses occur in the current period, capital repair is deferred. At the start of the next period, the firm uses available cash above its operating reserve to rebuild productive capital toward the base capital target before new hazards and operating decisions are realized.
+If direct hazard losses occur in the current period, capital repair is deferred and dividends are skipped for that step. At the start of the next period, the firm uses available cash above its operating reserve to rebuild productive capital toward the base capital target before new hazards and operating decisions are realized. Once that repair is complete the firm becomes dividend-eligible again and the retained cash drains in the next dividend-eligible close.
 
 #### 3.3.15 Sales, expectation updating, and exposure-state updating
 

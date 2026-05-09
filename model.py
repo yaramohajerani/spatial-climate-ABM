@@ -94,7 +94,9 @@ class EconomyModel(Model):
         apply_transport_shocks: bool | None = None,
         adaptation_params: dict | None = None,
         consumption_ratios: dict | None = None,
+        final_consumption_sectors: list[str] | set[str] | tuple[str, ...] | None = None,
         input_recipe_ranges: dict | None = None,
+        sector_coefficients: dict | None = None,
         firm_replacement: str = "startup_reset",
         dynamic_supplier_search: bool = True,
         grid_resolution: float = 1.0,
@@ -145,8 +147,9 @@ class EconomyModel(Model):
         self._reserved_capacity_contracts: Dict[int, List[dict[str, object]]] = {}
         self._supplier_reserved_inventory: Dict[int, float] = {}
 
-        # Household consumption ratios across final-good sectors.
-        # Upstream sectors sell to firms, not directly to households.
+        # Household consumption ratios across sectors eligible for final demand.
+        # Calibrated runs may include sectors such as manufacturing or agriculture
+        # when the IO final-demand vector records direct household purchases there.
         self.consumption_ratios: dict = consumption_ratios or {
             'retail': 1.0,
         }
@@ -155,7 +158,14 @@ class EconomyModel(Model):
             if input_recipe_ranges is not None
             else FirmAgent.DEFAULT_INPUT_RECIPE_RANGES
         )
-        self.final_consumption_sectors = set(self.FINAL_CONSUMPTION_SECTORS)
+        # Optional per-run override for FirmAgent sector coefficients (from IO calibration).
+        # None means FirmAgent uses its class-level SECTOR_COEFFICIENTS constant.
+        self.sector_coefficients_override: dict | None = sector_coefficients
+        self.final_consumption_sectors = (
+            set(final_consumption_sectors)
+            if final_consumption_sectors is not None
+            else set(self.FINAL_CONSUMPTION_SECTORS)
+        )
         self._consumption_ratio_warning_emitted: bool = False
         self._startup_capital_floor_overrides: list[dict[str, float | int]] = []
 
@@ -568,8 +578,20 @@ class EconomyModel(Model):
                 separators=(",", ":"),
                 ensure_ascii=True,
             ),
+            "FinalConsumptionSectors": json.dumps(
+                sorted(self.final_consumption_sectors),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ),
             "InputRecipeRanges": json.dumps(
                 self.input_recipe_ranges,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ),
+            "SectorCoefficients": json.dumps(
+                self.sector_coefficients_override,
                 sort_keys=True,
                 separators=(",", ":"),
                 ensure_ascii=True,
@@ -1515,8 +1537,12 @@ class EconomyModel(Model):
         expected_sales = max(1.0, float(expected_sales))
         inventory_target = max(1.0, expected_sales * inventory_coverage)
         capital_target = max(1.0, expected_sales * firm.capital_coeff * capital_coverage)
-        technical_suppliers = firm._technical_input_suppliers()
-        avg_input_price = float(np.mean([s.price for s in technical_suppliers])) if technical_suppliers else 0.0
+        # Recipe-share-weighted input price — matches the runtime cost basis used
+        # in ``_current_unit_cost``/``plan_operations`` so the seeded
+        # ``normal_unit_cost`` (and the ``startup_normal_unit_cost`` snapshot
+        # consulted on firm reset) reflects the calibrated IO expenditure mix
+        # rather than an unweighted mean over linked suppliers.
+        avg_input_price = firm._avg_input_price()
         unit_variable_cost = (
             firm.wage_offer * firm.LABOR_COEFF
             + avg_input_price * firm.INPUT_COEFF
@@ -1540,22 +1566,59 @@ class EconomyModel(Model):
             )
         firm.capital_stock = seeded_capital
         firm.money = max(firm.money, working_capital)
+        firm.normal_unit_cost = max(1e-6, unit_variable_cost)
         firm.startup_expected_sales = expected_sales
         firm.startup_inventory_target = inventory_target
         firm.startup_capital_stock = seeded_capital
         firm.startup_money = firm.money
         firm.startup_price = firm.price
+        firm.startup_normal_unit_cost = firm.normal_unit_cost
         firm.startup_wage_offer = firm.wage_offer
+
+    def _seed_firm_input_inventories(
+        self,
+        firm: FirmAgent,
+        *,
+        expected_sales: float,
+        input_inventory_coverage: float = 1.0,
+    ) -> None:
+        """Seed IO-consistent input inventories so circular recipes can start."""
+
+        planned_output = expected_sales * max(0.0, input_inventory_coverage)
+        if firm.INPUT_COEFF <= 0 or planned_output <= 0:
+            return
+
+        required_by_sector = firm._desired_input_units_by_sector(planned_output)
+        if not required_by_sector:
+            return
+
+        suppliers_by_sector: dict[str, list[FirmAgent]] = defaultdict(list)
+        for supplier in firm._technical_input_suppliers():
+            if supplier is firm:
+                continue
+            suppliers_by_sector[supplier.sector].append(supplier)
+
+        for sector, required_units in required_by_sector.items():
+            sector_suppliers = suppliers_by_sector.get(sector, [])
+            if required_units <= 1e-12 or not sector_suppliers:
+                continue
+            units_per_supplier = required_units / len(sector_suppliers)
+            for supplier in sector_suppliers:
+                firm.inventory_inputs[supplier.unique_id] = (
+                    firm.inventory_inputs.get(supplier.unique_id, 0.0) + units_per_supplier
+                )
 
     def _initialize_firm_operating_state(self) -> None:
         """Initialize firms from demand-consistent inventories and working capital."""
 
         expected_sales = self._solve_initial_expected_sales()
         for firm in self._firms:
+            firm_expected_sales = expected_sales.get(firm.unique_id, 1.0)
             self._seed_firm_operating_state(
                 firm,
-                expected_sales=expected_sales.get(firm.unique_id, 1.0),
+                expected_sales=firm_expected_sales,
             )
+            self._seed_firm_input_inventories(firm, expected_sales=firm_expected_sales)
         if self._startup_capital_floor_overrides:
             warnings.warn(
                 "Raised startup capital to the demand-consistent seeding floor for "
@@ -1685,6 +1748,7 @@ class EconomyModel(Model):
                     model=self,
                     pos=(x, y),
                     sector=firm.get("sector", "manufacturing"),
+                    sector_coefficients_override=self.sector_coefficients_override,
                 )
                 # Preserve the external topology identifier for shock lookups.
                 ag.topology_id = int(firm["id"])
@@ -1713,7 +1777,8 @@ class EconomyModel(Model):
 
             for _ in range(num_firms):
                 pos = self.random.choice(filtered_land)
-                agent = FirmAgent(model=self, pos=pos, sector="manufacturing")
+                agent = FirmAgent(model=self, pos=pos, sector="manufacturing",
+                                  sector_coefficients_override=self.sector_coefficients_override)
                 self.grid.place_agent(agent, pos)
                 firm_agents_list.append(agent)
 
@@ -2023,6 +2088,13 @@ class EconomyModel(Model):
         firm.inventory_output = firm.base_inventory_target
         firm.inventory_inputs.clear()
         firm.price = float(getattr(firm, "startup_price", firm.price))
+        firm.normal_unit_cost = float(
+            getattr(
+                firm,
+                "startup_normal_unit_cost",
+                firm.price / (1.0 + firm.BASE_MARKUP),
+            )
+        )
         firm.wage_offer = float(getattr(firm, "startup_wage_offer", self.initial_mean_wage))
         firm.damage_factor = 1.0
         firm.counterfactual_damage_factor = 1.0
@@ -2365,9 +2437,7 @@ class EconomyModel(Model):
     def _build_trade_network(self) -> None:
         """Randomly connect firms <-> firms and households <-> firms based on distance."""
 
-        # Separate lists for convenience
         firm_agents = [ag for ag in self.agents if isinstance(ag, FirmAgent)]
-        household_agents = [ag for ag in self.agents if isinstance(ag, HouseholdAgent)]
 
         # 1. Firm – firm trade network (directed edges)
         dist_scale = 5.0  # characteristic decay distance
