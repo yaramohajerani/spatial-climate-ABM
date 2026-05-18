@@ -82,7 +82,7 @@ def _parse():
         type=str,
         choices=["backup_suppliers", "capital_hardening", "stockpiling", "reserved_capacity"],
         default=None,
-        help="Adaptation strategy for firms (only used when adaptation is enabled)",
+        help="Adaptation strategy for firms; enables adaptation unless --no-adaptation is also set",
     )
     p.add_argument(
         "--adaptation-sensitivity-min",
@@ -231,6 +231,39 @@ def _normalized_adaptation_config(adaptation_config: dict | None) -> dict[str, o
         "min_money_survival": float(config.get("min_money_survival", 1.0)),
         "replacement_frequency": int(config.get("replacement_frequency", 10)),
     }
+
+
+def _resolve_adaptation_settings(args) -> tuple[dict, bool, str]:
+    """Apply CLI adaptation overrides and return config, enabled flag, and strategy."""
+    cli_strategy = getattr(args, "adaptation_strategy", None)
+    disable_adaptation = bool(getattr(args, "no_adaptation", False))
+
+    if disable_adaptation:
+        adaptation_config = {**getattr(args, "adaptation_params", {}), "enabled": False}
+    else:
+        adaptation_config = dict(getattr(args, "adaptation_params", {}))
+        if cli_strategy:
+            adaptation_config["enabled"] = True
+            adaptation_config["adaptation_strategy"] = cli_strategy
+
+    adaptation_enabled = bool(adaptation_config.get("enabled", True))
+
+    if adaptation_enabled and (
+        getattr(args, "adaptation_sensitivity_min", None) is not None
+        or getattr(args, "adaptation_sensitivity_max", None) is not None
+    ):
+        adaptation_config = {**adaptation_config}
+        if args.adaptation_sensitivity_min is not None:
+            adaptation_config["adaptation_sensitivity_min"] = float(args.adaptation_sensitivity_min)
+        if args.adaptation_sensitivity_max is not None:
+            adaptation_config["adaptation_sensitivity_max"] = float(args.adaptation_sensitivity_max)
+        sensitivity_min = float(adaptation_config.get("adaptation_sensitivity_min", 2.0))
+        sensitivity_max = float(adaptation_config.get("adaptation_sensitivity_max", 4.0))
+        if sensitivity_max < sensitivity_min:
+            raise SystemExit("--adaptation-sensitivity-max must be >= --adaptation-sensitivity-min")
+
+    adaptation_strategy = str(adaptation_config.get("adaptation_strategy", "")) if adaptation_enabled else ""
+    return adaptation_config, adaptation_enabled, adaptation_strategy
 
 
 def _coerce_shock_inputs(
@@ -647,30 +680,7 @@ def main() -> None:  # noqa: D401
     # Configure scenario settings
     has_shock_inputs = bool(raster_events or node_shocks or lane_shocks or route_shocks)
     apply_hazards = bool(has_shock_inputs and not args.no_hazards)
-    disable_adaptation = bool(args.no_adaptation)
-    if disable_adaptation:
-        adaptation_config = {**args.adaptation_params, "enabled": False}
-    else:
-        adaptation_config = args.adaptation_params
-    adaptation_enabled = bool(adaptation_config.get("enabled", True))
-
-    # CLI override for adaptation strategy
-    if getattr(args, "adaptation_strategy", None) and adaptation_enabled:
-        adaptation_config = {**adaptation_config, "adaptation_strategy": args.adaptation_strategy}
-    if adaptation_enabled and (
-        getattr(args, "adaptation_sensitivity_min", None) is not None
-        or getattr(args, "adaptation_sensitivity_max", None) is not None
-    ):
-        adaptation_config = {**adaptation_config}
-        if args.adaptation_sensitivity_min is not None:
-            adaptation_config["adaptation_sensitivity_min"] = float(args.adaptation_sensitivity_min)
-        if args.adaptation_sensitivity_max is not None:
-            adaptation_config["adaptation_sensitivity_max"] = float(args.adaptation_sensitivity_max)
-        sensitivity_min = float(adaptation_config.get("adaptation_sensitivity_min", 2.0))
-        sensitivity_max = float(adaptation_config.get("adaptation_sensitivity_max", 4.0))
-        if sensitivity_max < sensitivity_min:
-            raise SystemExit("--adaptation-sensitivity-max must be >= --adaptation-sensitivity-min")
-    adaptation_strategy = str(adaptation_config.get("adaptation_strategy", "")) if adaptation_enabled else ""
+    adaptation_config, adaptation_enabled, adaptation_strategy = _resolve_adaptation_settings(args)
 
     # Generate scenario label for output files
     scenario_label = _scenario_label(apply_hazards, adaptation_enabled, adaptation_strategy)

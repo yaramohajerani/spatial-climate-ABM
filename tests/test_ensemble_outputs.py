@@ -11,6 +11,7 @@ from run_simulation import (
     _coerce_shock_inputs,
     _merge_market_structure_settings,
     _plot_network_evolution_from_json,
+    _resolve_adaptation_settings,
     _resolve_seed_list,
 )
 from shock_inputs import (
@@ -69,6 +70,46 @@ def test_market_structure_settings_fall_back_to_parameter_file() -> None:
 
     assert args.firm_replacement == "none"
     assert args.dynamic_supplier_search is False
+
+
+def test_cli_adaptation_strategy_enables_and_overrides_disabled_param_file() -> None:
+    args = SimpleNamespace(
+        no_adaptation=False,
+        adaptation_params={
+            "enabled": False,
+            "adaptation_strategy": "capital_hardening",
+        },
+        adaptation_strategy="backup_suppliers",
+        adaptation_sensitivity_min=None,
+        adaptation_sensitivity_max=None,
+    )
+
+    config, enabled, strategy = _resolve_adaptation_settings(args)
+
+    assert enabled is True
+    assert strategy == "backup_suppliers"
+    assert config["enabled"] is True
+    assert config["adaptation_strategy"] == "backup_suppliers"
+
+
+def test_no_adaptation_flag_overrides_cli_adaptation_strategy() -> None:
+    args = SimpleNamespace(
+        no_adaptation=True,
+        adaptation_params={
+            "enabled": True,
+            "adaptation_strategy": "capital_hardening",
+        },
+        adaptation_strategy="backup_suppliers",
+        adaptation_sensitivity_min=None,
+        adaptation_sensitivity_max=None,
+    )
+
+    config, enabled, strategy = _resolve_adaptation_settings(args)
+
+    assert enabled is False
+    assert strategy == ""
+    assert config["enabled"] is False
+    assert config["adaptation_strategy"] == "capital_hardening"
 
 
 def test_network_evolution_replay_does_not_overwrite_input_json(tmp_path, monkeypatch) -> None:
