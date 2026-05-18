@@ -2,10 +2,7 @@
 
 This document provides a detailed Overview, Design concepts, and Details (ODD) protocol for the agent-based model implemented in this repository. It is written against the current implementation in `model.py`, `agents.py`, `run_simulation.py`, and the associated configuration and manuscript files.
 
-The protocol distinguishes between:
-
-- the general framework implemented in the codebase, and
-- the main illustrative application used throughout the repository and manuscript (a 100-firm, 1000-household, quarterly, riverine-flood experiment on a 0.25 degree grid).
+The protocol focuses on the current calibrated model configuration used by the repository: a 100-firm, 1000-household, quarterly, riverine-flood experiment on a 0.25 degree grid with IO-calibrated sector coefficients, input recipes, consumption ratios, and firm topology.
 
 Where behavior is optional, scenario-dependent, or currently experimental, that is stated explicitly.
 
@@ -24,7 +21,7 @@ The framework is especially intended for studying the difference between direct-
 - capital hardening, and
 - backup supplier search.
 
-The model is not an empirically calibrated representation of a specific national economy. It is a stylized, extensible, scenario-analysis framework whose main goals are:
+The model is not a complete empirical representation of a specific national economy. The calibrated parameter workflow fits selected economic shares from global input-output tables, but the framework remains a stylized, extensible scenario-analysis model whose main goals are:
 
 - to integrate geospatial hazard data and economic interaction in one simulation,
 - to keep stock-flow logic explicit and inspectable,
@@ -56,12 +53,12 @@ The model also uses non-agent structures:
 
 #### 1.2.2 Spatial scale
 
-The model is spatially explicit. Agents occupy cells on a longitude-latitude grid. Grid resolution is configurable. In the main application it is 0.25 degrees, which yields a 1440 x 720 global grid.
+The model is spatially explicit. Agents occupy cells on a longitude-latitude grid. Grid resolution is configurable. In the calibrated application it is 0.25 degrees, which yields a 1440 x 720 global grid.
 
 Important spatial features are:
 
-- firms are placed either from a topology file containing coordinates or by random placement on land cells,
-- households are placed near firms in topology-driven scenarios and otherwise placed on land and connected afterward,
+- firms are placed from the calibrated topology file containing firm coordinates,
+- households are placed near firms from the calibrated topology and assigned sector tags in proportion to firm-sector counts,
 - hazard intensity is sampled at agent coordinates from GeoTIFF rasters or synthetic event sources,
 - household labor search uses a local radius converted from an intended 1 degree geographic neighborhood,
 - firm local observation of hazard stress uses a Manhattan-distance radius on the grid, and
@@ -71,7 +68,7 @@ The working radius used for labor search is not fixed in cells. It is computed f
 
 #### 1.2.3 Temporal scale
 
-Time is discrete. One simulation step corresponds to one generic planning-production-consumption-accounting period. In the main experiments:
+Time is discrete. One simulation step corresponds to one generic planning-production-consumption-accounting period. In the calibrated experiments:
 
 - `steps_per_year = 4`, so one step corresponds to one quarter,
 - the main long-run experiment runs for 400 steps (100 years),
@@ -168,7 +165,7 @@ The step sequence is:
 6. Each firm plans operations: output target, labor demand, input demand, liquidity buffer, working-capital ceiling, and capital target.
 7. If the reserved-capacity strategy is active, create reserved supplier contracts before procurement begins.
 8. Households supply labor. They search for employers, optionally relocate if that feature is enabled, and sell labor to hiring firms.
-9. Firms execute production in broad sector order. Commodity firms act before manufacturing firms, which act before retail/service firms. Ties within broad sector tiers are randomized each step.
+9. Firms execute production in topological supply-chain order so suppliers act before buyers when the active supplier graph is acyclic. Sector priority is used only to order currently ready firms and to break cycles.
 10. During firm execution, wages and prices are updated first using prior-period information; firms then procure inputs in two passes — a recipe-guided per-sector pass followed by an aggregate top-up that fills any residual demand from any technical supplier — identify hazard-related supplier shortages from the residual aggregate shortfall, optionally access continuity-enabled backup or reserved-capacity channels, optionally use generic dynamic supplier rewiring as a last-resort market search, produce output, clear employees, and depreciate capital.
 11. Households consume final goods after current-period production is complete.
 12. Firms close the accounting period: compute profits, install productive capital when no current direct loss blocks it, fund adaptation from residual cash, pay dividends, and update adaptive expectations and exposure diagnostics.
@@ -363,24 +360,23 @@ When enabled, dynamic supplier search allows firms to replace existing supplier 
 
 Several processes are stochastic:
 
-- hazard occurrence per step for raster events, based on return-period frequencies converted to step probabilities,
+- hazard severity occurrence per step for raster events, based on return-period frequencies converted to step probabilities,
 - normalized adaptation sensitivity draws for firms,
 - household-specific distance-cost draws,
 - household ordering in labor supply and consumption each step,
-- within-tier firm ordering in production,
 - dynamic supplier candidate ordering before price and distance sort,
 - backup-supplier candidate ordering before price sort,
 - household relocation destination choice,
 - optional route-shock firing when route shocks are given a return period.
 
-The simulation supports explicit seeding, and the repository workflow relies heavily on matched-seed comparisons across scenarios. Mesa-level stochasticity uses the model seed, while hazard severity sampling uses a model-owned NumPy generator initialized from the same seed rather than global NumPy RNG state.
+The simulation supports explicit seeding, and the repository workflow relies heavily on matched-seed comparisons across scenarios. Mesa-level stochasticity uses the model seed, while raster hazard severity sampling uses a model-owned NumPy generator initialized from the same seed rather than global NumPy RNG state. For each hazard type and step, the model draws one nested return-period severity state and applies the selected raster layer to all occupied cells, so raster hazard occurrence is spatially correlated within a step rather than independently drawn at each cell.
 
 ### 2.10 Collectives
 
 The model includes several meaningful collectives:
 
 - economic sectors,
-- supply-chain tiers (commodity, manufacturing, retail/other final sectors),
+- supply-chain tiers and calibrated supplier-buyer sector groups,
 - nearby-firm sets for households,
 - nearby-firm observation neighborhoods for adaptation,
 - the set of never-directly-hit firms used for cascade diagnostics,
@@ -432,9 +428,9 @@ Outputs are saved as:
 - plotting outputs generated by separate scripts,
 - network-evolution PNGs and companion `*_network_evolution.json` snapshot files, produced only when `dynamic_supplier_search` is enabled (the topology is otherwise static so there is nothing to track).
 
-The network-evolution figure plots firms at their geographic grid positions across up to six evenly-spaced time panels. Gray lines show original-topology links still present; orange lines show rewired links (links that differ from the first snapshot). Red crosses mark failed firms. The saved JSON records firm metadata, positions, and the full snapshot list. It can be replayed with `run_simulation.py --network-evolution-json ... --out ...` to regenerate the figure without rerunning the simulation.
+For calibrated runs, output filenames include the scenario label, `calibrated_rcp8p5_parameters`, the calibrated topology stem, any ensemble-size tag, and a timestamp. Scenario labels distinguish `hazard_noadaptation`, `hazard_backup_suppliers`, `hazard_capital_hardening`, `hazard_stockpiling`, `hazard_reserved_capacity`, and their baseline counterparts when hazards are disabled. The summary and agent outputs also include `Meta_*` columns that record the parameter file, topology, seed settings, hazard toggles, adaptation state and strategy, sensitivity range, final-demand sectors, consumption ratios, firm-replacement mode, dynamic-supplier-search setting, and other run provenance needed to interpret saved results without reconstructing the command line.
 
-Scenario outputs include `Meta_*` metadata fields so that saved files are self-describing.
+The network-evolution figure plots firms at their geographic grid positions across up to six evenly-spaced time panels. Gray lines show initial topology links still present; orange lines show rewired links (links that differ from the first snapshot). Red crosses mark failed firms. The saved JSON records firm metadata, positions, and the full snapshot list. It can be replayed with `run_simulation.py --network-evolution-json ... --out ...` to regenerate the figure without rerunning the simulation.
 
 ## 3. Details
 
@@ -477,37 +473,32 @@ Optional node shocks are converted into `SyntheticHazard` objects and inserted i
 
 #### 3.1.4 Firm creation
 
-If a topology JSON is provided, firms are created from that file:
+Firms are created from the calibrated topology JSON:
 
 - positions come from explicit grid coordinates or nearest grid cells to lon/lat,
 - sector labels are read from the topology,
 - initial topology identifiers are preserved,
 - directed edges are read as supplier -> buyer relationships.
 
-The topology defines the initial number of supplier relationship slots. When `dynamic_supplier_search` is enabled, firms may rewire an existing supplier edge within a required supplier sector, but they do not create additional supplier slots. If a required supplier-sector link is missing from the topology, the model emits a runtime warning; under the aggregate-bundle production closure (see Section 3.3.7) that recipe share is dropped from the cost basis and its demand is sourced through the aggregate top-up pass, so a missing recipe sector binds production only when the aggregate intermediate-input bundle is itself short.
+The topology defines the initial number of supplier relationship slots. When `dynamic_supplier_search` is enabled, firms may rewire an existing supplier edge within a required supplier sector, but they do not create additional supplier slots. The calibrated topology generator verifies and patches supplier-sector coverage against the calibrated input recipes. If a required supplier-sector link is still missing, the model emits a runtime warning; under the aggregate-bundle production closure (see Section 3.3.7) that recipe share is dropped from the cost basis and its demand is sourced through the aggregate top-up pass, so a missing recipe sector binds production only when the aggregate intermediate-input bundle is itself short.
 
-If no topology is provided, firms are placed randomly on land and a random distance-based trade network is generated.
+The calibrated run uses `riverine_firm_topology_100_calibrated.json`, which contains 100 firms. Its sector mix is calibrated from IO output shares:
 
-In the main illustrative topology:
-
-- 100 firms are used,
-- 30 are commodity firms,
-- 45 are manufacturing firms,
-- 25 are retail firms,
-- the topology includes both tiered supplier links and some within-sector links.
+- 42 services firms,
+- 27 manufacturing firms,
+- 11 components firms,
+- 8 commodity firms,
+- 6 wholesale firms,
+- 3 agriculture firms,
+- 3 retail firms.
 
 #### 3.1.5 Household creation
 
-When a topology exists, households are placed near firms rather than uniformly at random. Household sector tags are allocated in proportion to firm-sector counts and households are placed within the work radius of firms in the corresponding sector.
+Households are placed near topology firms rather than uniformly at random. Household sector tags are allocated in proportion to firm-sector counts and households are placed within the work radius of firms in the corresponding sector.
 
-In the main illustrative topology this yields:
+In the calibrated 100-firm topology this proportional allocation yields 1000 households split as 420 services, 270 manufacturing, 110 components, 80 commodity, 60 wholesale, 30 agriculture, and 30 retail households.
 
-- 1000 households total,
-- 300 commodity-sector households,
-- 450 manufacturing-sector households,
-- 250 retail-sector households.
-
-Without a topology, households are still placed on land and later connected to nearby firms.
+The calibrated parameter file always supplies a topology.
 
 #### 3.1.6 Household-firm neighborhood links
 
@@ -556,19 +547,25 @@ At initialization, each firm draws a firm-specific adaptation sensitivity unifor
 - no prior direct-hit status,
 - no prior indirect-disruption status.
 
-#### 3.1.10 Illustrative application defaults
+#### 3.1.10 Calibrated application defaults
 
-The main flood application in `aqueduct_riverine_parameters_rcp8p5.json` uses:
+The calibrated flood application in `calibrated_rcp8p5_parameters.json` is generated by `prepare_parameters/build_run_parameters.py` from IO-calibrated economic parameters and uses:
 
 - 1000 households,
-- 100 firms from `riverine_firm_topology_100.json`,
+- 100 firms from `riverine_firm_topology_100_calibrated.json`,
 - 0.25 degree resolution,
 - 400 quarterly steps,
 - `start_year = 2000`,
-- an 80-step explicit no-hazard warm-up,
-- riverine flood rasters for 2030, 2050, and 2080 periods under RCP8.5,
-- retail-only final demand,
-- adaptation enabled by default, with strategy chosen by scenario.
+- the same 80-step explicit no-hazard warm-up and RCP8.5 riverine flood windows,
+- calibrated `sector_coefficients`,
+- calibrated `input_recipe_ranges`,
+- calibrated `consumption_ratios`,
+- `final_consumption_sectors` containing agriculture, commodity, components, manufacturing, retail, services, and wholesale,
+- `firm_replacement = "none"`,
+- dynamic supplier search enabled,
+- adaptation disabled in the file by default for no-adaptation baseline runs.
+
+For adaptation scenarios, the CLI `--adaptation-strategy` flag enables adaptation and overrides the file's stored strategy unless `--no-adaptation` is also supplied. For example, `--adaptation-strategy backup_suppliers` turns on adaptation and labels the output as a hazard backup-supplier scenario rather than a no-adaptation scenario.
 
 ### 3.2 Input Data
 
@@ -586,10 +583,12 @@ For each active raster event:
 
 - annual frequency is computed as `1 / return_period`,
 - step probability is computed from annual frequency and `steps_per_year`,
-- a Bernoulli draw determines whether that return-period event fires at a given cell in a given step,
-- depth is sampled at the occupied cell if the event fires.
+- active return-period layers for the same hazard type are treated as nested exceedance thresholds,
+- one uniform severity draw per hazard type and step selects the rarest exceeded active return-period layer, if any,
+- if a layer is selected, raster depth is sampled at all occupied cells for that layer and any less-rare active layers,
+- the maximum sampled depth across the selected nested layers is kept at each occupied cell.
 
-If multiple return periods of the same hazard type fire in the same step, the maximum depth is kept. If multiple hazard types apply, damage fractions are combined multiplicatively:
+If multiple hazard types apply, damage fractions are combined multiplicatively:
 
 ```text
 combined_loss = 1 - product_k (1 - loss_k)
@@ -600,8 +599,11 @@ combined_loss = 1 - product_k (1 - loss_k)
 Flood damage uses JRC Global Flood Depth-Damage Functions read from `data/global_flood_depth_damage_functions.xlsx`. Sector names are mapped to JRC asset classes:
 
 - commodity and manufacturing -> industrial buildings,
+- agriculture -> agriculture,
 - retail, wholesale, and services -> commercial buildings,
 - residential -> residential buildings.
+
+The current mapping table does not include `components`, so components-sector firms fall back to the residential curve unless the mapping is extended in `damage_functions.py`.
 
 Region selection is based on a simplified lon/lat mapping to JRC regions rather than country-specific calibration.
 
@@ -620,7 +622,7 @@ The directed edges define the initial supplier relationship slots used by dynami
 
 #### 3.2.4 Household demand weights
 
-Household consumption ratios are read from configuration. The set of eligible final-demand sectors is determined by the model's `final_consumption_sectors` attribute, which defaults to the legacy `{retail, wholesale, services}` (`EconomyModel.FINAL_CONSUMPTION_SECTORS`). The default can be overridden per-run through the JSON `final_consumption_sectors` key — calibrated parameter files generated by `prepare_parameters/calibrate_from_io.py` typically include the full mapped set (e.g. `agriculture`, `commodity`, `components`, `manufacturing`, plus `retail`, `wholesale`, `services`) so households can buy directly from any sector that records household final demand in the source IO table.
+Household consumption ratios are read from configuration. In the calibrated parameter file, `final_consumption_sectors` includes agriculture, commodity, components, manufacturing, retail, services, and wholesale, so households can buy directly from any sector that records household final demand in the source IO table.
 
 Weights assigned to non-eligible sectors are dropped with a runtime warning that names the eligible set.
 
@@ -632,7 +634,25 @@ The framework supports three explicit non-raster shock classes:
 - `LaneShock`: reduced capacity on a specific supplier -> buyer edge,
 - `RouteShock`: reduced capacity on inbound supply edges associated with firms exposed to a route tag.
 
-These are optional framework extensions. The main riverine-flood experiments primarily use raster hazards.
+These are optional framework extensions. The calibrated riverine-flood experiments primarily use raster hazards.
+
+#### 3.2.6 IO-calibrated economic parameter files
+
+Calibrated runs use a three-step parameter-preparation workflow:
+
+1. `prepare_parameters/calibrate_from_io.py` reads an input-output table and a concordance file, then writes calibrated economic parameters.
+2. `prepare_parameters/generate_topology.py` uses those calibrated output shares and input recipes to generate a firm topology with sector counts and supplier links consistent with the calibration.
+3. `prepare_parameters/build_run_parameters.py` merges the calibrated economic block, topology path, hazard windows, adaptation defaults, and run controls into a runnable parameter file such as `calibrated_rcp8p5_parameters.json`.
+
+The calibrated parameter block contains:
+
+- `sector_coefficients`: per-sector labor, intermediate-input, and capital coefficients used by production planning and the Leontief limits,
+- `input_recipe_ranges`: buyer-sector-specific preferred supplier-sector shares used for input procurement, cost anchoring, and topology coverage,
+- `consumption_ratios`: household final-demand expenditure shares by sector,
+- `final_consumption_sectors`: sectors eligible to receive household final demand,
+- `sector_output_shares`: provenance data used when generating calibrated firm counts.
+
+The current `calibrated_rcp8p5_parameters.json` was built from a GLOBAL WIOT 2014 calibration. It should be read as a calibrated sector-share and IO-structure scenario, not as a full country-specific macro calibration.
 
 ### 3.3 Submodels
 
@@ -666,7 +686,7 @@ The household applies in descending utility order. A labor sale succeeds only if
 
 #### 3.3.2 Household relocation submodel
 
-Household relocation exists but is disabled by default in the main experiments.
+Household relocation exists but is disabled by default in the calibrated experiments.
 
 If enabled:
 
@@ -888,10 +908,10 @@ Capital depreciates at 0.2 percent per step.
 
 Hazard sampling is performed only at occupied agent cells.
 
-For each occupied cell and active event:
+For each hazard type and step:
 
-- a step-level Bernoulli draw determines whether the event occurs at that cell,
-- if it occurs, the raster depth at that cell is sampled,
+- a single nested severity draw selects the active return-period layer, if any,
+- raster depth is sampled at each occupied cell for the selected hazard state,
 - damage fraction is interpolated from the JRC curve for the agent's sector and region.
 
 For firms, direct damage affects:
@@ -911,7 +931,7 @@ The model also tracks:
 - realized direct loss value,
 - direct-loss expense for accounting purposes.
 
-The direct-loss expense aggregates the value of destroyed capital, finished-goods inventory, and input inventories at their respective replacement prices (capital at unit installation cost, finished-goods inventory at the firm's own price, input inventory at the firm's calibrated-recipe-weighted average supplier price — see Section 3.3.6). It is a non-cash write-down that lowers reported net profit but leaves money holdings unchanged; the cash to repair the destroyed capital is spent at the start of the next period through the deferred-repair mechanism (see Section 3.3.14).
+The direct-loss expense aggregates the value of destroyed capital, finished-goods inventory, and input inventories at their respective replacement prices. Capital is valued at unit installation cost, finished-goods inventory at the firm's own price, and input inventory at the current price of the supplier from which each stored input came, with a simple connected-supplier mean fallback. It is a non-cash write-down that lowers reported net profit but leaves money holdings unchanged; the cash to repair the destroyed capital is spent at the start of the next period through the deferred-repair mechanism (see Section 3.3.14).
 
 When a firm experiences any raw direct loss, its `ever_directly_hit` flag becomes true.
 
